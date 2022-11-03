@@ -58,9 +58,10 @@ function optimize_state(state::State;
     precond = precondition,
     inner = metric,
     mlbfgs=100,
-    verbosity=2)
+    verbosity=2,
+    ls = ls_lenient)
 
-    ls_current = ls_lenient
+    ls_current = ls
     model = state.model_param.name
     coupling = state.model_param.coupling
 

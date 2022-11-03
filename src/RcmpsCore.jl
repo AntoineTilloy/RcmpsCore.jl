@@ -5,6 +5,7 @@ export RandomState, RandomStateZ2
 export get_ρ0
 export vertex, phi_monomial, kinetic1, kinetic2, fg_phi4, fg_sgordon
 export optimize_state
+export ls_default, ls_lenient 
 
 include("rcmps_structure.jl")
 include("helper_funcs.jl")
