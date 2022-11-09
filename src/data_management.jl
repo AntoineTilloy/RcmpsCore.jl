@@ -1,7 +1,15 @@
 using JLD
 using ProgressMeter
+using Random
 
-function rcmps_store(state::State,name;verbose=true)
+#stores a state with a default name in the data folder. Add an id to change the tail of the namestring
+function rcmps_store(state::State;verbose=true, id="_")
+    if id =="_"
+        name_tail = randstring(10)
+    else
+        name_tail = id
+    end
+    name = string(state.model_param.name,"_g",state.model_param.coupling,"_D",state.D,id)
     filename=string("./data/",name,".jld")
     save(filename,"R",state.R,
         "K",state.K,"model",state.model_param.name,
