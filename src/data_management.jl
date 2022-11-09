@@ -9,7 +9,7 @@ function rcmps_store(state::State;verbose=true, id="_")
     else
         name_tail = id
     end
-    name = string(state.model_param.name,"_g",state.model_param.coupling,"_D",state.D,id)
+    name = string(state.model_param.name,"_g",state.model_param.coupling,"_D",state.D,name_tail)
     filename=string("./data/",name,".jld")
     save(filename,"R",state.R,
         "K",state.K,"model",state.model_param.name,
