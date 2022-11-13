@@ -34,7 +34,7 @@ function get_ρ0_krylov(state::State)
     lind(ρ)=reshape(lindblad(state,reshape(ρ,(D,D))),D*D)
     lind_adj(ρ)=reshape(lindblad_adjoint(state,reshape(ρ,(D,D))),D*D)
     Lb=LinearMap(lind,lind_adj,D*D)
-    maxdim=min(500,D^2)
+    maxdim=D^2
     λ,ρ0,info=eigsolve(Lb,ρ0_init,1,:LR,maxiter=100000,krylovdim=maxdim)
     ρ0=reshape(ρ0[1],(D,D))
     ρ0=0.5(ρ0+adjoint(ρ0))
