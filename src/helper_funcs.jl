@@ -1,56 +1,90 @@
 using LinearMaps 
 using KrylovKit
+using LinearAlgebra
 
 function robust_inv(M::Matrix,m_reg)
     return inv(M+m_reg*I)
 end
 
-# A weakness of the present algorithm is in the computation of the fixed point
-# ρ0 that is fast but can fail, and if so we go to a sligthly slower method.
+# A weakness of the present algorithm is in the computation of the fixed point ρ0
+# This needs to be precise and the result needs to have the right properties (positive definite and trace 1)
+
 
 function is_ρ0_sound(state::State,ρ0::AbstractMatrix)
-    ε2=norm(lindblad(state,ρ0))
-    return ((ε2 <1e-5))
+    ε1 = real(eigvals(ρ0)[end])
+    ε2 = norm(lindblad(state,ρ0))
+    return ((ε2 <1e-6) & (ε1 ≥ - 1e-9))
+end
+
+
+function sanitize!(ρ0::AbstractMatrix,state::State)
+    ε1 = real(eigvals(ρ0)[end])
+    if ε1 ≤  - 1e-11
+        @warn "Sanitizing ρ0 requires a big regulator"
+    end
+    ρ0+=2*min(3e-16,ε1)*I 
+    ρ0= ρ0/tr(ρ0)
+    if is_ρ0_sound(state,ρ0) == false
+        @warn "Sanitizing ρ0 made it no longer a fixed point of L"
+    end
 end
 
 function get_ρ0(state::State)
-    #Start with cheepest evaluation of the stationary state
-    ρ0=get_ρ0_krylov(state)
+    #Start with cheepest evaluation of the stationary state with the krylov method
+    ρ0=get_ρ0_krylov(state,maxiter=10^5,maxdim=400)
+    
+    if (is_ρ0_sound(state,ρ0)==false)
+        ρ0 = get_ρ0_krylov_square(state,maxiter=10^5,maxdim=400)
+    end
 
     if (is_ρ0_sound(state,ρ0)==false)
-        @warn "Trying to evaluate ρ0 with Krylov failed, trying to minimize (L'L)"
-        ρ0=get_ρ0_krylov_squared(state)
+        @warn "Trying to evaluate ρ0 with Krylov failed, trying to minimize with power method"
+        ρ0=get_ρ0_powermethod(state,stepsize=1e-4,maxiter=2*10^6)
         if (is_ρ0_sound(state,ρ0)==false)
             @error "We tried everything, ρ0 still unsound"
         end
     end
+    sanitize!(ρ0,state)
     return ρ0
 end
 
-function get_ρ0_krylov(state::State)
+function get_ρ0_powermethod(state::State;maxiter=10^6,stepsize=1e-3)
+    D=state.D
+    ρ0=0*state.R + (1/D) * I
+    dρ = 1.0 * ρ0 
+    n_iter=0
+    while (n_iter ≤ maxiter) & (norm(lindblad(state,ρ0))≥ 6e-16*D^2)
+        lindblad!(dρ, state,ρ0)
+        nρ = norm(dρ)
+        ρ0 += min(stepsize,1e-3/nρ)*dρ
+        ρ0 = ρ0/tr(ρ0)
+        n_iter += 1
+    end
+    return ρ0
+end
+
+function get_ρ0_krylov(state::State;maxdim=400,maxiter=10^5)
     D=state.D
     ρ0_init=0*state.R + (1/D) * I
     ρ0_init=reshape(ρ0_init,D*D)
     lind(ρ)=reshape(lindblad(state,reshape(ρ,(D,D))),D*D)
     lind_adj(ρ)=reshape(lindblad_adjoint(state,reshape(ρ,(D,D))),D*D)
     Lb=LinearMap(lind,lind_adj,D*D)
-    maxdim=D^2
-    λ,ρ0,info=eigsolve(Lb,ρ0_init,1,:LR,maxiter=100000,krylovdim=maxdim)
+    λ,ρ0,info=eigsolve(Lb,ρ0_init,1,:LR,maxiter=maxiter,krylovdim=min(D^2,maxdim))
     ρ0=reshape(ρ0[1],(D,D))
     ρ0=0.5(ρ0+adjoint(ρ0))
     ρ0= ρ0/tr(ρ0)
     return ρ0
 end
 
-function get_ρ0_krylov_squared(state::State)
+function get_ρ0_krylov_squared(state::State;maxdim=400,maxiter=10^5)
     D=state.D
     ρ0_init=0*state.R + (1/D) * I
     ρ0_init=reshape(ρ0_init,D*D)
     lind(ρ)=reshape(lindblad(state,reshape(ρ,(D,D))),D*D)
     lind_adj(ρ)=reshape(lindblad_adjoint(state,reshape(ρ,(D,D))),D*D)
     Lb=LinearMap(lind,lind_adj,D*D)
-    maxdim=min(400,D^2)
-    λ,ρ0,info=eigsolve(Lb'*Lb,ρ0_init,1,:SR,maxiter=100000,krylovdim=maxdim)
+    λ,ρ0,info=eigsolve(Lb'*Lb,ρ0_init,1,:SR,maxiter=maxiter,krylovdim=min(D^2,maxdim))
     ρ0=reshape(ρ0[1],(D,D))
     ρ0=0.5(ρ0+adjoint(ρ0))
     ρ0= ρ0/tr(ρ0)
