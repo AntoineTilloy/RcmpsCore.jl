@@ -34,7 +34,7 @@ function get_ρ0(state::State)
     ρ0=get_ρ0_krylov(state,maxiter=10^5,maxdim=400)
     
     if (is_ρ0_sound(state,ρ0)==false)
-        ρ0 = get_ρ0_krylov_square(state,maxiter=10^5,maxdim=400)
+        ρ0 = get_ρ0_krylov_squared(state,maxiter=10^5,maxdim=400)
     end
 
     if (is_ρ0_sound(state,ρ0)==false)
