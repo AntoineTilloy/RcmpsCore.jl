@@ -102,14 +102,26 @@ end
 
 function generate_T(x::State)
     id=Matrix{ComplexF64}(I,x.D,x.D) 
-    T=kron(x.Q,id) + kron(id,x.Qd) + kron(x.R,x.Rd)
+    T=kron(x.Q,id) + kron(id,conj(x.Q)) + kron(x.R,conj(x.R))
     return T 
 end
 
-function mass_gap(x::State)
+function mass_gap_full(x::State)
     T=generate_T(x)
     lb=eigvals(T)
     gap=sort(-real.(lb))[2]
+    return gap
+end
+
+function mass_gap(state::State;maxdim=400,maxiter=10^5)
+    D=state.D
+    ρ0_init=0*state.R + (1/D) * I
+    ρ0_init=reshape(ρ0_init,D*D)
+    lind(ρ)=reshape(lindblad(state,reshape(ρ,(D,D))),D*D)
+    lind_adj(ρ)=reshape(lindblad_adjoint(state,reshape(ρ,(D,D))),D*D)
+    Lb=LinearMap(lind,lind_adj,D*D)
+    λ,ρ0,info=eigsolve(Lb,ρ0_init,2,:LR,maxiter=maxiter,krylovdim=min(D^2,maxdim))
+    gap = -real(λ[2])
     return gap
 end
 
