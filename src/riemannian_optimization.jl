@@ -66,9 +66,9 @@ function optimize_state(state::State;
     coupling = state.model_param.coupling
 
     if model=="sg"
-            fg=state->fg_sgordon_variable(state,1im*coupling)
+            fg=state->fg_sgordon(state,1im*coupling)
     elseif model=="shg" 
-            fg=state->fg_sgordon_variable(state,coupling)
+            fg=state->fg_sgordon(state,coupling)
     elseif model=="phi4"
             fg=state->fg_phi4(state,real(coupling))
     end
