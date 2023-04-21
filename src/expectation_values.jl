@@ -66,11 +66,14 @@ function vertex(state::State,β::Number;method=Vern7())
 
     M=A+B+C
 
-    grad=adjoint(robust_inv(state.ρ0,state.manifold_param.metric_reg)*M)
+    #grad=adjoint(robust_inv(state.ρ0,state.manifold_param.metric_reg)*M)
+    grad=adjoint(robust_inv(state.ρ0,M,state.manifold_param.metric_reg))
     vert=tr(ρ(tbound))
 
     return vert,grad
 end
+
+
 
 
 function phi_monomial(state::State,n::Integer;method=Vern7())
@@ -114,7 +117,8 @@ function phi_monomial(state::State,n::Integer;method=Vern7())
         end
     end
 
-    grad=adjoint(robust_inv(state.ρ0,state.manifold_param.metric_reg)*M)
+    #grad=adjoint(robust_inv(state.ρ0,state.manifold_param.metric_reg)*M)
+    grad=adjoint(robust_inv(state.ρ0,M,state.manifold_param.metric_reg))
     phi_n=real(tr(ρ(tbound)[n+1,:,:]))
 
     return phi_n,grad
@@ -164,7 +168,8 @@ function kinetic1(state::State;method=Vern7())
 
     end
 
-    grad=adjoint(robust_inv(state.ρ0,state.manifold_param.metric_reg)*M)
+    #grad=adjoint(robust_inv(state.ρ0,state.manifold_param.metric_reg)*M)
+    grad=adjoint(robust_inv(state.ρ0,M,state.manifold_param.metric_reg))
     kin1=real(tr(ρ(tbound)[3,:,:]))
 
     return kin1,grad
@@ -216,7 +221,8 @@ function kinetic2(state::State;method=Vern7())
         M+=- w*J*(state.R*rho[2,:,:]-rho[2,:,:]*state.R)*state.Rd
     end
 
-    grad=adjoint(robust_inv(state.ρ0,state.manifold_param.metric_reg)*M)
+    #grad=adjoint(robust_inv(state.ρ0,state.manifold_param.metric_reg)*M)
+    grad=adjoint(robust_inv(state.ρ0,M,state.manifold_param.metric_reg))
     kin2=real(tr(ρ(tbound)[3,:,:]))
 
     return kin2,grad

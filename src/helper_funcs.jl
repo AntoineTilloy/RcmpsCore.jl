@@ -2,10 +2,13 @@ using LinearMaps
 using KrylovKit
 using LinearAlgebra
 
-function robust_inv(M::Matrix,m_reg)
-    return inv(M+m_reg*I)
+function robust_inv(ρ::Matrix,m_reg)
+    return inv(ρ+m_reg*I)
 end
 
+function robust_inv(ρ::Matrix,M::Matrix,m_reg)
+    return (ρ + m_reg*I) \ M
+end
 # A weakness of the present algorithm is in the computation of the fixed point ρ0
 # This needs to be precise and the result needs to have the right properties (positive definite and trace 1)
 
