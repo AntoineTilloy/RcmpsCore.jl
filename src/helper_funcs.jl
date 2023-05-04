@@ -2,10 +2,13 @@ using LinearMaps
 using KrylovKit
 using LinearAlgebra
 
-function robust_inv(M::Matrix,m_reg)
-    return inv(M+m_reg*I)
+function robust_inv(ρ::Matrix,m_reg)
+    return inv(ρ+m_reg*I)
 end
 
+function robust_inv(ρ::Matrix,M::Matrix,m_reg)
+    return (ρ + m_reg*I) \ M
+end
 # A weakness of the present algorithm is in the computation of the fixed point ρ0
 # This needs to be precise and the result needs to have the right properties (positive definite and trace 1)
 
@@ -125,10 +128,30 @@ function mass_gap(state::State;maxdim=400,maxiter=10^5)
     return gap
 end
 
+function exp_sinh_quadrature(N; min_point = 1e-15, max_point = 1e2)
+    min_kh = asinh(2/π*log(min_point))
+    max_kh = asinh(2/π*log(max_point))
 
+    h = (max_kh-min_kh) /N 
 
-function zeros_same_type(M,dims::Vararg{Union{Core.Integer,Base.AbstractUnitRange}})
- 
-    return zeros(eltype(M),dims) 
+    kmin = min_kh/h 
+    kmax = max_kh/h
 
+    range_k = kmin:kmax 
+    
+    weights = [1/2 * h * pi * cosh(k*h) * exp(1/2 * pi * sinh(k*h))  for k in range_k]
+    points    = [exp(1/2 * pi * sinh(k*h)) for k in range_k]
+    return points,weights
+end
+
+function symmetric_exp_sinh_quadrature(N;min_point=1e-15,max_point=1e2)
+    points_pos,weights_pos = exp_sinh_quadrature(N,min_point=min_point,max_point=max_point)
+    points_neg,weights_neg = exp_sinh_quadrature(N,min_point=min_point,max_point=max_point)
+    points = [-reverse(points_neg) ; points_pos]
+    weights = [reverse(weights_neg) ; weights_pos]
+    return points,weights
+end
+
+function symmetric_exp_sinh_quadrature(params::IntegratorParameters)
+    return symmetric_exp_sinh_quadrature(params.n_quad,min_point=params.min_point,max_point=params.max_point)
 end

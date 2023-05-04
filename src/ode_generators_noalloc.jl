@@ -4,6 +4,7 @@ import Octavian: matmul, matmul!
 
 
 
+
 #Source term in the ODE
 function jsource(y::Real)
     return besselk(0.25,abs(y))/(2^(9/4)*sqrt(pi)*gamma(1.25)*abs(y)^(1/4))
@@ -34,6 +35,16 @@ function lindblad!(dρ::AbstractMatrix,state::State,ρ::AbstractMatrix)
     matmul!(dρ,state.R,state.buffer1,1.0,1.0)
 end
 
+function lindblad_MKL!(dρ::AbstractMatrix,state::State,ρ::AbstractMatrix)
+    id = one(eltype(state.buffer1))
+    mul!(dρ,state.Q,ρ)
+    mul!(dρ,ρ,state.Qd,id,id)
+    mul!(state.buffer1,ρ,state.Rd)
+    mul!(dρ,state.R,state.buffer1,id,id)
+end
+
+
+
 function lindblad_adjoint!(dρ::AbstractMatrix,state::State,ρ::AbstractMatrix)
     matmul!(dρ,state.Qd,ρ)
     matmul!(dρ,ρ,state.Q,1.0,1.0)
@@ -47,16 +58,16 @@ function vertex_generator!(dρ::AbstractMatrix,ρ::AbstractMatrix,p,t)
     state=p[1]
     β=p[2]
     lindblad!(dρ,state,ρ)
-    matmul!(dρ,state.R,ρ,β*f_prime(t)*jsource(f(t)),f_prime(t))
-    matmul!(dρ,ρ,state.Rd,β*f_prime(t)*jsource(f(t)),1.0)
+    matmul!(dρ,state.R,ρ,eltype(ρ)(β*f_prime(t)*jsource(f(t))),f_prime(t))
+    matmul!(dρ,ρ,state.Rd,eltype(ρ)(β*f_prime(t)*jsource(f(t))),one(eltype(ρ)))
 end 
 
 function vertex_generator_adjoint!(dρ::AbstractMatrix,ρ::AbstractMatrix,p,t)
     state=p[1]
     β=p[2]
     lindblad_adjoint!(dρ,state,ρ)
-    matmul!(dρ,state.Rd,ρ,β*f_prime(t)*jsource(f(t)),f_prime(t))
-    matmul!(dρ,ρ,state.R,β*f_prime(t)*jsource(f(t)),1.0)
+    matmul!(dρ,state.Rd,ρ,eltype(ρ)(β*f_prime(t)*jsource(f(t))),f_prime(t))
+    matmul!(dρ,ρ,state.R,eltype(ρ)(β*f_prime(t)*jsource(f(t))),one(eltype(ρ)))
 end 
 
 #Phi monomial

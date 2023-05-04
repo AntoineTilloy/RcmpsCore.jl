@@ -23,7 +23,8 @@ end
 function precondition(state::State, W)
     ρ0_reg1 = state.ρ0 + state.manifold_param.precond_reg * I
     ρ0_reg2 = state.ρ0 + state.manifold_param.metric_reg * I
-    return W * ρ0_reg2 * inv(ρ0_reg1)
+    #return W * ρ0_reg2 * inv(ρ0_reg1)
+    return Matrix((ρ0_reg1 \ (W * ρ0_reg2)' )')
 end
 
 function retraction(state::State,W::AbstractMatrix,α::Number)

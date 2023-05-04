@@ -12,33 +12,35 @@ dt = 1e-7
 maxiter = 10^7
 dtmin = 1e-15
 
-function generate_tanhsinh_weights(param::IntegratorParameters)
-    n=param.n_tanhsinh
-    overshoot = param.overshoot
-    tbound = param.t_bound
+# function generate_tanhsinh_weights(param::IntegratorParameters)
+#     n=param.n_tanhsinh
+#     overshoot = param.overshoot
+#     tbound = param.t_bound
 
-    h=2.0^(-n)
-    N=floor(Int,1/h*overshoot)
+#     h=2.0^(-n)
+#     N=floor(Int,1/h*overshoot)
 
-    u=LinRange(-N,N,2*N+1)
-    x=tanh.(0.5*π*sinh.(h*u))
-    weight=0.5*h*π*cosh.(h*u)./(cosh.(0.5*π*sinh.(h*u)).^2)*tbound/2
-    #Negative side of the interval
-    tneg=(x .- 1)*tbound*0.5
-    tpos=(x .+ 1)*tbound*0.5
+#     u=LinRange(-N,N,2*N+1)
+#     x=tanh.(0.5*π*sinh.(h*u))
+#     weight=0.5*h*π*cosh.(h*u)./(cosh.(0.5*π*sinh.(h*u)).^2)*tbound/2
+#     #Negative side of the interval
+#     tneg=(x .- 1)*tbound*0.5
+#     tpos=(x .+ 1)*tbound*0.5
 
-    points=vcat(tneg,tpos)
-    weights=vcat(weight,weight)
+#     points=vcat(tneg,tpos)
+#     weights=vcat(weight,weight)
 
-    return points,weights
-end
+#     return points,weights
+# end
+
+
 
 
 function vertex(state::State,β::Number;method=Vern7())
     abstol=state.integrator_param.atol
     reltol=state.integrator_param.rtol
-    points,weights=generate_tanhsinh_weights(state.integrator_param)
-    tbound=state.integrator_param.t_bound
+    points,weights=symmetric_exp_sinh_quadrature(state.integrator_param)
+    tbound=points[end]
     tspan=(-tbound,tbound)
     
     #Solve the ODE for the quadrature points
@@ -54,7 +56,7 @@ function vertex(state::State,β::Number;method=Vern7())
     σ =  solve(prob_backward,method,saveat=points,reltol=reltol,abstol=abstol,dt=dt,dtmin=dtmin,force_dtmin=true,maxiters=maxiter)
 
     ρ=fetch(ρ) ; σ=fetch(σ)
-    A=0.0*state.R ; B=0.0*state.R ; C=0.0*state.R
+    A=zero(state.R) ; B=zero(state.R) ; C=zero(state.R)
 
     for i in 1:size(points)[1]
         t=points[i]
@@ -66,32 +68,35 @@ function vertex(state::State,β::Number;method=Vern7())
 
     M=A+B+C
 
-    grad=adjoint(robust_inv(state.ρ0,state.manifold_param.metric_reg)*M)
+    #grad=adjoint(robust_inv(state.ρ0,state.manifold_param.metric_reg)*M)
+    grad=adjoint(robust_inv(state.ρ0,M,state.manifold_param.metric_reg))
     vert=tr(ρ(tbound))
 
     return vert,grad
 end
 
 
+
+
 function phi_monomial(state::State,n::Integer;method=Vern7())
     abstol=state.integrator_param.atol
     reltol=state.integrator_param.rtol
-    points,weights=generate_tanhsinh_weights(state.integrator_param)
-    tbound=state.integrator_param.t_bound
+    points,weights=symmetric_exp_sinh_quadrature(state.integrator_param)
+    tbound=points[end]
     tspan=(-tbound,tbound)
 
     p=[state,n]
     D=state.D
     
     #Solve the forward problem
-    ρ0=zeros_same_type(state.R,n+1,D,D)
+    ρ0=zeros(eltype(state.R),n+1,D,D)
     ρ0[1,:,:]=state.ρ0
     prob_forward = ODEProblem(phi_generator!,ρ0,tspan,p)
     ρ = solve(prob_forward,method,saveat=points,reltol=reltol,abstol=abstol,dt=dt,dtmin=dtmin,force_dtmin=true,maxiters=maxiter)
 
 
     #Solve the backward problem
-    σ0=zeros_same_type(state.R,n+1,D,D)
+    σ0=zeros(eltype(state.R),n+1,D,D)
     id=one(state.R)
     σ0[n+1,:,:]=id
     prob_backward = ODEProblem(phi_generator_adjoint!,σ0,tspan,p)
@@ -99,7 +104,7 @@ function phi_monomial(state::State,n::Integer;method=Vern7())
 
     ρ=fetch(ρ) ; σ=fetch(σ)
 
-    M=zeros_same_type(state.R,D,D)
+    M=zero(state.R)
     for i in 1:size(points)[1]
         t=points[i]
         rho=ρ[i]
@@ -114,7 +119,8 @@ function phi_monomial(state::State,n::Integer;method=Vern7())
         end
     end
 
-    grad=adjoint(robust_inv(state.ρ0,state.manifold_param.metric_reg)*M)
+    #grad=adjoint(robust_inv(state.ρ0,state.manifold_param.metric_reg)*M)
+    grad=adjoint(robust_inv(state.ρ0,M,state.manifold_param.metric_reg))
     phi_n=real(tr(ρ(tbound)[n+1,:,:]))
 
     return phi_n,grad
@@ -124,24 +130,24 @@ end
 function kinetic1(state::State;method=Vern7())
     abstol=state.integrator_param.atol
     reltol=state.integrator_param.rtol
-    points,weights=generate_tanhsinh_weights(state.integrator_param)
-    tbound=state.integrator_param.t_bound
+    points,weights=symmetric_exp_sinh_quadrature(state.integrator_param)
+    tbound=points[end]
     tspan=(-tbound,tbound)
     p=state
     D=state.D
 
     #Solve the forward problem
-    ρ0=zeros_same_type(state.R,3,D,D)
+    ρ0=zeros(eltype(state.R),3,D,D)
     prob_forward = ODEProblem(kinetic1_generator!,ρ0,tspan,p)
     ρ = solve(prob_forward,method,saveat=points,reltol=reltol,abstol=abstol,dt=dt,dtmin=dtmin,force_dtmin=true,maxiters=maxiter)
 
     #Solve the backward problem
-    σ0=zeros_same_type(state.R,3,D,D)
+    σ0=zeros(eltype(state.R),3,D,D)
     prob_backward = ODEProblem(kinetic1_generator_adjoint!,σ0,tspan,p)
     σ = solve(prob_backward,method,saveat=points,reltol=reltol,abstol=abstol,dt=dt,dtmin=dtmin,force_dtmin=true,maxiters=maxiter)
 
     ρ=fetch(ρ) ; σ=fetch(σ)
-    M=zeros_same_type(state.R,D,D)
+    M=zero(state.R)
     for i in 1:size(points)[1]
         t=points[i]
         J=sqrt(2)*jsource(f(t))
@@ -164,7 +170,8 @@ function kinetic1(state::State;method=Vern7())
 
     end
 
-    grad=adjoint(robust_inv(state.ρ0,state.manifold_param.metric_reg)*M)
+    #grad=adjoint(robust_inv(state.ρ0,state.manifold_param.metric_reg)*M)
+    grad=adjoint(robust_inv(state.ρ0,M,state.manifold_param.metric_reg))
     kin1=real(tr(ρ(tbound)[3,:,:]))
 
     return kin1,grad
@@ -174,25 +181,25 @@ end
 function kinetic2(state::State;method=Vern7())
     abstol=state.integrator_param.atol
     reltol=state.integrator_param.rtol
-    points,weights=generate_tanhsinh_weights(state.integrator_param)
-    tbound=state.integrator_param.t_bound
+    points,weights=symmetric_exp_sinh_quadrature(state.integrator_param)
+    tbound=points[end]
     tspan=(-tbound,tbound)
     p=state
     D=state.D
 
     #Solve the forward problem
-    ρ0=zeros_same_type(state.R,3,D,D)
+    ρ0=zeros(eltype(state.R),3,D,D)
     prob_forward = ODEProblem(kinetic2_generator!,ρ0,tspan,p)
     ρ = solve(prob_forward,method,saveat=points,reltol=reltol,abstol=abstol,dt=dt,dtmin=dtmin,force_dtmin=true,maxiters=maxiter)
 
     #Solve the backward problem
-    σ0=zeros_same_type(state.R,3,D,D)
+    σ0=zeros(eltype(state.R),3,D,D)
     prob_backward = ODEProblem(kinetic2_generator_adjoint!,σ0,tspan,p)
     σ = solve(prob_backward,method,saveat=points,reltol=reltol,abstol=abstol,dt=dt,dtmin=dtmin,force_dtmin=true,maxiters=maxiter)
 
     ρ=fetch(ρ) ; σ=fetch(σ)
 
-    M=zeros_same_type(state.R,D,D)
+    M=zero(state.R)
     for i in 1:size(points)[1]
         t=points[i]
         J=sqrt(2)*jsource(f(t))
@@ -216,7 +223,8 @@ function kinetic2(state::State;method=Vern7())
         M+=- w*J*(state.R*rho[2,:,:]-rho[2,:,:]*state.R)*state.Rd
     end
 
-    grad=adjoint(robust_inv(state.ρ0,state.manifold_param.metric_reg)*M)
+    #grad=adjoint(robust_inv(state.ρ0,state.manifold_param.metric_reg)*M)
+    grad=adjoint(robust_inv(state.ρ0,M,state.manifold_param.metric_reg))
     kin2=real(tr(ρ(tbound)[3,:,:]))
 
     return kin2,grad

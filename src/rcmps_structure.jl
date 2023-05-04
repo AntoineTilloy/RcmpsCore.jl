@@ -3,9 +3,9 @@ using Random
 using LinearAlgebra
 
 @with_kw mutable struct IntegratorParameters
-    n_tanhsinh::Int = 8
-    t_bound::Real = 20.0
-    overshoot::Real = 2.8
+    n_quad::Int64 = 1000
+    max_point::Real = 20.0
+    min_point::Real = 1e-15
     atol::Real = 1e-13
     rtol::Real = 1e-11
 end
