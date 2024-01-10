@@ -270,10 +270,31 @@ function fg_sgordon(state::State,β::Number)
     return energy,∇energy
 end
 
+function Y(m1,m2)
+    return 0.25/(2*π)*(m2^2- m1^2 + 2*m1^2*log(m1/m2))
+end
 
+function Z(m1,m2)
+    return 1/(2*π)*log(m2/m1)
+end
 
+function fg_phi4_massmod(state::State,g::Number,massmod=.1)
+    job1=@spawn kinetic1(state)
+    job2=@spawn kinetic2(state)
+    job3=@spawn phi_monomial(state,4)
+    job4=@spawn phi_monomial(state,2)
+    res1=fetch(job1)
+    res2=fetch(job2)
+    res3=fetch(job3)
+    res4=fetch(job4)
+    kin1=res1[1];∇kin1=res1[2]
+    kin2=res2[1];∇kin2=res2[2]
+    phi4=res3[1];∇phi4=res3[2]
+    phi2=res4[1];∇phi2=res4[2]
 
-
-
-
+    ∇energy=∇kin1+∇kin2 + (massmod^2-1)/2*∇phi2 + g*massmod^2*(∇phi4 - 6 * Z(massmod,1)* ∇phi2)
+    energy= kin1 + kin2 + (massmod^2-1)/2*phi2 + Y(massmod,1) + g*massmod^2*(phi4 - 6 * Z(massmod,1)*phi2 +3 *Z(massmod,1)^2)
+    GC.gc()
+    return (1/massmod^2)*real(energy),(1/massmod^2)*∇energy
+end
 

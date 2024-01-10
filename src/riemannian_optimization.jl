@@ -60,7 +60,7 @@ function optimize_state(state::State;
     inner = metric,
     mlbfgs=100,
     verbosity=2,
-    ls = ls_lenient)
+    ls = ls_lenient, massmod=.1)
 
     ls_current = ls
     model = state.model_param.name
@@ -72,6 +72,8 @@ function optimize_state(state::State;
             fg=state->fg_sgordon(state,coupling)
     elseif model=="phi4"
             fg=state->fg_phi4(state,real(coupling))
+    elseif model=="phi4_m"
+        fg=state->fg_phi4_massmod(state,real(coupling),massmod)
     end
 
     if method=="GD"
