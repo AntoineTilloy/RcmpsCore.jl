@@ -243,7 +243,7 @@ function fg_phi4(state::State,g::Number)
 
     ∇energy=∇kin1+∇kin2+g*∇phi4
     energy=real(kin1+kin2+g*phi4)
-
+    @everywhere GC.gc()
     return energy,∇energy
 end
 
@@ -266,7 +266,8 @@ function fg_sgordon(state::State,β::Number)
 
     ∇energy=∇kin1+∇kin2+0.5*1/β^2*(∇vplus+∇vminus) - 0.5*∇mass
     energy=real(kin1+kin2+0.5*1/β^2*(vplus+vminus) - 0.5*mass)
-
+    
+    @everywhere GC.gc()
     return energy,∇energy
 end
 
@@ -294,7 +295,7 @@ function fg_phi4_massmod(state::State,g::Number,massmod=.1)
 
     ∇energy=∇kin1+∇kin2 + (massmod^2-1)/2*∇phi2 + g*massmod^2*(∇phi4 - 6 * Z(massmod,1)* ∇phi2)
     energy= kin1 + kin2 + (massmod^2-1)/2*phi2 + Y(massmod,1) + g*massmod^2*(phi4 - 6 * Z(massmod,1)*phi2 +3 *Z(massmod,1)^2)
-    GC.gc()
+    @everywhere GC.gc()
     return (1/massmod^2)*real(energy),(1/massmod^2)*∇energy
 end
 

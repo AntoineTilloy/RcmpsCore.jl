@@ -117,6 +117,15 @@ ls_lenient=HagerZhangLineSearch(c₁= 1e-2, # parameter for first Wolfe conditio
                         )
 
 
+ls_big_steps=HagerZhangLineSearch(c₁= 1e-6, # parameter for first Wolfe condition
+            c₂ =0.8, # paremeter for second Wolfe condition
+            ϵ = 1e-5, # parameter for approximate Wolfe condition, accept fluctation of ϵ on the function value
+            θ = 1/2, # used in bisection
+            γ = 2/3, # determines when a bisection step is performed
+            ρ = 5.0 # expansion parameter for initial bracket interval
+            )
+
+
 
 
 
