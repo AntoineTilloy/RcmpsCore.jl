@@ -1,6 +1,6 @@
 using OrdinaryDiffEq
 using Distributed
-import Optim
+
 
 #Compute expectation values and gradient of expectation values of typical
 #local operators (field monomials, vertex operators, kinetic terms)

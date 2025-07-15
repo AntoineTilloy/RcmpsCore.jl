@@ -2,9 +2,7 @@
 #The only modification is to allow to input step sizes for GradientDescent
 #in the LBFGS algorithm. Without it, the algorithm tries steps that are too large 
 #in the first few iterations
-include("OptimKit_modified/OptimKit.jl")
-
-
+using OptimKit
 
 function metric(state::State,W1,W2)
     ρ0_reg=state.ρ0 + state.manifold_param.metric_reg*I
@@ -59,7 +57,7 @@ function optimize_state(state::State;
     precond = precondition,
     inner = metric,
     mlbfgs=100,
-    verbosity=2,
+    verbosity=3,
     ls = ls_lenient, massmod=.1)
 
     ls_current = ls
@@ -98,7 +96,49 @@ function optimize_state(state::State;
     return state
 end
 
-#Two typical parameters for the line search: the standard one and a more lenient one (that accepts steps more easily)
+# Different parameterizations of the linesearch based on Wolfe conditions 
+# and a new dedicated backward linesearch
+
+struct BackwardLineSearch <: OptimKit.AbstractLineSearch
+end
+
+const ls_backward = BackwardLineSearch()
+
+
+function (ls::BackwardLineSearch)(fg, x0, p, fg0=fg(x0);
+    retract=_retract, inner=_inner,
+    initialguess::Real=one(fg₀[1]),
+    acceptfirst::Bool=false,
+    maxiter::Int=10,
+    maxfg::Int=10,
+    verbosity::Int=2)
+    numfg = 0
+    alpha = initialguess / 1.8
+    x = deepcopy(x0)
+
+    f_in, grad_in = fg0
+    grad_out = copy(grad_in)
+    xi_out = copy(p)
+    f_out = 1e16
+    while f_out > (f_in + abs(f_in) * 1e-8 + 1e-11)
+        x, xi_out = retract(x0, p, alpha)
+        f_out, grad_out = fg(x)
+        numfg += 1
+        alpha /= 2
+        if alpha < 1e-8
+            @warn "Step smaller than 1e-8, breaking"
+            x, xi_out = retract(x0, p, 1e-5)
+            f_out, grad_out = fg(x)
+            alpha = 1e-6
+            numfg += 1
+            break
+        end
+    end
+    alpha *= 2
+    return x, f_out, grad_out, xi_out, alpha, numfg
+end
+
+
 
 ls_default=HagerZhangLineSearch(c₁= .1, # parameter for first Wolfe condition
                         c₂ = .9, # paremeter for second Wolfe condition
