@@ -216,6 +216,9 @@ julia --project=benchmark benchmark/converged_optimization.jl
 python benchmark/plot_boundary.py                             # numpy, matplotlib
 ```
 
+GitLab CI (`.gitlab-ci.yml`) runs `Pkg.test()` on every push with Julia 1.12, and
+with Julia 1.10, the lowest supported version, as a non-blocking job.
+
 The D=16 regression (8 minutes with two threads on a loaded 12-core workstation)
 recomputes the odd-sector p=0 mass of the g=2 Z₂ state in `test/fixtures/` with the
 default solver at the research integration settings, and fails if it differs from

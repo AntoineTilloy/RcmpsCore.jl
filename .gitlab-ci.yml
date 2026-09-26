@@ -1,0 +1,28 @@
+# Runs the package tests on every push. Julia 1.12 is the validated version;
+# 1.10 is the lowest version allowed by Project.toml and may fail without
+# blocking the pipeline. No Manifest is committed, so each job resolves the
+# current releases within the [compat] bounds.
+stages: [test]
+
+test:
+  stage: test
+  image: julia:${JULIA_VERSION}
+  parallel:
+    matrix:
+      - JULIA_VERSION: ["1.12", "1.10"]
+  variables:
+    JULIA_NUM_THREADS: "2"
+    JULIA_DEPOT_PATH: "$CI_PROJECT_DIR/.julia"
+  cache:
+    key: "julia-$JULIA_VERSION"
+    paths:
+      - .julia/artifacts
+      - .julia/packages
+      - .julia/registries
+  script:
+    - julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.test()'
+  rules:
+    - if: '$JULIA_VERSION == "1.10"'
+      allow_failure: true
+    - when: on_success
+  timeout: 1h
