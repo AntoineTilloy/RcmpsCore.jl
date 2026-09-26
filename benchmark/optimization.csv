@@ -1,0 +1,3 @@
+boundary,iterations,evaluations,initial_energy,final_energy,true_gradient_norm,seconds,status
+false,5,6,0.014680256032506871,2.0630100417289454e-8,0.00046904377854143823,0.32731867,stationary state is nonunique or numerically unresolved
+true,20,46,0.014680256032506871,-0.02666151946685696,0.27603421902150344,34.183909691,iteration_limit

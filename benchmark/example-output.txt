@@ -1,0 +1,13 @@
+Precompiling packages...
+   3194.5 ms  ✓ RcmpsCore
+  1 dependency successfully precompiled in 4 seconds. 132 already precompiled.
+[ Info: LBFGS: initializing with f = 1.987502585420e-01, ‖∇f‖ = 9.9822e-01
+┌ Warning: GMRES linsolve stopped without converging after 200 iterations:
+│ * norm of residual = 2.28e-10
+│ * number of operations = 812
+└ @ KrylovKit /tmp/rcmps-depot/packages/KrylovKit/bEE7W/src/linsolve/gmres.jl:136
+┌ Warning: LBFGS: not converged to requested tol after 20 iterations and time 32.17 s: f = -1.007806327796e-01, ‖∇f‖ = 5.8344e-01
+└ @ OptimKit /tmp/rcmps-depot/packages/OptimKit/K7Ujj/src/lbfgs.jl:210
+┌ Info: Saved RCMPS
+└   path = "/home/antoine/Projects/RcmpsCore.jl/refactor/examples/output/phi4.jld2"
+(energy = -0.10078063277960993, gradient_norm = 0.583440587830732, converged = false)

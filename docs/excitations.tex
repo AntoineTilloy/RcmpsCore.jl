@@ -1,0 +1,824 @@
+\documentclass[11pt]{article}
+\usepackage[a4paper,margin=25mm]{geometry}
+\usepackage{amsmath,amssymb,mathtools,bm,hyperref}
+\usepackage[T1]{fontenc}
+\setlength{\emergencystretch}{2em}
+\newcommand{\tr}{\operatorname{tr}}
+\newcommand{\Id}{\mathbb{1}}
+\newcommand{\LL}{\mathcal{L}}
+\newcommand{\PP}{\mathcal{P}}
+\newcommand{\GG}{\mathcal{G}}
+\newcommand{\ket}[1]{\lvert #1\rangle}
+\newcommand{\bra}[1]{\langle #1\rvert}
+\newcommand{\comm}[2]{[#1,#2]}
+\title{Momentum-resolved tangent excitations of RCMPS\\
+Connected environments and a reference implementation}
+\author{RcmpsCore refactor implementation notes}
+\date{September 2026}
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We derive an implementation of the Hamiltonian projected onto the complex,
+fixed-momentum tangent space of a single-field relativistic continuous matrix
+product state (RCMPS). Four auxiliary channels account for zero, ket, bra, and
+joint tangent insertions. Momentum-shifted Poisson equations supply the
+infinite-line boundaries, and a rank-one subtraction removes the extensive
+vacuum contribution before numerical integration. The normal-ordered source
+ODEs and kinetic resolvent quadrature of the refactored ground-state code lift
+to these channels without a spatial lattice cutoff. We give the additional
+kinetic insertion, the physical tangent metric, verification identities, and
+limitations of the small-bond dense eigensolver.
+\end{abstract}
+
+\section{Scope, literature, and conventions}
+The fixed-momentum tangent ansatz and its gauge quotient originate in the MPS
+and cMPS excitation methods; see \cite{haegeman,draxler,vanderstraeten}.
+The relativistic change of physical modes, normal ordering, and the mass-one
+Hamiltonian used here follow \cite{tilloy}. Its discussion of excitation
+spectra motivates the calculation but does not provide the RCMPS environments
+implemented below. The four-channel connected construction and its extension
+to the refactored source and resolvent engines are derived explicitly here.
+
+We assume a translation-invariant left-canonical state with
+\begin{align}
+ Q&=-iK-\tfrac12R^\dagger R, & K&=K^\dagger,\\
+ \LL(X)&=QX+XQ^\dagger+RXR^\dagger,
+ &\LL(\rho)&=0,\quad \tr\rho=1,\quad \LL^*(\Id)=0.
+\end{align}
+All other transfer eigenvalues must have strictly negative real part. A
+unique stationary state alone is insufficient if other peripheral modes
+exist. Define
+\begin{equation}
+ \PP X=\rho\tr X,\qquad
+ \GG=(-\LL+\PP)^{-1}(1-\PP)
+       =\int_0^\infty(e^{x\LL}-\PP)\,dx.
+ \label{eq:G}
+\end{equation}
+The matrices in the implementation are complex, column-major, and satisfy
+\begin{equation}
+ \operatorname{vec}\LL(X)=
+ [\Id\otimes Q+\overline Q\otimes\Id+\overline R\otimes R]
+ \operatorname{vec}X.
+\end{equation}
+The adjoint acts as
+$\LL^*(A)=Q^\dagger A+AQ+R^\dagger AR$, so that
+$\tr[A\LL(X)]=\tr[\LL^*(A)X]$ even when $A$ is not Hermitian.
+
+Bare mass and target speed of light are one. The canonical physical modes
+satisfy $[a(x),a^\dagger(y)]=\delta(x-y)$ and
+\begin{equation}
+ \phi(x)=\int J(x-y)[a(y)+a^\dagger(y)]\,dy,\qquad
+ \widehat J(k)=\frac1{\sqrt{2\omega_k}},\quad
+ \omega_k=\sqrt{1+k^2}.
+ \label{eq:J}
+\end{equation}
+We use $\widehat J(k)=\int e^{-ikx}J(x)dx$. In particular,
+\begin{equation}
+ J(x)=\frac{K_{1/4}(|x|)}{2^{9/4}\sqrt\pi\,\Gamma(5/4)|x|^{1/4}},
+ \qquad \lim_{t\to0}2|t|J(t^2)=\frac1{\sqrt\pi}.
+\end{equation}
+These are precisely \texttt{jsource} and \texttt{transformed\_source}.
+
+\section{Complex tangent space and gauge fixing}
+Replace one $Q,R$ pair by $V,W$ at position $x$, and integrate the resulting
+state against $e^{ipx}$. We denote it by $\ket{\Phi_p(V,W)}$. Path ordering is
+chosen so that auxiliary propagation acts as $X\mapsto e^{x\LL}X$. An
+unambiguous realization, also fixing the sign of momentum, is the lower
+triangular ket lift
+\begin{equation}
+ \widetilde Q_W=\begin{pmatrix}Q&0\\V&Q-ip\Id\end{pmatrix},\qquad
+ \widetilde R_W=\begin{pmatrix}R&0\\W&R\end{pmatrix}.
+ \label{eq:lift}
+\end{equation}
+The lower-left component of its ordered exponential contains one insertion
+weighted by $e^{ipx}$, up to an irrelevant phase at the right endpoint.
+The bra uses the analogous matrices with $U,V_U$ at the \emph{same} $p$,
+followed by Hermitian conjugation in the contraction.
+
+Pure gauge insertions are
+\begin{equation}
+ (V,W)=([X,Q]+ipX,[X,R]).
+\end{equation}
+Choose the left gauge
+\begin{equation}
+ V=-R^\dagger W,\qquad V_U=-R^\dagger U.
+ \label{eq:gauge}
+\end{equation}
+For $p=0$ this also excludes the ground-state component. Define the single
+and coincident insertion maps
+\begin{align}
+ A_W(X)&=VX+WXR^\dagger,\\
+ B_U(X)&=XV_U^\dagger+RXU^\dagger,\\
+ C_{UW}(X)&=WXU^\dagger.
+\end{align}
+The identities $\tr A_W(X)=\tr B_U(X)=0$ hold for every $X$.
+Consequently, separated insertions vanish in the tangent overlap and
+\begin{equation}
+ \bra{\Phi_p(U)}\Phi_q(W)\rangle
+ =2\pi\delta(p-q)N_{UW},\qquad N_{UW}=\tr(W\rho U^\dagger).
+ \label{eq:metric}
+\end{equation}
+This is a complex Hilbert-space metric. Neither the factor $2\operatorname{Re}$
+nor the optimizer's diagonal regularizer belongs in this eigenproblem.
+The projected Hamiltonian is a sesquilinear form, not the real Hessian of
+the variational energy. A real Hessian also contains two-ket/two-bra terms
+and curvature terms from a chosen parameter retraction.
+
+\section{Four channels and the extensive term}
+Write a mixed lifted density as four $D\times D$ matrices
+$\bm X=(X_{00},X_{10},X_{01},X_{11})$. Expanding
+$\widetilde Q_W X+X\widetilde Q_U^\dagger+
+ \widetilde R_W X\widetilde R_U^\dagger$ gives
+\begin{align}
+ \dot X_{00}&=\LL X_{00},\\
+ \dot X_{10}&=(\LL-ip)X_{10}+A_W(X_{00}),\\
+ \dot X_{01}&=(\LL+ip)X_{01}+B_U(X_{00}),\\
+ \dot X_{11}&=\LL X_{11}+A_W(X_{01})+B_U(X_{10})+C_{UW}(X_{00}).
+ \label{eq:uncentered}
+\end{align}
+The two shifted single-insertion environments are trace-free:
+\begin{align}
+ r_{10}&=(-\LL+ip+\PP)^{-1}A_W(\rho),\\
+ r_{01}&=(-\LL-ip+\PP)^{-1}B_U(\rho).
+ \label{eq:singles}
+\end{align}
+Here $\PP$ fixes the zero-momentum gauge and is harmless for every nonzero
+$p$, since the right-hand sides and solutions are trace-free. In particular,
+there is no numerical $1/p$ subtraction close to zero momentum.
+
+Set
+\begin{equation}
+ F=A_W(r_{01})+B_U(r_{10})+W\rho U^\dagger,
+ \qquad \tr F=N_{UW}.
+\end{equation}
+A long empty interval of length $b$ produces
+$X_{11}=bN_{UW}\rho+r_{11}+o(1)$, where
+\begin{equation}
+ r_{11}=\GG F,\qquad
+ -\LL r_{11}=F-N_{UW}\rho,\quad \tr r_{11}=0.
+ \label{eq:double}
+\end{equation}
+The secular term is the tangent overlap proportional to the interval length.
+Multiplying it by the ground-state energy density gives the unphysical
+extensive part of $\bra{\Phi}H\ket{\Phi}$.
+
+Remove it analytically. Define a connected transfer generator $\mathbb L$
+by retaining the first three equations of \eqref{eq:uncentered} and replacing
+the last one with
+\begin{equation}
+ (\mathbb L\bm X)_{11}=\LL X_{11}+A_W(X_{01})+B_U(X_{10})
+                         +C_{UW}(X_{00})-N_{UW}X_{00}.
+ \label{eq:connected}
+\end{equation}
+Then
+\begin{equation}
+ \bm r=(\rho,r_{10},r_{01},r_{11}),\qquad \mathbb L\bm r=0.
+\end{equation}
+The subtraction is the identity map $-N_{UW}X_{00}$, not the projector
+$-N_{UW}\rho\tr X_{00}$. This distinction matters inside an observable source.
+
+\section{The second boundary: the right-tail environment}
+Using $\tr A=\tr B=0$, the left zero functional of $\mathbb L$ has the form
+\begin{equation}
+ \ell(\bm X)=\tr X_{11}+\tr(h_{UW}X_{00}),
+ \quad
+ -\LL^*h_{UW}=U^\dagger W-N_{UW}\Id,
+ \quad \tr(\rho h_{UW})=0.
+ \label{eq:left}
+\end{equation}
+Thus $\ell\mathbb L=0$ and $\ell(\bm r)=0$. This is the same adjoint Poisson
+equation used by the refactored \texttt{boundary\_environment}, now with a
+generally non-Hermitian right-hand side. Do not Hermitize $h_{UW}$ for
+an off-diagonal matrix element.
+
+For an observable supported in a finite source window, with connected
+propagator $\mathbb U_O$, its excitation matrix element is
+\begin{equation}
+ \boxed{\quad O^{\rm exc}_{UW}(p)=\ell\bigl(\mathbb U_O\bm r\bigr).\quad}
+ \label{eq:observable}
+\end{equation}
+In particular the identity gives zero. To see the role of the second term,
+let $Y_{00}$ be the outgoing ground channel and $e_O=\tr Y_{00}$.
+The tangent insertions to the right of the source contribute
+\begin{equation}
+ \int_0^\infty \tr\{U^\dagger W
+          [e^{x\LL}Y_{00}-e_O\rho]\}\,dx
+ =\tr\{U^\dagger W\GG Y_{00}\}
+ =\tr(h_{UW}Y_{00}).
+\end{equation}
+The singles and $r_{11}$ account for insertions to the left. Hence the
+source window need only resolve the smearing kernel; it need not span the
+possibly much larger auxiliary correlation length.
+
+Equivalently, insert $O$ in a box $[-B,B]$, start in the ground block only,
+use the uncentered lifted transfer, and form
+\begin{equation}
+ O^{\rm exc}_{UW}(p)=\lim_{B\to\infty}
+ \left[\bra{\Phi_{p,B}(U)}O\ket{\Phi_{p,B}(W)}
+                  -2BN_{UW}\bra\Psi O\ket\Psi\right].
+ \label{eq:box}
+\end{equation}
+Mixing gives \eqref{eq:observable} by applying
+\eqref{eq:singles}--\eqref{eq:left} to the two empty tails.
+Translational invariance converts the two position integrals at fixed
+$O=h(0)$ into the Hamiltonian density matrix element per $2\pi\delta(0)$:
+\begin{equation}
+ \bra{\Phi_p(U)}(H-E_0)\ket{\Phi_q(W)}
+   =2\pi\delta(p-q)H^{\rm exc}_{UW}(p).
+\end{equation}
+This derivation needs no exact ground-state equation. Physical interpretation
+as a particle spectrum does need an adequate optimized background.
+
+\section{Lifting the RCMPS source equations}
+For a base insertion $c$ and its tangent replacements $c_W,c_U$, define
+\begin{align}
+ (S_L\bm X)_{00}&=cX_{00},& (S_R\bm X)_{00}&=X_{00}c^\dagger,\\
+ (S_L\bm X)_{10}&=cX_{10}+c_WX_{00},&
+ (S_R\bm X)_{10}&=X_{10}c^\dagger,\\
+ (S_L\bm X)_{01}&=cX_{01},&
+ (S_R\bm X)_{01}&=X_{01}c^\dagger+X_{00}c_U^\dagger,\\
+ (S_L\bm X)_{11}&=cX_{11}+c_WX_{01},&
+ (S_R\bm X)_{11}&=X_{11}c^\dagger+X_{10}c_U^\dagger.
+ \label{eq:sources}
+\end{align}
+For a normal-ordered vertex $:e^{\beta\phi(0)}:$, take
+$(c,c_W,c_U)=(R,W,U)$ and solve
+\begin{equation}
+ \frac{d\bm X}{dt}=2|t|\mathbb L\bm X+
+       \beta\,[2|t|J(t^2)](S_L+S_R)\bm X,
+ \qquad x=t|t|.
+\end{equation}
+Both source coefficients are $\beta$, including for imaginary $\beta$;
+conjugating one of them would change the operator. A single complex vertex
+is not Hermitian, but the sine-Gordon combination is.
+
+For $:\phi^n:$ use channels $\bm X^{(0)},\ldots,\bm X^{(n)}$ with
+\begin{equation}
+ \dot{\bm X}^{(k)}=2|t|\mathbb L\bm X^{(k)}
+       +k[2|t|J(t^2)](S_L+S_R)\bm X^{(k-1)}.
+\end{equation}
+Initialize only $\bm X^{(0)}=\bm r$ and contract the last channel with $\ell$.
+This is exactly the refactor's \texttt{Observable}/\texttt{Edge} graph with
+four tangent channels attached to each original observable channel.
+The $x=t|t|$ transformation removes the integrable kernel singularity at
+zero; an ODE stop at zero handles its remaining nonsmoothness.
+
+\section{Kinetic insertion and exact convolution}
+The free Hamiltonian density integrates to the sum of two bilinears, with
+base insertions $c=R$ and $c=[Q,R]$. The second must be differentiated
+including its spatial dependence. Taking the commutator of the lifted
+matrices in \eqref{eq:lift} gives
+\begin{equation}
+ \boxed{c_W=[Q,W]+[V,R]-ipW,\qquad
+        c_U=[Q,U]+[V_U,R]-ipU.}
+ \label{eq:kinetic}
+\end{equation}
+For the first term, $c_W=W,c_U=U$. The sign is tied to
+\eqref{eq:lift}; reversing the Fourier convention reverses it and all
+momentum shifts together. The pure gauge pair gives
+$c_W=[X,[Q,R]]$, which is a useful covariance check. Omitting $-ipW$
+would already miss the $p^2$ term for a free-vacuum excitation.
+
+The refactor's four-channel kinetic \emph{observable} graph, with two
+$\sqrt2J$ sources, can be used directly with \eqref{eq:sources}. This is the
+finite-source-window ODE backend. For an infinite-line calculation,
+integrate the convolution first:
+\begin{equation}
+ (J*J)(x)=\frac{K_0(|x|)}{2\pi},\qquad
+ K_0(x)=\int_0^\infty e^{-x\cosh u}\,du\quad(x>0).
+\end{equation}
+Changing variables to $\cos\theta=\operatorname{sech}u$ gives the kinetic
+matrix element
+\begin{equation}
+ \boxed{K^{\rm exc}_{UW}[c]=\frac1\pi\int_0^{\pi/2}\!
+ \ell\left[
+ S_L(1-\cos\theta\,\mathbb L)^{-1}S_R\bm r+
+ S_R(1-\cos\theta\,\mathbb L)^{-1}S_L\bm r
+ \right]d\theta.}
+ \label{eq:kinetic-resolvent}
+\end{equation}
+For equal tangents the two orders are complex conjugates, but for arbitrary
+$U,W$ one must keep both, rather than take the real part of one order.
+The existing \texttt{kinetic\_grid} supplies weights for
+$(2/\pi)d\theta$, hence each order has weight one half in code.
+Node doubling checks the full complex kinetic matrix element.
+
+There is no need to form a $4D^2\times4D^2$ matrix. For
+$\bm Y=(1-z\mathbb L)^{-1}\bm B$, solve consecutively
+\begin{align}
+ Y_{00}&=(1-z\LL)^{-1}B_{00},\\
+ Y_{10}&=[1-z(\LL-ip)]^{-1}[B_{10}+zA_W(Y_{00})],\\
+ Y_{01}&=[1-z(\LL+ip)]^{-1}[B_{01}+zB_U(Y_{00})],\\
+ Y_{11}&=(1-z\LL)^{-1}\bigl[B_{11}+z\{A_W(Y_{01})+B_U(Y_{10})
+                         +C_{UW}(Y_{00})-N_{UW}Y_{00}\}\bigr].
+\end{align}
+A single Schur factorization of the refactored transfer matrix supplies all
+four solves at every quadrature node. Defective transfer matrices do not
+require an eigenvector inverse. This backend has no smearing-window error
+for the kinetic energy; potential terms still use a finite source window.
+
+\section{Hamiltonians and the finite eigenproblem}
+The interaction term lists are shared with the ground-state objectives:
+\begin{align}
+ H_{\phi^4}&=H_0+g\int :\phi^4:\,dx,\\
+ H_{\mathrm{shG/sG}}&=H_0+\int\left[
+ \frac{:e^{\beta\phi}:+:e^{-\beta\phi}:}{2\beta^2}
+              -\frac12:\phi^2:\right]dx.
+\end{align}
+Here $\beta$ is real for shG and imaginary for sG, and additive constants
+cancel. The modified-mass model uses precisely the coefficients of
+\texttt{fg\_phi4\_massmod}; its energies are in that objective's rescaled
+units. In particular, its kinetic prefactor is $1/m_{\rm mod}^2$, so a
+speed-one diagnostic cannot be applied in those units without conversion.
+
+Diagonalize $\rho=U_\rho\operatorname{diag}(r_a)U_\rho^\dagger$ and retain
+its resolved positive support. With
+\begin{equation}
+ W_{ia}=\frac{\ket i\bra{u_a}}{\sqrt{r_a}},
+ \qquad \tr(W_{ia}\rho W_{jb}^\dagger)=\delta_{ij}\delta_{ab},
+\end{equation}
+build $H_{ia,jb}=H^{\rm exc}_{W_{ia},W_{jb}}$ and solve the ordinary
+Hermitian eigenproblem. Resolved support gives $D\operatorname{rank}\rho$
+directions. A relative eigenvalue threshold removes unresolved or null
+metric directions; the retained rank and discarded density weight are
+reported. This is a restriction of the variational subspace, not an additive
+metric regularization; its sensitivity must be checked for nearly singular
+$\rho$.
+
+Every matrix entry is evaluated independently. Before symmetrizing numerical
+roundoff, the implementation checks
+$\|H-H^\dagger\|/\max(1,\|H\|)$ and throws on an excessive defect.
+Returned Ritz residuals measure the finite matrix eigenproblem only; they
+are not residuals of the full quantum-field Hamiltonian. Negative levels
+are retained, since clipping them would conceal a poor background or an
+instability. The current code does not certify ground-state stationarity.
+
+The rest energy is the lowest represented level at $p=0$.
+It is computed by \texttt{excitation\_gap}, with the equivalent explicit-model
+overload \texttt{mass\_gap(s,model)}.
+The function \texttt{transfer\_gap} measures an auxiliary inverse correlation length;
+the old one-argument \texttt{mass\_gap(s)} remains its compatibility alias.
+These quantities are not interchangeable.
+For an isolated relativistic particle of mass $M$, test
+\begin{equation}
+ E(p)^2-p^2=M^2
+\end{equation}
+and fit $E^2=a+c_{\rm fit}^2p^2$. A dispersion grid supplies energy-sorted
+levels independently at each momentum. An index is not a guaranteed particle
+label through a crossing. Neither a good fit nor a small eigenproblem
+residual proves Lorentz invariance.
+
+\section{Verification and practical limits}
+The tests include the following independent checks.
+\begin{enumerate}
+\item For $D=1,R=0$, $A=B=0$, all boundary corrections vanish, and the direct
+kinetic insertions give
+$2(1+p^2)|\widehat J(p)|^2=\sqrt{1+p^2}$.
+The infinite-line resolvent reproduces this dispersion to floating-point
+precision, with rest gap one. A finite window replaces $\widehat J$ by its
+truncated Fourier integral.
+\item For a coherent background $R=\alpha$ and
+$v=\sqrt2\operatorname{Re}\alpha$, normal ordering and displacement give
+\begin{align}
+ E_{\phi^4}(p)&=\omega_p+6gv^2/\omega_p,\\
+ E_{\mathrm{shG/sG}}(p)&=\omega_p+
+                  [\cosh(\beta v)-1]/(2\omega_p).
+\end{align}
+These are projected tangent energies, even when the coherent background is
+not stationary; they are not the full Bogoliubov spectrum.
+\item Random complex off-diagonal pairs test sesquilinearity, Hermiticity,
+constant-density cancellation, the two kinetic backends, and the zero-mode
+and shifted environment equations.
+\item A separate reference constructs ordinary $2D\times2D$ ket and bra
+matrices and their full Kronecker transfer. It evolves a finite box without
+any Poisson solve or connected subtraction, then subtracts $2BN_{UW}e_O$
+explicitly as in \eqref{eq:box}. Increasing the empty tails recovers the
+connected monomial and kinetic-source matrix elements, at zero and nonzero
+momentum. Thus agreement is not imposed by reusing the environment equations.
+\item Auxiliary unitary gauge transformations leave the spectra invariant;
+Ritz vectors are normalized in the physical metric. Null metric directions,
+invalid controls, and unsuccessful quadrature/ODE solves are exercised.
+\end{enumerate}
+
+The present implementation is a \emph{small-bond reference}:
+one dense transfer factorization costs $O(D^6)$ time and $O(D^4)$ storage;
+a full tangent Hamiltonian needs $O(D^4)$ bilinear observable evaluations.
+A source RHS uses $O(nD^3)$ work and $O(nD^2)$ scratch for $n$ observable
+channels. The dense solver defaults to a guard at $D=16$, which is a guard,
+not a promise of practical performance at that size. Increasing it explicitly
+accepts the cost. The separate reverse-contraction action described below avoids the
+bilinear assembly, but retains dense transfer factors; a fully matrix-free
+transfer backend remains future work.
+
+The source window, ODE tolerances, kinetic node doubling, metric support
+threshold, background optimization, and bond dimension are distinct error
+controls. The environment solves include the auxiliary tails exactly up to
+linear-solver accuracy. Window doubling is a user convergence check, not an
+automatic guarantee. Large momenta require finer ODE resolution and more
+kinetic quadrature nodes. A fixed random small-$D$ state's spectrum is not
+a quantitative interacting-QFT prediction.
+
+Only excitations with the same vacuum on both spatial ends are included.
+Kinks between different broken-symmetry vacua and general multiparticle
+states require a larger ansatz. Thus the returned rest gap is a gap in the
+represented tangent sector; it need not be the smallest mass in every
+superselection sector, nor the minimum energy over all momenta.
+
+
+\section{Reverse contraction: a direct Hamiltonian action}
+The original bilinear calculation needs one evaluation for every pair of
+basis vectors. The additional file \texttt{excitation\_action.jl} instead
+returns a matrix $F_W$ such that
+\begin{equation}
+ H^{\rm exc}_{UW}=\tr(U^\dagger F_W).
+\end{equation}
+This is an analytic reverse contraction of the same four channels, not a
+finite-difference Hessian. Only the ground and ket channels $x_0,x_1$ need
+forward propagation. Backward covectors $a_0,a_1$ multiply the bra-only and
+joint channels respectively. For an empty interval they obey, in reversed
+spatial coordinate,
+\begin{align}
+ \dot a_1&=\LL^*a_1,\\
+ \dot a_0&=(\LL^*+ip)a_0+A_W^{\rm d}(a_1),
+ &A_W^{\rm d}(a)&=aV+R^\dagger aW.
+\end{align}
+The terminal covectors are $(0,\Id)$ on the final observable channel.
+Source edges are transposed using the trace pairing, keeping their complex
+coefficients unchanged. Introduce
+\begin{equation}
+ B^{\rm pull}(a,x)=(aR-Ra)x,\qquad W_\rho=W\rho.
+\end{equation}
+At every observable channel the empty-interval contribution to $F_W$ is
+\begin{equation}
+ B^{\rm pull}(a_0,x_0)+B^{\rm pull}(a_1,x_1)
+           +a_1Wx_0-\tr(a_1x_0)W_\rho.
+ \label{eq:actionbulk}
+\end{equation}
+For a right-source edge from $k$ to $l$, put
+$P=a_0^{(l)}x_0^{(k)}+a_1^{(l)}x_1^{(k)}$. Its bra replacement contributes
+$P$ for $c=R$, and
+\begin{equation}
+ Q^\dagger P-PQ^\dagger-RPR^\dagger+RR^\dagger P+ipP
+\end{equation}
+for $c=[Q,R]$, multiplied by the original edge coefficient and smearing
+kernel. This expression follows by moving $U^\dagger$ to the front in
+$\tr(Pc_U^\dagger)$. Left-source replacements already enter the forward ket
+and backward equations.
+
+Both boundaries can also be contracted without a chosen $U$. At the left
+endpoint define
+\begin{align}
+ d&=\GG^{\rm d}a_1,\\
+ e&=(-\LL^*-ip+\PP^*)^{-1}(1-\PP^*)
+                         [a_0+A_W^{\rm d}d],
+\end{align}
+where $\PP^*a=\Id\tr(\rho a)$ and the superscript d denotes the trace dual.
+The initial and final boundary terms in the action are
+\begin{equation}
+ B^{\rm pull}(e,\rho)+B^{\rm pull}(d,r_{10})+dW\rho
+                        +W\GG x_{0,\rm out}.
+ \label{eq:actionbound}
+\end{equation}
+Equations \eqref{eq:actionbulk}--\eqref{eq:actionbound}, integrated using the
+refactor's existing quadrature and source transformation, give the action.
+Small-system tests compare its contraction with arbitrary complex $U$
+against every bilinear source type, both kinetic backends, and both signs
+of complex vertex coefficients.
+
+The kinetic resolvent is differentiated by the same reverse contractions.
+Each forward solve in the two retained channels has a two-channel reverse
+solve using the adjoint Schur factors. Its bra-transfer contribution is
+$z$ times \eqref{eq:actionbulk}, $z=\cos\theta$; the first and second source
+replacements and \eqref{eq:actionbound} complete the derivative.
+The quadratic observable admits the additional infinite-line formula
+\begin{equation}
+ (:\phi^2:)^{\rm exc}=\frac1\pi\int_0^{\pi/2}
+ \ell\left[(S_L+S_R)(1-\cos\theta\,\mathbb L)^{-1}
+                         (S_L+S_R)\bm r\right]d\theta.
+\end{equation}
+Thus its action uses all four source orders, each with one half of the
+existing kinetic-grid weight. This removes a second stiff potential ODE
+in the sinh-Gordon calculation. The remaining vertex source can be evaluated
+by the adaptive ODE. The D=16 quartic research run uses an independently checked
+fourth-order implicit Gauss collocation rule with reused factors. Refining
+the Gauss grid and checking the final Rayleigh quotient with the adaptive
+ODE separate discretization error from the variational error.
+
+For a Z$_2$-symmetric state with $ZRZ=-R$, $ZQZ=Q$ and $Z^2=\Id$,
+physical parity acts on the horizontal matrix as $W\mapsto-ZWZ$.
+Consequently block-diagonal $W$ gives odd physical parity, while off-diagonal
+$W$ gives even parity. In either fixed-parity sector the two vertex matrix
+elements at $\beta$ and $-\beta$ coincide after projection. One vertex
+therefore suffices, with doubled coefficient. This saves work without
+approximating the potential or mixing the parity sectors.
+
+\section{Implicit integration used for the quartic mass calculation}
+The research driver retains the continuum ansatz and discretizes only the
+environment integration. With $x=t|t|$, split $t\in[-\sqrt{L},\sqrt{L}]$
+into an even number $n$ of intervals, so that the origin is an interval
+boundary. The two-stage Gauss coefficients are
+\begin{equation}
+ A=\begin{pmatrix}1/4&1/4-\sqrt{3}/6\\
+                   1/4+\sqrt{3}/6&1/4\end{pmatrix},\qquad
+ b_1=b_2=1/2,\qquad c_{1,2}=1/2\mp\sqrt{3}/6.
+\end{equation}
+For each monomial channel the vectorized equation has the form
+$\dot y=M(t)y+f(t)$, where $M(t)=2|t|L_{\rm mat}$ and $f$ depends on
+previous observable channels and, for the ket, the ground channels.
+The stage slopes solve
+\begin{equation}
+ \sum_j(\delta_{ij}I-h A_{ij}M_i)k_j=M_i y+f_i,
+ \qquad Y_i=y+h\sum_j A_{ij}k_j,\qquad
+ y_+=y+\frac h2(k_1+k_2).
+\end{equation}
+The same $2D^2\times2D^2$ factorization serves every channel and tangent
+vector. Reverse propagation uses its adjoint. The symplectic identity
+$b_iA_{ij}+b_jA_{ji}=b_ib_j$ makes the matched Gauss stages a discrete
+adjoint pair. This preserves the bilinear Hermiticity much more accurately
+than the integration error itself; Hermiticity alone is therefore not a
+convergence test. The research checks compare successive $n$ and the final
+eigenvector's Rayleigh quotient and action against the independent adaptive
+ODE implementation. $L$ is a source integration window, not a finite-volume
+quantization length.
+
+Within either parity block, diagonalize $\rho=U\Lambda U^\dagger$ and set
+$B=U\Lambda^{-1/2}$. Basis matrices $W_{ij}=E_{ij}B^\dagger$ have unit
+physical norm, and a Hamiltonian column is read from $F_{W_{ij}}B$.
+There are $D^2/2$ such directions for balanced auxiliary parity blocks.
+With fixed integration sizes, the present dense implementation has leading
+work $O(nD^6)$ for factorization and full sector assembly. Its retained LU
+factors and two stage matrices occupy approximately $96nD^4$ bytes in
+complex double precision, excluding work arrays. These costs belong to the
+present reference implementation, not to a lower bound on the tangent
+method; iterative eigensolvers and different environment solvers can change
+them substantially.
+
+\paragraph{Quadrature without a factorization cache.}
+The public \texttt{assembly=:action} route instead uses adaptive ODE
+propagation and the same Gauss--Legendre quadrature as the refactored ground
+gradient. For the quartic action, the two saved trajectories contain two
+tangent channels and five monomial channels at $2q+1$ points. Their leading
+storage is therefore $640qD^2$ bytes per concurrent action, not $96nD^4$.
+The shared dense transfer context still retains approximately $96D^4$ bytes.
+With fixed ODE step counts and quadrature orders, full parity-sector
+assembly has an $O(D^5)$ potential contribution and an $O(D^6)$ contribution
+from the present dense kinetic resolvents. Increased stiffness with bond
+dimension can raise the step counts, so these powers provide extrapolations
+rather than guaranteed runtimes.
+
+To remove the fixed-grid integration error from an isolated lowest Ritz
+pair, the research driver recomputes $Hc$ with the adaptive action and
+corrects $c$ using the inverse of the grid Hamiltonian on its higher-mode
+subspace. The grid matrix then serves only as a preconditioner. Each reported
+refined energy is a freshly evaluated continuum Rayleigh quotient; the
+original four-channel bilinear solver supplies a further independent check.
+The eigenvector residual and changes under tolerance, quadrature, and window
+refinement distinguish discretization error from the attainable floating-point
+floor. These numerical tests do not bound the finite-$D$ physical error.
+
+\section{Iterative lowest-eigenvalue calculation}
+The white coordinates above also give an operator that can be passed directly
+to a Hermitian Lanczos solver. If $\mathcal W c$ denotes conversion from
+coordinates to $W$, define
+\begin{equation}
+ \mathsf Hc=\bigl[F_{\mathcal Wc}B\bigr]_{\rm sector}.
+\end{equation}
+An application needs only the reverse environment action, not a Hamiltonian
+column cache. Starting from $W=\Id$ selects the odd sector in the balanced
+Z$_2$ gauge and uses no previously solved excitation. This start is a trial
+vector, not an assertion that the identity tangent is an eigenstate.
+The forward and backward source trajectories are independent; they can be
+computed concurrently, as can the kinetic and potential contributions.
+For every returned vector, the research driver recomputes a fresh action to
+check $\|\mathsf Hc-Ec\|$, then repeats the check with tighter integration.
+This is necessary because roundoff and ODE errors can invalidate a purely
+recursive Lanczos residual estimate.
+
+A more physical zero-momentum initial vector is obtained from
+$\phi(0)|\Psi\rangle$. Apart from its scalar smearing factor, annihilation
+inserts $V=R$ and creation inserts $W=\Id$, so its raw pair is $(R,\Id)$.
+Under the zero-momentum gauge transformation
+$(V,W)\mapsto(V+[Q,X],W+[R,X])$, the left-gauge defect changes by
+$-\mathcal L^\dagger X$. Consequently solve
+\begin{equation}
+ \mathcal L^\dagger X=R+R^\dagger,\qquad
+ \operatorname{tr}(\rho X)=0,
+ \qquad W_\phi=\Id+[R,X].
+\end{equation}
+In an exactly Z$_2$-symmetric state the right-hand side has zero stationary
+expectation, so the projected Poisson solve is well-defined. The resulting
+$V_\phi=R+[Q,X]$ obeys $V_\phi+R^\dagger W_\phi=0$.
+Normalize its white coordinates before iteration. This construction uses
+only the ground state, not an already computed excitation.
+
+For poorly conditioned tangent metrics, the research driver also supports
+full orthogonalization with the actual projected matrix $V^\dagger A$,
+$A=[\mathsf Hv_1,\ldots,\mathsf Hv_k]$. With no preconditioner and before
+restart this builds the same Krylov space as Hermitian Lanczos in exact
+arithmetic. It measures the anti-Hermitian part before diagonalizing the
+Hermitian part of the small projected matrix; it does not replace the
+physical action by a presumed Hermitian recurrence. The residual uses
+$Ay-EVy$, followed at termination by a fresh action on $Vy$.
+Finite ODE and floating-point errors mean that these two residuals need
+not agree. In particular, whitening amplifies errors along small
+eigenvalues of $\rho$; retaining every positive metric direction does not
+guarantee a machine-precision eigenvalue calculation.
+
+At each kinetic quadrature node, the triangular Schur resolvent factor
+is shared by its forward and adjoint solves. At $p=0$ the momentum-shifted
+factor is the same matrix as the unshifted one. Reusing these matrices
+reduces temporary allocations without changing the quadrature or retaining
+a factorization cache over all nodes.
+
+A second variant retains the quadratic excitation matrix $\mathsf K$ but
+never assembles the interacting potential matrix. For
+$\mathsf K=U\operatorname{diag}(\kappa_j)U^\dagger$, use the fixed positive
+preconditioner
+\begin{equation}
+ P^{-1}r=U\operatorname{diag}\!\left(\frac1{\max(1,\kappa_j)}\right)U^\dagger r.
+\end{equation}
+The floor is the reference energy scale $m=1$, not a modification of the
+physical Hamiltonian. A Davidson iteration builds orthonormal columns $V$,
+stores their actions $A=\mathsf HV$, and solves the small Rayleigh--Ritz
+problem $V^\dagger A y=Ey$. With $c=Vy$ and $r=Ay-Ec$, the next direction is
+the twice-orthogonalized vector $-(1-VV^\dagger)P^{-1}r$. At restart the
+lowest few Ritz vectors and their already computed actions are retained.
+The reported energy always uses $\mathsf H$, never $P$.
+
+The preconditioner need not use a converged kinetic quadrature: a low-order
+approximation $\widetilde{\mathsf K}$ can replace $\mathsf K$ in this
+construction after taking its Hermitian part and applying the same positive
+spectral floor. This reduces its setup cost. The full action used for every
+Ritz pair and final residual must still use the accurate kinetic resolvents
+and adaptive potential environments. Thus coarsening the preconditioner
+changes convergence speed, not the eigenproblem being solved. Its low-order
+eigenvalues have no independent physical interpretation.
+
+Near convergence, accumulated action errors can leave a fresh residual
+larger than the stored subspace residual. A bounded residual refresh uses
+$r=\mathsf Hc-Ec$ from a new, more accurate action. Set
+$d\propto(1-cc^\dagger)P^{-1}r$ with $\|d\|=1$, evaluate
+$s=(\mathsf H-E)d$, and choose
+\begin{equation}
+ \alpha=\frac{s^\dagger r}{s^\dagger s},\qquad
+ c_{\rm trial}=\frac{c-\alpha d}{\|c-\alpha d\|}.
+\end{equation}
+This minimizes the linearized residual $\|r-\alpha s\|$ at fixed $E$.
+The nonlinear, normalized eigenvector residual must be recomputed with
+another fresh action; retain a correction only if that measured residual
+decreases. The research check caps the number of trials and also repeats
+the independent bilinear Rayleigh quotient on the retained vector.
+The direction action $\mathsf Hd$ may use the original integration
+tolerances as an inexact proposal, since the accepted vector and its
+residual are always evaluated with the tighter settings. This avoids
+oversolving high-energy trial directions whose coefficient $\alpha$ is tiny.
+
+The first variant is matrix-free with respect to the entire excitation
+Hamiltonian. The preconditioned variant is matrix-free only in the quartic
+part: construction or loading of $\mathsf K$ must be counted separately.
+Both still use the dense transfer context described above. Neither a
+successful D=16 iteration count nor removal of the excitation matrix proves
+a bond-independent Krylov dimension or scalable dense transfer solves.
+
+\subsection{Absolute residual floors and a change of integration accuracy}
+
+Let $U$ contain orthonormal trial vectors and let $A$ contain their computed
+Hamiltonian actions. The projected matrix $T=U^\dagger A$ need not be exactly
+Hermitian because these actions have finite integration accuracy. Write
+\begin{equation}
+ T=T_{\rm h}+S,\qquad
+ T_{\rm h}=\frac{T+T^\dagger}{2},\qquad
+ S=\frac{T-T^\dagger}{2}.
+\end{equation}
+For the normalized lowest eigenvector $q$ of $T_{\rm h}$ with eigenvalue
+$\lambda$, the stored full residual is $r=Aq-\lambda Uq$. Consequently,
+\begin{equation}
+ U^\dagger r=S q,\qquad \|r\|\geq\|S q\|.
+\end{equation}
+These identities hold for the computed actions, up to orthogonality and
+floating-point errors. They do not require the action routine to be exactly
+linear outside this finite collection of trial vectors. In particular,
+a small relative defect $\|T-T^\dagger\|/\|T\|$ does not ensure a small
+absolute residual on the lowest mode. Symmetrizing the projected matrix
+does not remove $S q$ from the full residual.
+
+For the archived $D=48$, $g=2.625$ checkpoint, the 30-vector subspace had
+$\|T\|_{\rm F}=2370.33$ and a relative Frobenius defect
+$1.3174\times10^{-8}$, but $\|S q\|_2=1.2930\times10^{-7}$.
+This contribution alone exceeded the desired $10^{-7}$ stopping threshold.
+It explains why stable Ritz energies cannot certify vector convergence.
+Nor does it identify which individual quadrature or environment dominates
+the integration error; that would require changing those controls separately.
+
+The continuation in \texttt{research/mass\_scan/refine\_mass.jl} therefore
+retains the normalized Ritz vector and the saved positive preconditioner,
+then starts a new Davidson subspace with tighter actions. The kinetic
+quadrature increases from 256 to 512 nodes, the observable quadrature from
+512 to 768, the spatial window from 30 to 40, and the ODE tolerances from
+$(10^{-13},10^{-12})$ to $(10^{-15},10^{-14})$.
+The tangent coordinates and background state are unchanged. Old approximate
+actions are not mixed into the new projected matrix. The final vector must
+still pass a fresh action residual and independent bilinear contractions;
+tighter input tolerances by themselves are not an error certificate.
+All coarse checkpoints and precision handoffs are retained for comparison.
+
+If tight actions on normalized search directions are expensive, the residual
+refresh derived above can also start from a saved, not yet converged tight
+Ritz vector. This is implemented in
+\texttt{research/mass\_scan/refresh\_mass.jl}. Only direction proposals use
+the original integration settings; every normalized candidate uses a new
+tight action and must reduce the measured residual. Final acceptance requires
+the tight residual and independent bilinear checks to pass, irrespective of
+whether the preceding Davidson stage reached its own stopping threshold.
+The preceding subspace is preserved, and the correction attempt is bounded.
+
+The saved action must correspond to the retained coefficients, including when
+the final trial is rejected. The first research implementation accidentally
+captured the outer retained-action variable inside its nested action function.
+A rejected trial could therefore replace the stored action without replacing
+the coefficients or residual. The final file audit detected this mismatch for
+three D48 points. Their independently integrated masses were evaluated on the
+correct retained vectors and were unaffected. The three research drivers now
+use a distinct action binding and verify $h-Ec=r$ before saving. Fresh actions
+on the affected retained vectors are exported in separate verified files; raw
+files and original solver flags are preserved. All twenty D16/D32 saved results
+passed the same vector--action consistency audit without modification.
+
+The original residual target must remain distinct from an explicitly
+provisional mass export. On a fixed $D=48$, $g=2.625$ mode, tightening the
+ODE tolerances further to $(10^{-16},10^{-15})$ changed the action vector by
+$1.5526\times10^{-9}$, whereas its real Rayleigh quotient changed by only
+$1.4121\times10^{-12}$. The residual norms before and after this change were
+$2.4439\times10^{-7}$ and $2.4451\times10^{-7}$. For two computed actions,
+\begin{equation}
+ \delta E=\operatorname{Re}(c^\dagger\delta h),\qquad
+ |\delta E|\leq\|\delta h\|\quad(\|c\|=1).
+\end{equation}
+Small scalar changes can therefore coexist with substantially larger action
+changes. Both actions here correspond to exactly the same retained coefficients.
+An earlier comparison against the incorrectly saved rejected-trial action gave
+$3.7942\times10^{-7}$ and was invalid. The corrected experiment does not establish
+an ODE precision floor near $10^{-7}$; the bounded mode calculations simply
+ended above their requested residual target. This single tolerance comparison
+also does not constitute a rigorous bound on every source of operator error.
+The D48 plot exports explicitly preserve any failed $10^{-7}$ residual flag.
+Their provisional inclusion requires residual at most $10^{-6}$, unit
+normalization and parity checks, and independent scalar contractions agreeing
+within $10^{-7}$. These are qualified mass estimates, not a declaration that
+the stricter eigensolver threshold was reached. Ground-state optimization
+bias and finite-bond effects remain separate from these numerical checks.
+
+\section{Near-critical signed energies and a direct stability check}
+
+For an approximate symmetric vacuum, the lowest odd tangent energy can be
+negative even after the numerical eigenproblem is converged. Such a value
+is not a positive particle mass, and taking its absolute value has no
+justification. A small numerical residual controls the projected eigenproblem,
+not the accuracy or unrestricted stability of the variational background.
+
+A separate energy-density test probes the background along the computed
+horizontal mode. For $W_\theta=e^{i\theta}W$, define the Hermitian matrix
+\begin{equation}
+ \delta K_\theta=\frac{i}{2}(W_\theta^\dagger R-R^\dagger W_\theta),\qquad
+ R_\epsilon=R+\epsilon W_\theta,\quad
+ K_\epsilon=K+\epsilon\delta K_\theta.
+\end{equation}
+Reconstructing $Q_\epsilon=-iK_\epsilon-R_\epsilon^\dagger R_\epsilon/2$
+preserves left normalization exactly and gives
+$\partial_\epsilon Q_\epsilon|_0=-R^\dagger W_\theta=V_\theta$.
+The stationary density matrix must be recomputed at every displacement.
+For an exactly symmetric background and an odd physical tangent, field
+parity maps $\epsilon$ to $-\epsilon$; the even Hamiltonian therefore has
+$e(\epsilon,\theta)=e(-\epsilon,\theta)$. The finite-displacement quantity
+\begin{equation}
+ \kappa_\theta(\epsilon)=
+ \frac{e(\epsilon,\theta)-e(0)}{\epsilon^2}
+\end{equation}
+tests energy lowering when its sign persists as $\epsilon$ decreases and
+under independent integration checks. This is an additional variational
+diagnostic, not a replacement for the tangent Hamiltonian: the energy-density
+Hessian can contain anomalous pair terms and background-gradient contributions.
+An energy-lowering displacement outside the imposed symmetric parameter
+manifold establishes an instability of that saved state, not a precise
+infinite-bond critical coupling.
+
+\begin{thebibliography}{9}
+\bibitem{haegeman} J. Haegeman, J. I. Cirac, T. J. Osborne, and F. Verstraete,
+\emph{Calculus of continuous matrix product states}, Phys. Rev. B 88, 085118
+(2013), \href{https://arxiv.org/abs/1211.3935}{arXiv:1211.3935}.
+\bibitem{draxler} D. Draxler, J. Haegeman, T. J. Osborne, V. Stojevic,
+L. Vanderstraeten, and F. Verstraete,
+\emph{Particles, holes and solitons: a matrix product state approach},
+Phys. Rev. Lett. 111, 020402 (2013),
+\href{https://arxiv.org/abs/1212.1114}{arXiv:1212.1114}.
+\bibitem{vanderstraeten} L. Vanderstraeten, J. Haegeman, and F. Verstraete,
+\emph{Tangent-space methods for uniform matrix product states},
+SciPost Phys. Lect. Notes 7 (2019),
+\href{https://scipost.org/10.21468/SciPostPhysLectNotes.7}{doi:10.21468/SciPostPhysLectNotes.7}.
+\bibitem{tilloy} A. Tilloy,
+\emph{Relativistic continuous matrix product states for quantum fields without cutoff},
+Phys. Rev. D 104, 096007 (2021),
+\href{https://arxiv.org/abs/2102.07741}{arXiv:2102.07741}.
+\end{thebibliography}
+\end{document}

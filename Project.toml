@@ -1,27 +1,26 @@
 name = "RcmpsCore"
 uuid = "dc2d0369-e811-4a76-a451-968b98ba0a85"
-authors = ["Antoine Tilloy <antoine.tilloy@gmail.com> and contributors"]
-version = "0.1.0"
+authors = ["Antoine Tilloy and contributors"]
+version = "0.2.0"
 
 [deps]
-Distributed = "8ba89e20-285c-5b6f-9357-94700520ee1b"
-JLD = "4138dd39-2aa7-5051-a626-17a0bb65d9c8"
+JLD2 = "033835bb-8acc-5ee8-8aae-3f567f8a3819"
 KrylovKit = "0b1a1467-8014-51b9-945f-bf0ae24f4b77"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
-LinearMaps = "7a12625a-238d-50fd-b39a-03d52299707e"
-Octavian = "6fd5a793-0b7e-452c-907f-f8bfe9c57db4"
 OptimKit = "77e91f04-9b3b-57a6-a776-40b61faaebe0"
-OrdinaryDiffEq = "1dea7af3-3e70-54e6-95c3-0bf5283fa5ed"
-Parameters = "d96e819e-fc66-5662-9728-84c9c7592b0a"
-Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
-ProgressMeter = "92933f4c-e287-5a05-a399-4b506db050ca"
+OrdinaryDiffEqVerner = "79d7bb75-1356-48c1-b8c0-6832512096c2"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
-Revise = "295af30f-e4ad-537b-8983-00126c2a3abe"
+SciMLBase = "0bca4576-84f4-4d90-8ffe-ffa030f20462"
 SpecialFunctions = "276daf66-3868-5448-9aa4-cd146d93841b"
 
 [compat]
-OptimKit = "0.4.0"
-julia = "1.6"
+julia = "1.10"
+JLD2 = "0.6"
+KrylovKit = "0.10"
+OptimKit = "0.5"
+OrdinaryDiffEqVerner = "2"
+SciMLBase = "3"
+SpecialFunctions = "2"
 
 [extras]
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"

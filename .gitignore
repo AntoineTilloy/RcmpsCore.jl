@@ -1,1 +1,12 @@
 /Manifest.toml
+examples/output/
+benchmark/Manifest.toml
+__pycache__/
+*.pyc
+docs/*.aux
+docs/*.log
+docs/*.out
+docs/*.pdf
+docs/*.fls
+docs/*.fdb_latexmk
+docs/*.synctex.gz

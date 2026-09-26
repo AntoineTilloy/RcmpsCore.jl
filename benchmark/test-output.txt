@@ -1,0 +1,24 @@
+Precompiling packages...
+   3159.9 ms  ✓ RcmpsCore
+  1 dependency successfully precompiled in 4 seconds. 132 already precompiled.
+┌ Warning: GMRES linsolve stopped without converging after 1 iterations:
+│ * norm of residual = 2.29e+00
+│ * number of operations = 4
+└ @ KrylovKit /tmp/rcmps-depot/packages/KrylovKit/bEE7W/src/linsolve/gmres.jl:136
+┌ Warning: Verbosity toggle: max_iters 
+│  Interrupted. Larger maxiters is needed. If you are using an integrator for non-stiff ODEs or an automatic switching algorithm (the default), you may want to consider using a method for stiff equations. See the solver pages for more details (e.g. https://docs.sciml.ai/DiffEqDocs/stable/solvers/ode_solve/#Stiff-Problems).
+└ @ DiffEqBase /tmp/rcmps-depot/packages/DiffEqBase/wagoT/src/check_error.jl:37
+Test Summary:                | Pass  Total   Time
+Canonical state and transfer |   15     15  12.4s
+Test Summary:                                        | Pass  Total  Time
+CPTP stationary solver and boundary Poisson equation |   28     28  1.9s
+Test Summary:                                      | Pass  Total  Time
+Source, quadrature and coherent-state exact values |   11     11  8.8s
+Test Summary:                                    | Pass  Total  Time
+Independent finite differences of every gradient |   27     27  6.3s
+Test Summary:            | Pass  Total  Time
+Storage and optimization |   12     12  8.0s
+Test Summary:                                   | Pass  Total  Time
+Convergence controls and concurrent evaluations |    7      7  2.5s
+Test Summary:                     | Pass  Total  Time
+Line search rejects failed trials |    5      5  0.8s
