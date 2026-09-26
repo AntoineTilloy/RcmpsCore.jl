@@ -10,3 +10,11 @@ docs/*.pdf
 docs/*.fls
 docs/*.fdb_latexmk
 docs/*.synctex.gz
+.vscode/
+/benchmark/atlas_blas/
+/benchmark/blas_comparison/
+/benchmark/converged/
+/benchmark/d32_optimization/
+/benchmark/d64_50/
+/benchmark/large_scaling/
+/benchmark/threading/

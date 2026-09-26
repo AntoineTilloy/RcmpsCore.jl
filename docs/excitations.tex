@@ -13,7 +13,7 @@
 \newcommand{\comm}[2]{[#1,#2]}
 \title{Momentum-resolved tangent excitations of RCMPS\\
 Connected environments and a reference implementation}
-\author{RcmpsCore refactor implementation notes}
+\author{RcmpsCore 0.2 implementation notes}
 \date{September 2026}
 \begin{document}
 \maketitle
@@ -25,7 +25,7 @@ product state (RCMPS). Four auxiliary channels account for zero, ket, bra, and
 joint tangent insertions. Momentum-shifted Poisson equations supply the
 infinite-line boundaries, and a rank-one subtraction removes the extensive
 vacuum contribution before numerical integration. The normal-ordered source
-ODEs and kinetic resolvent quadrature of the refactored ground-state code lift
+ODEs and kinetic resolvent quadrature of the RcmpsCore 0.2 ground-state code lift
 to these channels without a spatial lattice cutoff. We give the additional
 kinetic insertion, the physical tangent metric, verification identities, and
 limitations of the small-bond dense eigensolver.
@@ -38,7 +38,7 @@ The relativistic change of physical modes, normal ordering, and the mass-one
 Hamiltonian used here follow \cite{tilloy}. Its discussion of excitation
 spectra motivates the calculation but does not provide the RCMPS environments
 implemented below. The four-channel connected construction and its extension
-to the refactored source and resolvent engines are derived explicitly here.
+to the RcmpsCore 0.2 source and resolvent engines are derived explicitly here.
 
 We assume a translation-invariant left-canonical state with
 \begin{align}
@@ -188,7 +188,7 @@ Using $\tr A=\tr B=0$, the left zero functional of $\mathbb L$ has the form
  \label{eq:left}
 \end{equation}
 Thus $\ell\mathbb L=0$ and $\ell(\bm r)=0$. This is the same adjoint Poisson
-equation used by the refactored \texttt{boundary\_environment}, now with a
+equation used by the RcmpsCore 0.2 \texttt{boundary\_environment}, now with a
 generally non-Hermitian right-hand side. Do not Hermitize $h_{UW}$ for
 an off-diagonal matrix element.
 
@@ -259,7 +259,7 @@ For $:\phi^n:$ use channels $\bm X^{(0)},\ldots,\bm X^{(n)}$ with
        +k[2|t|J(t^2)](S_L+S_R)\bm X^{(k-1)}.
 \end{equation}
 Initialize only $\bm X^{(0)}=\bm r$ and contract the last channel with $\ell$.
-This is exactly the refactor's \texttt{Observable}/\texttt{Edge} graph with
+This is exactly the RcmpsCore 0.2 \texttt{Observable}/\texttt{Edge} graph with
 four tangent channels attached to each original observable channel.
 The $x=t|t|$ transformation removes the integrable kernel singularity at
 zero; an ODE stop at zero handles its remaining nonsmoothness.
@@ -280,7 +280,7 @@ momentum shifts together. The pure gauge pair gives
 $c_W=[X,[Q,R]]$, which is a useful covariance check. Omitting $-ipW$
 would already miss the $p^2$ term for a free-vacuum excitation.
 
-The refactor's four-channel kinetic \emph{observable} graph, with two
+The RcmpsCore 0.2 four-channel kinetic \emph{observable} graph, with two
 $\sqrt2J$ sources, can be used directly with \eqref{eq:sources}. This is the
 finite-source-window ODE backend. For an infinite-line calculation,
 integrate the convolution first:
@@ -313,7 +313,7 @@ $\bm Y=(1-z\mathbb L)^{-1}\bm B$, solve consecutively
  Y_{11}&=(1-z\LL)^{-1}\bigl[B_{11}+z\{A_W(Y_{01})+B_U(Y_{10})
                          +C_{UW}(Y_{00})-N_{UW}Y_{00}\}\bigr].
 \end{align}
-A single Schur factorization of the refactored transfer matrix supplies all
+A single Schur factorization of the transfer matrix supplies all
 four solves at every quadrature node. Defective transfer matrices do not
 require an eigenvector inverse. This backend has no smearing-window error
 for the kinetic energy; potential terms still use a finite source window.
@@ -481,7 +481,7 @@ The initial and final boundary terms in the action are
  \label{eq:actionbound}
 \end{equation}
 Equations \eqref{eq:actionbulk}--\eqref{eq:actionbound}, integrated using the
-refactor's existing quadrature and source transformation, give the action.
+existing ground-state quadrature and source transformation, give the action.
 Small-system tests compare its contraction with arbitrary complex $U$
 against every bilinear source type, both kinetic backends, and both signs
 of complex vertex coefficients.
@@ -556,7 +556,7 @@ them substantially.
 
 \paragraph{Quadrature without a factorization cache.}
 The public \texttt{assembly=:action} route instead uses adaptive ODE
-propagation and the same Gauss--Legendre quadrature as the refactored ground
+propagation and the same Gauss--Legendre quadrature as the RcmpsCore 0.2 ground-state
 gradient. For the quartic action, the two saved trajectories contain two
 tangent channels and five monomial channels at $2q+1$ points. Their leading
 storage is therefore $640qD^2$ bytes per concurrent action, not $96nD^4$.
@@ -711,7 +711,8 @@ It explains why stable Ritz energies cannot certify vector convergence.
 Nor does it identify which individual quadrature or environment dominates
 the integration error; that would require changing those controls separately.
 
-The continuation in \texttt{research/mass\_scan/refine\_mass.jl} therefore
+The continuation in \texttt{research/mass\_scan/refine\_mass.jl} of the
+companion research repository rcmps-phi4-z2 therefore
 retains the normalized Ritz vector and the saved positive preconditioner,
 then starts a new Davidson subspace with tighter actions. The kinetic
 quadrature increases from 256 to 512 nodes, the observable quadrature from
@@ -726,7 +727,8 @@ All coarse checkpoints and precision handoffs are retained for comparison.
 If tight actions on normalized search directions are expensive, the residual
 refresh derived above can also start from a saved, not yet converged tight
 Ritz vector. This is implemented in
-\texttt{research/mass\_scan/refresh\_mass.jl}. Only direction proposals use
+\texttt{research/mass\_scan/refresh\_mass.jl}, also in rcmps-phi4-z2.
+Only direction proposals use
 the original integration settings; every normalized candidate uses a new
 tight action and must reduce the measured residual. Final acceptance requires
 the tight residual and independent bilinear checks to pass, irrespective of

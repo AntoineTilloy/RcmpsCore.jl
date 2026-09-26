@@ -1,6 +1,6 @@
 # From the repository root:
 # JULIA_LOAD_PATH='@:@stdlib' julia --startup-file=no --threads=4 --project=. examples/excitations.jl
-# Optional first argument: a refactor .jld2 state with matching model metadata.
+# Optional first argument: a .jld2 state saved by rcmps_store, with matching model metadata.
 # Optional second argument: number of retained branches (default 1).
 # Loaded states use the iterative solver (odd sector for Z2 states) and the
 # state's integration settings; set a converged window, n_quad and tolerances first.

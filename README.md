@@ -1,51 +1,187 @@
-# RcmpsCore 0.2 — independent refactor
+# RcmpsCore.jl
 
-A CPU Julia implementation of single-field relativistic continuous matrix product
-states, in the mass-one convention. This folder is a standalone package with the
-same name and UUID as the original. The original source and data are preserved.
+RcmpsCore.jl is a CPU Julia implementation of relativistic continuous matrix
+product states (RCMPS) for a single scalar field in 1+1 dimensions, with
+Hamiltonians normal ordered at mass one. It optimizes translation-invariant
+ground states and computes tangent-space excitations at fixed momentum.
+The models are φ⁴ (`fg_phi4`), sinh-Gordon and sine-Gordon (`fg_sgordon` with
+real or imaginary β) and the modified-mass φ⁴ objective (`fg_phi4_massmod`),
+named `:phi4`, `:shg`, `:sg` and `:phi4_m` by `ExcitationModel`. `fg_phi4(s, g)`
+is the energy density of H_free(m=1) + g ∫ dx :φ⁴: (no 1/4!); the sinh-Gordon
+and sine-Gordon Hamiltonians are given in [docs/excitations.tex](docs/excitations.tex).
+This is version 0.2, an independent rewrite with the same name and UUID; the
+original implementation is frozen as tag `v0.1.0`.
 
-The first change is mathematical: **every observable gradient differentiates the
-stationary initial state**, using one adjoint Poisson solve. The old finite-window
-bulk gradient omits this contribution, which can remain large at a small transfer
-gap. See [the derivation](docs/boundary-gradient.md) and [measured results](docs/benchmarks.md).
+## Installation
 
-## Run
+The package is not registered. Add it by URL, or clone the repository and run
+`julia --project=. -e 'using Pkg; Pkg.instantiate()'` in the checkout:
 
-From the repository root:
-
-```sh
-JULIA_LOAD_PATH='@:@stdlib' julia --project=refactor -e 'using Pkg; Pkg.instantiate(); Pkg.test()'
-JULIA_LOAD_PATH='@:@stdlib' julia --project=refactor refactor/examples/phi4.jl
+```julia
+using Pkg
+Pkg.add(url="https://gitlab.inria.fr/atilloy/RcmpsCore.jl.git")
+# legacy implementation: Pkg.add(url="https://gitlab.inria.fr/atilloy/RcmpsCore.jl.git", rev="v0.1.0")
 ```
 
-Your current global `JULIA_LOAD_PATH` puts `/home/antoine/Projects/` before the
-active environment. The explicit setting above is essential on this machine:
-otherwise `using RcmpsCore` loads the original package despite `--project=refactor`.
-After extracting this directory elsewhere, use `--project=.` instead.
+`Project.toml` requires Julia 1.10 or later and bounds JLD2 (0.6), KrylovKit
+(0.10), OptimKit (0.5), OrdinaryDiffEqVerner (2), SciMLBase (3) and
+SpecialFunctions (2). Validation used Julia 1.12.7 with the dependency versions
+recorded in `benchmark/environment.txt`; other Julia versions have not been
+tested. No `Manifest.toml` is committed, so dependencies resolve to current
+releases within these bounds.
 
-Julia 1.12.7 and the versions in `Manifest.toml` were used for validation. The
-project allows Julia 1.10+, subject to dependency compatibility; other Julia
-versions have not been validated here. The manifest records the resolved current
-releases; it does not reuse the original project's pins or modified OptimKit.
+The v0.1.0 `Project.toml` bounds only OptimKit (0.4) and Julia, and 0.1 was
+developed with a modified OptimKit. A fresh install of the tag resolves
+OrdinaryDiffEq to current releases, which require SciMLBase 3, and the 0.1 sources
+use saved-state indexing that SciMLBase 3 no longer supports. `benchmark/legacy.jl`
+runs the tagged sources in the `benchmark` environment with the required import
+and indexing changes.
+
+Troubleshooting: a directory listed in `JULIA_LOAD_PATH` ahead of the active project
+(`@`) that contains another RcmpsCore.jl checkout takes precedence over the active
+project, and `using RcmpsCore` loads that copy; `JULIA_LOAD_PATH='@:@stdlib'` avoids this.
+
+## Quick start
 
 ```julia
 using RcmpsCore
 s = RandomState(8; seed=42, scaling=0.2)
-s.model_param.name = "phi4"
+s.model_param.name = "phi4"          # "phi4", "phi4_m", "shg" or "sg"
 s.model_param.coupling = 2.0
 energy, gradient = fg_phi4(s, 2.0)
 energy_only = fg_phi4(s, 2.0; gradient=false)
 result = optimize_state(s; method="LBFGS", n_iter=100, diagnostics=true)
+result.converged                     # whether gradtol was reached within n_iter
 rcmps_store(result.state, "result.jld2")
+t = rcmps_load("result.jld2")        # recomputes and checks rho
 ```
 
-`metric(s, gradient, W)` gives the directional derivative along the canonical
-retraction. `vertex(s,beta)` returns a complex value and the gradient of its
-**real part**. This convention handles real and imaginary beta consistently.
+States are left canonical, Q = -iK - R†R/2; a tangent W changes R by W and Q by
+-R†W. `metric(s, gradient, W)` is the directional derivative along the canonical
+retraction, for the metric 2 Re tr(W₁(ρ+ε)W₂†), ε = `s.manifold_param.metric_reg`
+(default 1e-3). `vertex(s, beta)` returns a complex value and the gradient of its
+**real part**; this convention handles real and imaginary beta consistently.
+Treat `s.R`, `s.K`, `s.Q` and `s.ρ0` as read-only: rebuild with `State(R,K)` or
+use `retraction` to update them together, and do not mutate settings while
+evaluations are running.
 
-## Structure
+## Tangent-space excitations
 
-| File | Responsibility |
+The momentum-p tangent ansatz |Φ_p(W)⟩ replaces one (Q, R) pair by (V, W), with
+V = -R†W (left gauge), and integrates against e^{ipx}. Its physical metric is
+⟨Φ_p(U)|Φ_q(W)⟩ = 2πδ(p-q) tr(WρU†) (`tangent_metric(s, U, W)`, no optimizer
+regularizer). The routines diagonalize ⟨Φ_p(U)|(H-E₀)|Φ_p(W)⟩ per 2πδ(0), with the
+extensive ground contribution subtracted analytically. `mass_gap(s)` keeps its 0.1
+meaning, the transfer gap (also `transfer_gap(s)`); `mass_gap(s, model)` is the
+Hamiltonian gap. Dense reference for an optimized ground state `s`, D≤16 by default:
+
+```julia
+model = ExcitationModel(:phi4, 2.0) # same coefficients as fg_phi4(s, 2.0)
+levels = excitation_spectrum(s, 0.5; model, nev=2, assembly=:action)
+gap = excitation_gap(s; model, assembly=:action) # lowest represented energy at p=0
+dispersion = dispersion_relation(s, [-1.0, -0.5, 0.0, 0.5, 1.0]; model, assembly=:action)
+check = relativistic_diagnostics(dispersion) # E(p)^2-p^2 and a fit of E(p)^2
+```
+
+Iterative solver without an assembled matrix (the D=16–64 mass-scan pipeline), D≤64 by default:
+
+```julia
+s.integrator_param.max_point = 30.0; s.integrator_param.n_quad = 512
+s.integrator_param.atol = 1e-13;     s.integrator_param.rtol = 1e-12
+r = excitation_eigsolve(s, 0.0; model)  # sector=:auto: :odd for a Z2 state, :all otherwise
+r.validated_energies[1]  # refined bilinear energy; r.validation[1] has all checks
+gap = excitation_gap(s; model, solver=:iterative)
+dispersion = dispersion_relation(s, 0:0.25:1; model, solver=:iterative)
+```
+
+The dense routines check Hermiticity before symmetrization. `excitation_eigsolve`
+validates each level with fresh actions at standard and refined settings and two
+independent bilinear energies; it is `accepted` when the four energies agree and
+their imaginary parts vanish within `validation_tol=1e-7`, and the fresh residuals
+are at most `acceptance_residual=1e-5`. With `solver=:iterative`, `excitation_gap`
+and `dispersion_relation` (by default, `strict=true`) throw `SolverFailure` for
+levels that are not accepted.
+These checks are consistency measurements, not error bounds.
+The lowest p=0 level is the rest gap **within the same-vacuum tangent sector**:
+kinks between different vacua and multiparticle states are not covered. The
+input is not certified to be a converged ground state; negative levels remain
+visible. Branches are sorted independently at each momentum. See
+[docs/excitations.md](docs/excitations.md) for details and
+[docs/excitations.tex](docs/excitations.tex) for the derivation.
+
+## Numerical settings
+
+Check three errors separately: increase the physical half-window `max_point` (default
+20.0) and the Gauss nodes per half `n_quad` (default 128) of `s.integrator_param`, and
+tighten its ODE tolerances `atol`, `rtol` (defaults 1e-11, 1e-10). The boundary correction
+does not replace these checks. See [docs/numerics.md](docs/numerics.md) for solvers,
+failure handling, threads and kinetic backends.
+
+## Changes from 0.1 and migration
+
+Every observable gradient now differentiates the stationary initial state,
+using one adjoint Poisson solve; the 0.1 finite-window bulk gradient omits this
+contribution, which can remain large at a small transfer gap. See
+[the derivation](docs/boundary-gradient.md) and [measured results](docs/benchmarks.md).
+All 34 names exported by 0.1 are still exported:
+
+| Status | Names | Change |
+|---|---|---|
+| kept | `lindblad`, `lindblad_adjoint`, `lindblad!`, `lindblad_adjoint!`, `jsource`, `robust_inv`, `entanglement_entropy`, `metric`, `precondition`, `retraction`, `naive_transport!`, `finalize!`, `ls_lenient` | same formulas and parameters; `lindblad!` and `lindblad_adjoint!` take an optional scratch matrix instead of state buffers |
+| kept | `get_ρ0`, `mass_gap(s)` | same quantities; CPTP Arnoldi for ρ; full spectrum at D≤16, checked Arnoldi above |
+| changed | `State`, `RandomState`, `RandomStateZ2` | `ComplexF64` only; no cached adjoints, commutators or buffers; a supplied `ρ0` is checked; `e0` starts as `NaN`; see the list below |
+| changed | `copy_param!` | deep-copies the settings; copies `info` but no longer `e0` |
+| changed | `vertex`, `phi_monomial`, `kinetic1`, `kinetic2`, `fg_phi4`, `fg_sgordon` | gradients include the stationary-state derivative; keywords `gradient`, `parallel`, `kinetic_backend`; threads replace `Distributed` workers |
+| changed | `optimize_state` | defaults `method="LBFGS"` (was `"GD"`), `mlbfgs=20` (100), `verbosity=2` (3), `ls=ls_default` (`ls_lenient`), `retract=retraction` (`retraction_regulated`, now an alias), `massmod=1.0` (0.1); `diagnostics=true` returns a named tuple |
+| changed | `generate_T`, `retraction_regulated`, `ls_default`, `ls_backward` | see the list below; `ls_backward` is bounded Armijo backtracking |
+| changed | `rcmps_store`, `rcmps_load`, `get_states`, `get_exact_state` | explicit paths, versioned `.jld2` files; `get_states("data")` (positional directory, default `"data"`) reads only `.jld2` files |
+| newly exported | `IntegratorParameters`, `ModelParameters`, `ManifoldParameters` | defaults `n_quad=128`, `atol=1e-11`, `rtol=1e-10` (were 1000, 1e-13, 1e-11), `metric_reg=1e-3` (1e-2); `maxiters` added |
+| newly exported | `fg_phi4_massmod`, `select_best` | same objective; `select_best` keys on exact couplings |
+| removed | none exported | exp-sinh quadrature, `update_stored_states`, `ls_big_steps`; dependencies `Distributed`, `JLD`, `LinearMaps`, `Octavian`, `Parameters`, `Printf`, `ProgressMeter`, `Revise`; `OrdinaryDiffEq` replaced by `OrdinaryDiffEqVerner`; OptimKit 0.4 (a modified copy in the 0.1 environment) replaced by released OptimKit 0.5; Julia 1.10 or later (was 1.6) |
+| new | ground state: `steady_state`, `boundary_environment`, `transfer_gap`, `SolverFailure`, `SafeguardedLineSearch`, `KineticOptions`, `KineticKrylovOptions`; excitations: `ExcitationModel`, `tangent_metric`, `excitation_environments`, `excitation_matrix_element`, `excitation_hamiltonian`, `excitation_hamiltonian_action`, `excitation_spectrum`, `excitation_gap`, `dispersion_relation`, `relativistic_diagnostics`, `excitation_eigsolve`, `DavidsonOptions`, `TangentCoordinates`, `ExcitationContext`, `excitation_parity`, and the method `mass_gap(s, model)` | see [numerics](docs/numerics.md) and [excitations](docs/excitations.md) |
+
+Deliberate changes:
+
+- `n_quad` counts Gauss nodes per half instead of exp-sinh steps; `min_point` is
+  removed; `max_point` directly specifies the physical window.
+- Random constructors use a local reproducible RNG; odd Z2 dimensions are
+  rejected. `generate_T` follows Julia's column-major vectorization exactly.
+- Invalid model/optimizer names and solver failures raise exceptions.
+- `retraction_regulated` aliases the canonical retraction: step selection belongs
+  to the line search; a nonlinear step cap must not silently change its derivative.
+  The default search bounds parameter excursions in the Wolfe search and falls
+  back to Armijo backtracking when a Wolfe trial fails numerically, exceeds the
+  step bound, or does not satisfy the rechecked Wolfe conditions; failed trials
+  are rejected, preserving the last accepted state and the exact canonical
+  retraction. Approximate Wolfe acceptance allows energy noise up to `1e-10` while
+  explicitly checking the slope conditions; this avoids false failures near
+  convergence.
+- `rcmps_store(s,path)` and `rcmps_load(path)` take explicit paths. New files are
+  `.jld2`, record numerical settings, and recompute rho on load.
+- `get_exact_state` returns `nothing` when no state matches; selection uses actual
+  couplings rather than flooring them into potentially colliding bins.
+
+### Migrating saved states
+
+Reading historical JLD files needs the optional `benchmark/` environment. A fresh
+clone has no `benchmark/Manifest.toml` and RcmpsCore is unregistered, so prepare
+it once from the repository root (network access is needed the first time):
+
+```sh
+julia --project=benchmark -e 'using Pkg; Pkg.develop(path="."); Pkg.instantiate()'
+julia --project=benchmark examples/migrate_legacy.jl benchmark/legacy_states/phi4_g2.0_D2_.jld examples/output/migrated.jld2
+```
+
+The script preserves R, K and model metadata, recomputes energy and gradient, and
+refuses to overwrite an existing destination (`examples/output/` is gitignored).
+Historical `phi4_m` files did not store the modified mass; the script refuses to
+run on them without a third argument giving the mass originally used (the 0.1
+default of `optimize_state` was 0.1). Other models are recomputed with
+`massmod=1.0`, which they do not use.
+
+## Repository layout
+
+| Path | Contents |
 |---|---|
 | `src/state.jl` | Validated canonical states, typed settings, deterministic local RNG |
 | `src/transfer.jl` | Lindblad actions, CPTP steady states, boundary solve, entropy and transfer gap |
@@ -57,310 +193,65 @@ retraction. `vertex(s,beta)` returns a complex value and the gradient of its
 | `src/excitation_eigsolve.jl` | Parity sectors, white coordinates, preconditioned iterative excitation solver |
 | `src/optimization.jl` | Metric, retraction, released OptimKit integration, bounded Armijo search |
 | `src/storage.jl` | Versioned JLD2 schema, atomic writes, loading and selection |
-| `research/` | Independent dense Python derivation check and plotting |
-| `benchmark/` | Reproducible Julia comparisons, raw CSV results, original-code adapter |
+| `test/` | `runtests.jl` and the kinetic and excitation test files it includes |
+| `test/fixtures/` | Captured D=48 Davidson residual history (stall-rule test); D=16, g=2 Z₂ φ⁴ ground state (mass regression) |
+| `docs/` | Boundary-gradient derivation, benchmark report, excitation guide and derivation, numerics guide |
+| `examples/` | `phi4.jl`, `excitations.jl` (free dispersion or a saved state), `migrate_legacy.jl` |
+| `benchmark/` | Validation, comparison and scaling scripts, the dense Python derivation check `boundary_reference.py`, recorded tables and reports, the 0.1 adapter `legacy.jl`, its own `Project.toml` |
+| `benchmark/legacy_states/` | Four 0.1 JLD states read by the saved-state, scaling and migration scripts |
 
-Matrices use `ComplexF64`. Scratch matrices are owned by individual evaluations,
-not by the state. The ODE stores channels as `D × D × n`, so each matrix slice is
-contiguous; the warmed RHS allocates zero bytes. Values-only calls skip adjoints
-and gradient quadrature. Energy sums share a quadrature grid and combine their
-boundary contributions before one Poisson solve. No distributed workers or
-forced garbage collection are required.
-
-## Numerical controls and checks
-
-```julia
-s.integrator_param.max_point = 20.0 # physical half-window, bare mass = 1
-s.integrator_param.n_quad = 128     # Gauss nodes PER HALF in x=t|t|
-s.integrator_param.atol = 1e-11
-s.integrator_param.rtol = 1e-10
-s.manifold_param.metric_reg = 1e-3
-```
-
-Check three errors separately: increase the physical window, increase `n_quad`,
-and tighten the ODE tolerances. The boundary correction removes the omitted
-stationary-state derivative; it does not replace these convergence checks.
-The source transformation has an explicit finite limit at zero and needs no
-arbitrary lower cutoff.
-
-`steady_state(s)` returns the state, physical residual, solver method, and number
-of map applications. It uses the CPTP construction of
-[Beugnot, Gregory, Robin and Tilloy](https://arxiv.org/abs/2608.30860), with a cached
-Schur no-jump inverse. Density matrices are checked for trace, Hermiticity,
-positivity and stationarity. Unsuccessful ODE/Krylov solves throw `SolverFailure`.
-A stalled boundary solve at D≤16 gets one dense fallback, checked against the
-same physical equation. No eigenvalue clipping or unbounded power-method
-fallback masks an error.
-
-The stationary state is assumed unique. D≤8 additionally receives a dense
-uniqueness check; `steady_state(s; method=:dense)` is a reference for small systems.
-For larger D a residual does not prove uniqueness or a small forward error.
-`mass_gap` uses full spectra at D≤16 by default and checked Arnoldi beyond that;
-it may fail to converge for difficult large systems. CPU timings and Krylov
-iteration counts depend on the state and BLAS configuration. GPU execution and
-arbitrary precision are outside this implementation's scope.
-
-## Hamiltonian excitations
-
-The one-argument `mass_gap(s)` retains its historical meaning: the **transfer
-gap**, now also named `transfer_gap(s)`. For a Hamiltonian rest gap and dispersion,
-use the new complex tangent-space calculation:
-
-```julia
-model = ExcitationModel(:phi4, 2.0) # same coefficients as fg_phi4(s, 2.0)
-# s should be an optimized ground state for this model.
-levels = excitation_spectrum(s, 0.5; model, nev=2, assembly=:action)
-gap = excitation_gap(s; model, assembly=:action) # lowest represented energy at p=0
-gap = mass_gap(s, model)           # explicit-model overload, same calculation
-dispersion = dispersion_relation(s, [-1.0, -0.5, 0.0, 0.5, 1.0]; model)
-check = relativistic_diagnostics(dispersion)
-# check.invariant_mass_squared: E(p)^2-p^2
-# check.c_squared: slope of the least-squares fit E(p)^2 = a+c_squared*p^2
-```
-
-`ExcitationModel(s)` reads the state's model metadata by default. Explicit models
-support `:phi4`, `:shg`, `:sg`, and `:phi4_m` (with `massmod`), sharing the ground
-objectives' term definitions. The modified-mass objective uses rescaled energy
-units; convert those before applying a speed-one dispersion check (or set
-`target_speed` in `relativistic_diagnostics`). Since state metadata does not
-store `massmod`, that model requires `ExcitationModel(s; massmod=...)` explicitly.
-
-The calculation uses `V=-R'W`, the physical complex norm `tr(W*rho*U')`,
-momentum-shifted single-insertion environments, a connected double-insertion
-environment, and an adjoint environment for the right tail. It subtracts the
-extensive ground contribution analytically. Kinetic terms default to an
-infinite-line resolvent quadrature; `kinetic_backend=:ode` provides a separate
-finite-window evaluation using the same source graphs as the ground observables.
-Potential terms use `s.integrator_param.max_point` and the ODE tolerances;
-`n_quad` is not used for these values-only excitation ODEs. Increase the source
-window and tighten tolerances independently to check convergence.
-
-This is a **small-bond dense reference implementation**. It builds all complex
-matrix elements, checks Hermiticity before symmetrization, and returns normalized
-`vectors`, finite-matrix `residuals`, `metric_rank`, and
-`discarded_metric_weight`. Assembly needs O(D⁴) observable evaluations, with
-O(D⁶) dense transfer factorization. The default D≤16 guard can be changed with
-`max_bond`; it is not a runtime guarantee. `excitation_hamiltonian_action(s,p,W)`
-avoids the O(D⁴) bilinear evaluations by contracting the bra tangent analytically;
-it returns `F` such that `dot(U,F)` is the excitation matrix element. It still uses
-dense D² transfer factorizations, and potential actions also require convergence
-of `n_quad`. Use `assembly=:action` in `excitation_spectrum`, `excitation_gap`, or
-`dispersion_relation` to assemble the matrix from these actions. This uses the
-same adaptive ODE and Gauss quadrature strategy as the ground-state gradient;
-it stores trajectories, not a dense LU factor at every integration point.
-The default `assembly=:bilinear` retains the independent reference calculation.
-Actions accept `parallel=:trajectories` for concurrent forward/backward ODEs,
-`:terms` for concurrent Hamiltonian terms, and `:both` for both levels. This
-also provides parallel work inside an iterative eigensolver's sequential
-Hamiltonian calls.
-No optimizer metric regularizer enters
-the calculation; `metric_tol` controls the resolved density-matrix support.
-
-### Large bond dimension: iterative solver
-
-`excitation_eigsolve` computes the lowest levels without assembling a matrix. It
-is the library form of the pipeline used for the D=16–64 mass scans:
-
-```julia
-s.integrator_param.max_point = 30.0; s.integrator_param.n_quad = 512
-s.integrator_param.atol = 1e-13;     s.integrator_param.rtol = 1e-12
-r = excitation_eigsolve(s, 0.0; model=ExcitationModel(:phi4, 2.0))  # odd sector of a Z2 state
-r.validated_energies[1]  # refined bilinear energy; r.validation[1] has all checks
-gap = excitation_gap(s; model, solver=:iterative)
-dispersion = dispersion_relation(s, 0:0.25:1; model, solver=:iterative)
-```
-
-- **Sectors.** `excitation_parity(s)` detects the balanced Z₂ layout of
-  `RandomStateZ2` (or pass `parity`). Physical parity acts as W ↦ -ZWZ, so
-  block-diagonal W form the `:odd` sector and off-diagonal W the `:even` sector.
-  `sector=:auto` selects `:odd` for Z₂ states and `:all` otherwise. The dense
-  routines accept the same `sector` keyword and provide a small-D reference.
-- **Coordinates.** `TangentCoordinates` uses white coordinates with
-  tr(WρW†)=‖c‖². `gauge=:density` rotates each parity block into the eigenbasis of
-  ρ and whitens by a Cholesky factor. This is the Float64-stable choice used at
-  D≥56. Returned `vectors` are in the gauge of `s`.
-- **Operator.** It uses the reverse-contracted Hamiltonian action with
-  `kinetic_nodes=256` fixed θ nodes, which makes the kinetic part exactly linear,
-  and potential terms on `s.integrator_param`, which are linear to the ODE
-  tolerance. With `parallel=:both`, kinetic/potential terms
-  and forward/backward trajectories run concurrently.
-- **Solver.** Davidson (`DavidsonOptions`) with a positive preconditioner built
-  from the coarse 8-node kinetic matrix. The start vector is the gauge-fixed field
-  insertion φ(0)|Ψ⟩, gauge-fixed at the requested momentum; in the even sector it
-  is the lowest coarse kinetic mode. The default restarts from `max(8, 2nev+2)`
-  vectors and recomputes the retained actions (fresh restart, as at D≥56).
-  The D≤48 research configuration is `gauge=:original` with
-  `DavidsonOptions(maxspace=min(160,n), retain=12, refresh=false,
-  stall_residual_limit=1e-6, stall_energy_atol=1e-10)`, where n is the sector
-  dimension. On the D=16 g=2 state it reproduces the research run (16
-  iterations) and its mass to 3e-12. The stall rule stops a plateaued search, and
-  the result then reports `converged=false`.
-- **Validation.** For every returned level (`validate=true`), it computes fresh
-  actions at the standard and refined settings, plus two independent bilinear
-  energies. The refined settings default to window +10, 2×`n_quad`, tolerances/10
-  and 2× kinetic nodes. `refine_steps` adds the D≤48 preconditioned corrections.
-  A level is `accepted` when its four energies and imaginary parts agree within
-  `validation_tol=1e-7` and its fresh residuals are at most
-  `acceptance_residual=1e-5`; these are the research acceptance criteria.
-  `excitation_gap` and `dispersion_relation` with `solver=:iterative` throw
-  `SolverFailure` for levels that are not accepted. These checks are consistency
-  measurements, not error bounds, and they do not test the background state.
-- **Cost.** Dense transfer factors of ≈48D⁴ bytes at p=0 (≈80D⁴ otherwise) are
-  still required, peaking near twice that during construction; `max_bond=64`
-  guards this. Each concurrent kinetic action also allocates a 16D⁴-byte factor
-  per node (32D⁴ at p≠0), and the preconditioner runs `Threads.nthreads()` of
-  them at once. At D=64 this is 268 MB per thread. The coarse preconditioner needs one
-  8-node kinetic action per coordinate (D²/2 for a sector). Each iteration needs
-  one full action. `ExcitationContext(base; momentum, integrator)` reuses the
-  momentum-independent factors, which `dispersion_relation(...; solver=:iterative)`
-  does automatically, warm-starting each momentum from the previous vectors.
-
-The lowest p=0 level is the rest gap **within the same-vacuum tangent sector**.
-Kinks between different vacua and general multiparticle states are not covered.
-Negative levels remain visible, and the routine does not certify that its input
-is a converged ground state. Check background optimization and bond dimension
-before interpreting interacting energies. Branches are sorted independently at
-each momentum; track their identity near crossings before using the relativistic
-diagnostic.
-
-The [mathematical derivation](docs/excitations.tex) covers the new environments,
-the `-im*p*W` kinetic insertion, finite-box subtraction, and literature references.
-[The runnable example](examples/excitations.jl) verifies the exact free dispersion
-and can also load an optimized saved state. Tests compare against analytic
-coherent states and an independent finite-box contraction without Poisson
-environments, as well as both kinetic backends and auxiliary gauge invariance.
-The [Atlas mass scan](research/mass_scan/README.md) applies the preconditioned
-iterative method to saved Z₂-symmetric D=16 and D=32 φ⁴ states from g=2 to 2.77,
-with frozen inputs, fresh residual checks, independent energy contractions,
-and a mass-versus-coupling plot with the difference between bond dimensions.
-
-The [D=16 quartic research run](research/excitations_d16/README.md) records an
-explicitly Z₂-symmetric optimization, parity-resolved spectra, adaptive refinement,
-integration checks, and the Hamiltonian-truncation comparison.
-Its [iterative trial](research/excitations_d16/ITERATIVE.md) compares Lanczos
-using only full Hamiltonian actions with a Davidson variant that retains the
-quadratic matrix as a preconditioner and applies the quartic part through ODEs.
-
-Treat `s.R`, `s.K`, `s.Q`, and `s.ρ0` as read-only. Rebuild with `State(R,K)` or use
-`retraction` to update them together. Configure a state before concurrent
-observables; do not mutate settings while evaluations are running.
-
-## Migration
-
-The main observable and optimizer names are retained. Deliberate changes:
-
-- `n_quad` counts Gauss nodes per half instead of exp-sinh steps; `min_point` is removed.
-- `max_point` directly specifies the physical window.
-- Random constructors use a local reproducible RNG. Odd Z2 dimensions are rejected.
-- `generate_T` follows Julia's column-major vectorization exactly.
-- Invalid model/optimizer names and solver failures raise exceptions.
-- `retraction_regulated` aliases the canonical retraction. Step selection belongs
-  to the line search; a nonlinear step cap must not silently change its derivative.
-  The default now bounds parameter excursions in the Wolfe search and falls back
-  to Armijo backtracking if a numerical trial fails. Failed trials are rejected,
-  preserving the last accepted state and the exact canonical retraction.
-  Approximate Wolfe acceptance allows energy noise up to `1e-10` while explicitly
-  checking the slope conditions; this avoids false failures near convergence.
-- `rcmps_store(s,path)` and `rcmps_load(path)` take explicit paths. New files are
-  `.jld2`, record numerical settings, and recompute rho on load.
-- `get_exact_state` returns `nothing` when no state matches. Selection uses actual
-  couplings rather than flooring them into potentially colliding bins.
-
-Historical JLD reading is a separate, optional dependency. Prepare the benchmark
-and migration environment once:
+## Tests and benchmarks
 
 ```sh
-JULIA_LOAD_PATH='@:@stdlib' julia --project=refactor/benchmark -e 'using Pkg; Pkg.develop(path="refactor"); Pkg.instantiate()'
-JULIA_LOAD_PATH='@:@stdlib' julia --project=refactor/benchmark refactor/examples/migrate_legacy.jl data/phi4_g2.0_D2_.jld migrated.jld2
+julia --project=. -e 'using Pkg; Pkg.test()'                 # several minutes
+julia --project=. --threads=2 benchmark/excitation_mass_d16.jl
+julia --project=. examples/phi4.jl                            # writes examples/output/
+julia --project=. examples/excitations.jl
+python benchmark/boundary_reference.py                        # numpy, scipy
+julia --project=. benchmark/boundary.jl
+julia --project=. benchmark/optimization.jl
+julia --project=benchmark benchmark/performance.jl
+julia --project=benchmark benchmark/saved_states.jl
+julia --project=benchmark benchmark/converged_optimization.jl
+python benchmark/plot_boundary.py                             # numpy, matplotlib
 ```
 
-The migration script preserves R, K and model metadata and recomputes energy and
-gradient. Historical `phi4_m` files did not store the modified mass; the script requires
-an explicit third argument with the mass originally used for such a file.
-The script refuses to overwrite an existing destination.
+The D=16 regression (8 minutes with two threads on a loaded 12-core workstation)
+recomputes the odd-sector p=0 mass of the g=2 Z₂ state in `test/fixtures/` with the
+default solver at the research integration settings, and fails if it differs from
+the recorded 0.3523798021192911 by more than 1e-9; a run at commit becd9d5, with
+library defaults, gave a difference of -1.03e-12.
 
-## Reproduce the research and benchmarks
+The other commands produce the results in
+[docs/benchmarks.md](docs/benchmarks.md); prepare the `benchmark` environment as in
+[Migrating saved states](#migrating-saved-states).
+The legacy adapter `benchmark/legacy.jl` reads the v0.1.0 sources with `git show`
+(or from `RCMPS_LEGACY_SRC`); its only compatibility changes are the dedicated
+Vern7 import and SciML 3's saved-state indexing, and it retains the original
+numerical algorithms and Octavian kernels. Raw timings are descriptive, not
+portable speed guarantees.
 
-```sh
-python refactor/research/boundary_reference.py # numpy, scipy
-JULIA_LOAD_PATH='@:@stdlib' julia --project=refactor refactor/benchmark/boundary.jl
-JULIA_LOAD_PATH='@:@stdlib' julia --project=refactor refactor/benchmark/optimization.jl
-JULIA_LOAD_PATH='@:@stdlib' julia --project=refactor/benchmark refactor/benchmark/performance.jl
-JULIA_LOAD_PATH='@:@stdlib' julia --project=refactor/benchmark refactor/benchmark/saved_states.jl
-JULIA_LOAD_PATH='@:@stdlib' julia --project=refactor/benchmark refactor/benchmark/converged_optimization.jl
-python refactor/research/plot_boundary.py # numpy, matplotlib
-```
+Several scripts rewrite their CSV tables in
+`benchmark/` (`plot_boundary.py` the figures in `docs/`); others write result
+folders under `benchmark/` (`converged/`, `threading/`, `large_scaling/`, ...),
+which are gitignored. The recorded September 2026 results are in the companion
+repository rcmps-phi4-z2 at the same paths; scripts reading
+`benchmark/converged/*.jld2` or `benchmark/d64_50/final.jld2` need them from there.
 
-The legacy adapter reads the original source directly. Its only compatibility
-changes are the dedicated Vern7 import and SciML 3's saved-state indexing; it
-retains the original numerical algorithms and Octavian kernels. Raw timing
-results are descriptive measurements, not portable speed guarantees.
+## Research record
 
-The [converged g=2 comparison](benchmark/converged/README.md) reports matched
-old/new optimizations at D=2,4,8,16, including independent gradient checks,
-precision refinement, timings, and saved parameter matrices.
+The companion repository rcmps-phi4-z2 (not yet published) holds the record of
+the Z₂-symmetric φ⁴ RCMPS campaigns of September 2026, produced with RcmpsCore
+0.2: ground-state optimizations at D=16..64, zero-momentum excitation masses,
+critical-coupling analysis and numerical diagnostics, with datasets, drivers,
+studies and benchmark result folders, for H = H_free(m=1) + g ∫ dx :φ⁴: (no 1/4!).
 
-## Parallel evaluation and structured kinetic terms
+## References and license
 
-Start Julia with `--threads=6 --gcthreads=1`, then select parallel execution:
+- A. Tilloy, *Relativistic continuous matrix product states for quantum fields without cutoff*, Phys. Rev. D 104, 096007 (2021), [arXiv:2102.07741](https://arxiv.org/abs/2102.07741).
+- G. Beugnot, P. Gregory, R. Robin, A. Tilloy, *Well-conditioned iterative methods for large open quantum systems*, [arXiv:2608.30860](https://arxiv.org/abs/2608.30860).
+- J. Haegeman, J. I. Cirac, T. J. Osborne, F. Verstraete, *Calculus of continuous matrix product states*, Phys. Rev. B 88, 085118 (2013), [arXiv:1211.3935](https://arxiv.org/abs/1211.3935).
+- D. Draxler, J. Haegeman, T. J. Osborne, V. Stojevic, L. Vanderstraeten, F. Verstraete, *Particles, holes and solitons: a matrix product state approach*, Phys. Rev. Lett. 111, 020402 (2013), [arXiv:1212.1114](https://arxiv.org/abs/1212.1114).
+- L. Vanderstraeten, J. Haegeman, F. Verstraete, *Tangent-space methods for uniform matrix product states*, SciPost Phys. Lect. Notes 7 (2019), [doi:10.21468/SciPostPhysLectNotes.7](https://scipost.org/10.21468/SciPostPhysLectNotes.7).
 
-```julia
-using RcmpsCore, LinearAlgebra
-BLAS.set_num_threads(1)
-energy, gradient = fg_phi4(state, 2.0; parallel=:both)
-result = optimize_state(state; parallel=:both, diagnostics=true)
-```
-
-The modes are `:serial` (default), `:terms` (independent energy contributions),
-`:trajectories` (forward/backward ODEs), and `:both`. Julia's worker pool limits
-concurrency; with one compute thread all modes run serially. Each evaluation
-owns its scratch space, all workers are joined on failure, and results are
-summed in a fixed order. Treat the state's matrices and parameters as read-only
-while evaluating it. The library does not change your global BLAS settings.
-
-An optional kinetic backend integrates the source kernel analytically and
-computes the resulting shifted transfer resolvents:
-
-```julia
-energy, gradient = fg_phi4(state, 2.0;
-    parallel=:both, kinetic_backend=:resolvent)
-result = optimize_state(state; parallel=:both, kinetic_backend=:resolvent,
-    kinetic_options=KineticOptions(atol=1e-11, rtol=1e-10), diagnostics=true)
-```
-
-For larger bond dimensions, a matrix-free shifted Arnoldi backend avoids the
-dense transfer matrix:
-
-```julia
-energy, gradient = fg_phi4(state, 2.0; parallel=:both, kinetic_backend=:krylov,
-    krylov_options=KineticKrylovOptions(tolerance=1e-12, initialdim=16, maxdim=512))
-```
-
-The same options work for individual kinetic terms, optimization, and the other
-energy models. The resolvent backend shares a dense Schur factorization; the
-Krylov backend reuses forward and adjoint bases across all shifts and angular
-refinements, checks every true physical residual, and grows storage only as
-needed up to the basis cap. Contexts and scratch arrays belong to one evaluation.
-Angular quadrature doubles
-from 32 through at most 512 nodes until both energy and the complete gradient
-pass refinement checks. Insufficient refinement raises `SolverFailure`.
-Interaction terms still use the original ODE settings. Resolvent kinetic terms
-are infinite-line quantities; the ODE backend (`kinetic_backend=:ode`, default)
-retains the finite-window reference. Schur setup costs O(D⁶) and storage O(D⁴),
-so the dense backend is intended for small/moderate bond dimensions. For Krylov
-basis size k, persistent basis storage is O(kD²+k²) per right-hand side;
-orthogonalization costs O(k²D²), in addition to O(kD³) Lindblad actions.
-Wide transfer spectra can require larger bases: insufficient convergence is
-reported explicitly rather than silently falling back to a large dense solve.
-Angular refinement and true shifted residuals are complementary checks, not
-certified bounds on the final gradient. Stationary-response and metric solves
-can amplify their errors, especially near a small transfer gap.
-
-See the [kinetic derivation and independent checks](research/structured_observables/README.md)
-and [bond-enlargement research](research/bond_enlargement/README.md).
-
-Measured [complete optimizations](benchmark/threading/README.md) and
-[large-D evaluations](benchmark/large_scaling/README.md) distinguish threading
-gains from changes in the kinetic algorithm. The latter include random states
-through D64 and the saved g=2 D28 state. The saved shg D32 stress state fails the
-default Krylov residual requirement; this backend remains an explicit option.
+The package is released under the MIT license; see [LICENSE](LICENSE).

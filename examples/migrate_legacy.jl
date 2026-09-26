@@ -1,5 +1,6 @@
 # Run in the benchmark environment, which supplies JLD for reading historical files.
-# julia --project=benchmark examples/migrate_legacy.jl benchmark/legacy_states/phi4_g2.0_D2_.jld migrated.jld2
+# julia --project=benchmark examples/migrate_legacy.jl benchmark/legacy_states/phi4_g2.0_D2_.jld examples/output/migrated.jld2
+# rcmps_store creates missing parent directories of the destination.
 using RcmpsCore, JLD
 length(ARGS) in (2,3) || error("usage: migrate_legacy.jl input.jld output.jld2 [massmod]")
 isfile(ARGS[2]) && error("destination already exists: $(ARGS[2])")

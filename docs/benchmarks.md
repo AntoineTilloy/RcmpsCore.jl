@@ -1,7 +1,9 @@
 # Validation and measured performance
 
-The original-code comparisons below use Julia 1.12.7, the included package manifest,
-ComplexF64, one Julia thread and one OpenBLAS thread, on this workstation.
+The original-code comparisons below use Julia 1.12.7, ComplexF64, one Julia
+thread and one OpenBLAS thread, on one workstation. `benchmark/environment.txt`
+records the RcmpsCore 0.2 dependency versions; the versions of the 0.1-side
+packages in the `benchmark` environment were not recorded.
 Benchmark scripts fix their RNG seeds. Timing claims below use warmed evaluations
 and the minimum of three samples. Allocation counts are **cumulative allocated
 bytes**, not peak resident memory. CPU model and BLAS details are recorded in
@@ -43,11 +45,11 @@ indexing to current SciML. No original files are edited.
 The benchmark computes the **fourth field moment and its gradient**, not the
 complete phi4 energy. Both implementations use the same state, physical window
 20, ODE tolerances (atol=1e-11, rtol=1e-10), and metric regularizer. The original
-uses its default 1000 exp-sinh steps; the refactor uses its default 128 Gauss nodes
+uses its default 1000 exp-sinh steps; RcmpsCore 0.2 uses its default 128 Gauss nodes
 per half and includes the boundary correction. This compares complete configured
 algorithms; it is not a matrix-multiplication microbenchmark.
 
-| D | Original seconds | Refactor seconds | Speedup | Allocated bytes reduction |
+| D | 0.1 seconds | 0.2 seconds | Speedup | Allocated bytes reduction |
 |---:|---:|---:|---:|---:|
 | 4 | 0.263 | 0.0522 | 5.04× | 18.2× |
 | 8 | 0.364 | 0.104 | 3.49× | 14.3× |
@@ -58,16 +60,16 @@ The moment values differ by 1.3e-8–6.3e-8 in this sweep. The old code is not a
 accuracy oracle: its singular-source handling and quadrature differ. New-code
 accuracy is checked independently using coherent states, finite differences,
 and refinements of window, quadrature and ODE settings. Old and new gradients
-are expected to differ because only the refactor includes the boundary term.
+are expected to differ because only RcmpsCore 0.2 includes the boundary term.
 
 ## Stationary-state performance
 
 The baseline here is the original direct Krylov eigensolve on L (its cheapest
 path), with Krylov dimension at most 80 and 200 restarts. Its expensive squared-L
-and power-method fallbacks are not invoked. The refactor uses the CPTP solver,
+and power-method fallbacks are not invoked. RcmpsCore 0.2 uses the CPTP solver,
 including checks and the small-D uniqueness test.
 
-| D | Original seconds | Refactor seconds | Speedup |
+| D | 0.1 seconds | 0.2 seconds | Speedup |
 |---:|---:|---:|---:|
 | 4 | 0.000189 | 0.000337 | 0.56× |
 | 8 | 0.00536 | 0.00270 | 1.98× |
