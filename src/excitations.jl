@@ -60,20 +60,30 @@ end
 
 function excitation_kinetic_sum(pair,terms,n)
     result = 0.0im
-    for (weight,spec) in terms
+    sources = map(terms) do (weight,spec)
         ops = excitation_operators(pair,spec.commutator)
-        for left in (false,true)
+        bs = map((false,true)) do left
             b = zero(pair.right)
             excitation_source_add!(b,pair.right,ops,left,1)
-            for (theta,w) in zip(kinetic_grid(n)...)
-                x = excitation_resolvent(pair,b,cos(theta))
-                y = zero(x)
-                excitation_source_add!(y,x,ops,!left,1)
-                result += (weight*w/2)*excitation_contract(pair,y)
-            end
+        end
+        (weight,ops,bs)
+    end
+    # The shifted triangular factors depend only on the node: form them once for all terms.
+    for (theta,w) in zip(kinetic_grid(n)...)
+        z = cos(theta)
+        factors = resolvent_factors(pair.context,z)
+        for (weight,ops,bs) in sources, (left,b) in zip((false,true),bs)
+            x = excitation_resolvent(pair,b,z;factors)
+            y = zero(x)
+            excitation_source_add!(y,x,ops,!left,1)
+            result += (weight*w/2)*excitation_contract(pair,y)
         end
     end
     return result
+end
+function check_kinetic_nodes(n)
+    n isa Integer && n >= 2 || throw(ArgumentError("kinetic_nodes must be an integer of at least 2"))
+    return Int(n)
 end
 function excitation_kinetic(pair,terms,options)
     p = options
@@ -91,13 +101,15 @@ function excitation_kinetic(pair,terms,options)
     throw(SolverFailure("excitation kinetic quadrature did not converge by $n nodes"))
 end
 
+# kinetic_nodes=nothing refines the kinetic θ grid adaptively; an integer fixes it.
 function excitation_element(pair,model;kinetic_backend=:resolvent,
-                            kinetic_options=KineticOptions(),method=Vern7())
+                            kinetic_options=KineticOptions(),kinetic_nodes=nothing,method=Vern7())
     kinetic_backend in (:resolvent,:ode) || throw(ArgumentError("excitation kinetic backend must be :resolvent or :ode"))
     result = 0.0im
     kinetics = filter(t->t[2].kinetic,model.terms)
     if kinetic_backend == :resolvent && !isempty(kinetics)
-        result += excitation_kinetic(pair,kinetics,kinetic_options)
+        result += isnothing(kinetic_nodes) ? excitation_kinetic(pair,kinetics,kinetic_options) :
+            excitation_kinetic_sum(pair,kinetics,check_kinetic_nodes(kinetic_nodes))
     end
     for (weight,spec) in model.terms
         kinetic_backend == :resolvent && spec.kinetic && continue
@@ -117,20 +129,12 @@ function excitation_matrix_element(s::State,p::Real,u::AbstractMatrix,w::Abstrac
     return excitation_element(ExcitationPair(ctx,u,w),model;kw...)
 end
 
-# W = X diag(rho_eigenvalues)^(-1/2) U† gives tr(W rho W†)=||X||².
+# Orthonormal basis W_k with tr(W_k rho W_l†)=δ_kl (see TangentCoordinates: Cholesky
+# whitening when the metric is fully resolved, eigen-whitening on its support otherwise).
 # Resolve the metric by its support; never add the optimizer's metric regularizer.
 function excitation_basis(s,metric_tol)
-    isfinite(metric_tol) && 0<=metric_tol<1 || throw(ArgumentError("metric_tol must lie in [0,1)"))
-    f = eigen(Hermitian(s.ρ0))
-    keep = findall(>(metric_tol*maximum(f.values)),f.values)
-    isempty(keep) && throw(SolverFailure("empty tangent metric support"))
-    basis = Matrix{ComplexF64}[]
-    for j in keep, i in 1:s.D
-        w = zeros(ComplexF64,s.D,s.D)
-        w[i,:] = conj.(f.vectors[:,j])/sqrt(f.values[j])
-        push!(basis,w)
-    end
-    return basis,length(keep),sum(abs,f.values[setdiff(eachindex(f.values),keep)])
+    c = TangentCoordinates(s;sector=:all,parity=nothing,gauge=:original,metric_tol)
+    return tangent_basis(c),c.metric_rank,c.discarded_metric_weight
 end
 
 """Build the dense Hamiltonian in an orthonormal complex tangent basis.
@@ -140,14 +144,27 @@ every entry independently, requiring O(D⁴) observable evaluations. Both retain
 dense O(D⁶) transfer factorization and check Hermiticity before symmetrization.
 Increase max_point and n_quad (action only), and tighten ODE tolerances to check
 integration errors.
+
+`sector=:odd` or `:even` restricts to one physical parity sector of a Z₂-symmetric
+state (see `TangentCoordinates`); the default `:all` uses the full tangent space.
+`gauge=:density` evaluates in the density eigenbasis. The basis is Cholesky-whitened
+when the metric is fully resolved (eigen-whitened on its support otherwise), so the
+matrix and coefficients are basis-dependent while the spectrum is not. Returned basis
+matrices are always in the gauge of `s`. For large D use `excitation_eigsolve` instead.
 """
 function excitation_hamiltonian(s::State,p::Real;model=ExcitationModel(s),metric_tol=1e-12,
                                 environment_tol=1e-10,hermitian_tol=1e-7,max_bond=16,
-                                assembly=:bilinear,kw...)
+                                assembly=:bilinear,sector=:all,
+                                parity=(sector == :all ? nothing : :auto),parity_tol=1e-12,
+                                gauge=:original,kw...)
     isfinite(hermitian_tol) && hermitian_tol>0 || throw(ArgumentError("invalid Hermiticity tolerance"))
     assembly in (:bilinear,:action) || throw(ArgumentError("assembly must be :bilinear or :action"))
-    ctx = ExcitationContext(s,p;tol=environment_tol,max_bond)
-    basis,rank,discarded = excitation_basis(ctx.state,metric_tol)
+    isfinite(p) || throw(ArgumentError("invalid momentum or environment tolerance"))
+    s.D <= max_bond || throw(ArgumentError("dense excitation reference is limited to D≤$max_bond; increase max_bond explicitly to accept its cost"))
+    coordinates = TangentCoordinates(s;sector,parity,parity_tol,gauge,metric_tol)
+    ctx = ExcitationContext(coordinates.state,p;tol=environment_tol,max_bond)
+    basis = tangent_basis(coordinates)
+    rank,discarded = coordinates.metric_rank,coordinates.discarded_metric_weight
     n = length(basis)
     h = Matrix{ComplexF64}(undef,n,n)
     for j in 1:n
@@ -164,9 +181,9 @@ function excitation_hamiltonian(s::State,p::Real;model=ExcitationModel(s),metric
     end
     defect = norm(h-h')/max(1,norm(h))
     defect <= hermitian_tol || throw(SolverFailure("excitation Hamiltonian Hermiticity defect $defect exceeds $hermitian_tol"))
-    return (hamiltonian=Hermitian((h+h')/2),basis=basis,momentum=Float64(p),
-            hermiticity_error=defect,metric_rank=rank,discarded_metric_weight=discarded,
-            model=model.name)
+    return (hamiltonian=Hermitian((h+h')/2),basis=[original_tangent(coordinates,w) for w in basis],
+            momentum=Float64(p),hermiticity_error=defect,metric_rank=rank,
+            discarded_metric_weight=discarded,model=model.name,sector=coordinates.sector)
 end
 
 """Lowest tangent-space Ritz energies at a fixed momentum, with normalized W
@@ -188,22 +205,53 @@ function excitation_spectrum(s::State,p::Real;nev::Integer=1,kw...)
     return merge(result,(energies=energies,vectors=vectors,coefficients=coefficients,residuals=residuals))
 end
 
+function check_solver(solver)
+    solver in (:dense,:iterative) || throw(ArgumentError("solver must be :dense or :iterative"))
+    return solver
+end
+
 """Lowest p=0 tangent-space energy (the rest gap in the represented sector).
 Unlike the legacy mass_gap(s), this uses the Hamiltonian. This does not search for
 nonzero-momentum minima or topological excitations between distinct vacua.
+
+`solver=:dense` (default) diagonalizes the full dense matrix (small-D reference, full
+tangent space, adaptive kinetic quadrature, standard integration settings).
+`solver=:iterative` calls `excitation_eigsolve`: the default sector of a Z₂-symmetric
+state is the odd one, the kinetic grid is fixed, and the validated (refined bilinear)
+energy is returned. A `SolverFailure` is thrown unless that level is `accepted`.
+See `dispersion_relation` for the full list of differing defaults.
 """
-excitation_gap(s::State;kw...) = first(excitation_spectrum(s,0.;nev=1,kw...).energies)
+function excitation_gap(s::State;solver=:dense,kw...)
+    check_solver(solver) == :dense && return first(excitation_spectrum(s,0.;nev=1,kw...).energies)
+    return first(accepted_energies(excitation_eigsolve(s,0.;nev=1,kw...)))
+end
 mass_gap(s::State,model::ExcitationModel;kw...) = excitation_gap(s;model,kw...)
 
 """Compute independently energy-sorted Ritz levels at each requested momentum.
 Columns need not follow a particle through a crossing; inspect vectors/symmetries.
+With `solver=:iterative`, the momentum-independent factors are computed once, each
+momentum starts from the previous eigenvectors, and one parity sector is used
+(odd by default for Z₂-symmetric states); energies are then the validated ones. By
+default (`strict=true`) a `SolverFailure` is thrown at the first momentum whose levels
+are not `accepted`; `strict=false` computes every momentum and returns an `accepted`
+vector instead. The two solvers also differ in their defaults: dense uses the full
+tangent space, the original gauge, `metric_tol=1e-12`, adaptive kinetic quadrature and
+`max_bond=16`; iterative uses one sector, the density gauge, `metric_tol=0` above a
+10D·eps floor, 256 fixed kinetic nodes and `max_bond=64`.
 """
-function dispersion_relation(s::State,momenta;nev::Integer=1,kw...)
+function dispersion_relation(s::State,momenta;nev::Integer=1,solver=:dense,strict=true,kw...)
     ps = Float64.(collect(momenta))
     !isempty(ps) && all(isfinite,ps) || throw(ArgumentError("momenta must be nonempty and finite"))
-    results = [excitation_spectrum(s,p;nev,kw...) for p in ps]
-    energies = permutedims(hcat((r.energies for r in results)...))
-    return (momenta=ps,energies=energies,spectra=results)
+    if check_solver(solver) == :dense
+        results = [excitation_spectrum(s,p;nev,kw...) for p in ps]
+        return (momenta=ps,energies=permutedims(hcat((r.energies for r in results)...)),spectra=results)
+    end
+    results = iterative_dispersion(s,ps;nev,strict,kw...)
+    levels = [strict ? accepted_energies(r) : reported_energies(r) for r in results]
+    all(l->length(l) == nev,levels) ||
+        throw(SolverFailure("some momenta returned fewer than nev=$nev levels; see spectra"))
+    return (momenta=ps,energies=permutedims(hcat(levels...)),spectra=results,
+            accepted=[r.accepted for r in results])
 end
 
 """For one energy-sorted branch, report E(p)²-target_speed²*p² and the least-squares fit

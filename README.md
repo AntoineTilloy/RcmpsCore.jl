@@ -53,6 +53,8 @@ retraction. `vertex(s,beta)` returns a complex value and the gradient of its
 | `src/kinetic.jl`, `src/kinetic_krylov.jl` | Adaptive kinetic resolvents, dense reference and matrix-free Arnoldi |
 | `src/excitation_environments.jl`, `src/excitations.jl` | Momentum-resolved tangent environments, Hamiltonian spectrum and dispersion |
 | `src/excitation_action.jl` | Reverse contraction of the bra tangent for a Hamiltonian action |
+| `src/davidson.jl` | Restarted Hermitian Davidson with fresh or thick restarts and a stall rule |
+| `src/excitation_eigsolve.jl` | Parity sectors, white coordinates, preconditioned iterative excitation solver |
 | `src/optimization.jl` | Metric, retraction, released OptimKit integration, bounded Armijo search |
 | `src/storage.jl` | Versioned JLD2 schema, atomic writes, loading and selection |
 | `research/` | Independent dense Python derivation check and plotting |
@@ -153,6 +155,65 @@ also provides parallel work inside an iterative eigensolver's sequential
 Hamiltonian calls.
 No optimizer metric regularizer enters
 the calculation; `metric_tol` controls the resolved density-matrix support.
+
+### Large bond dimension: iterative solver
+
+`excitation_eigsolve` computes the lowest levels without assembling a matrix. It
+is the library form of the pipeline used for the D=16–64 mass scans:
+
+```julia
+s.integrator_param.max_point = 30.0; s.integrator_param.n_quad = 512
+s.integrator_param.atol = 1e-13;     s.integrator_param.rtol = 1e-12
+r = excitation_eigsolve(s, 0.0; model=ExcitationModel(:phi4, 2.0))  # odd sector of a Z2 state
+r.validated_energies[1]  # refined bilinear energy; r.validation[1] has all checks
+gap = excitation_gap(s; model, solver=:iterative)
+dispersion = dispersion_relation(s, 0:0.25:1; model, solver=:iterative)
+```
+
+- **Sectors.** `excitation_parity(s)` detects the balanced Z₂ layout of
+  `RandomStateZ2` (or pass `parity`). Physical parity acts as W ↦ -ZWZ, so
+  block-diagonal W form the `:odd` sector and off-diagonal W the `:even` sector.
+  `sector=:auto` selects `:odd` for Z₂ states and `:all` otherwise. The dense
+  routines accept the same `sector` keyword and provide a small-D reference.
+- **Coordinates.** `TangentCoordinates` uses white coordinates with
+  tr(WρW†)=‖c‖². `gauge=:density` rotates each parity block into the eigenbasis of
+  ρ and whitens by a Cholesky factor. This is the Float64-stable choice used at
+  D≥56. Returned `vectors` are in the gauge of `s`.
+- **Operator.** It uses the reverse-contracted Hamiltonian action with
+  `kinetic_nodes=256` fixed θ nodes, which makes the kinetic part exactly linear,
+  and potential terms on `s.integrator_param`, which are linear to the ODE
+  tolerance. With `parallel=:both`, kinetic/potential terms
+  and forward/backward trajectories run concurrently.
+- **Solver.** Davidson (`DavidsonOptions`) with a positive preconditioner built
+  from the coarse 8-node kinetic matrix. The start vector is the gauge-fixed field
+  insertion φ(0)|Ψ⟩, gauge-fixed at the requested momentum; in the even sector it
+  is the lowest coarse kinetic mode. The default restarts from `max(8, 2nev+2)`
+  vectors and recomputes the retained actions (fresh restart, as at D≥56).
+  The D≤48 research configuration is `gauge=:original` with
+  `DavidsonOptions(maxspace=min(160,n), retain=12, refresh=false,
+  stall_residual_limit=1e-6, stall_energy_atol=1e-10)`, where n is the sector
+  dimension. On the D=16 g=2 state it reproduces the research run (16
+  iterations) and its mass to 3e-12. The stall rule stops a plateaued search, and
+  the result then reports `converged=false`.
+- **Validation.** For every returned level (`validate=true`), it computes fresh
+  actions at the standard and refined settings, plus two independent bilinear
+  energies. The refined settings default to window +10, 2×`n_quad`, tolerances/10
+  and 2× kinetic nodes. `refine_steps` adds the D≤48 preconditioned corrections.
+  A level is `accepted` when its four energies and imaginary parts agree within
+  `validation_tol=1e-7` and its fresh residuals are at most
+  `acceptance_residual=1e-5`; these are the research acceptance criteria.
+  `excitation_gap` and `dispersion_relation` with `solver=:iterative` throw
+  `SolverFailure` for levels that are not accepted. These checks are consistency
+  measurements, not error bounds, and they do not test the background state.
+- **Cost.** Dense transfer factors of ≈48D⁴ bytes at p=0 (≈80D⁴ otherwise) are
+  still required, peaking near twice that during construction; `max_bond=64`
+  guards this. Each concurrent kinetic action also allocates a 16D⁴-byte factor
+  per node (32D⁴ at p≠0), and the preconditioner runs `Threads.nthreads()` of
+  them at once. At D=64 this is 268 MB per thread. The coarse preconditioner needs one
+  8-node kinetic action per coordinate (D²/2 for a sector). Each iteration needs
+  one full action. `ExcitationContext(base; momentum, integrator)` reuses the
+  momentum-independent factors, which `dispersion_relation(...; solver=:iterative)`
+  does automatically, warm-starting each momentum from the previous vectors.
 
 The lowest p=0 level is the rest gap **within the same-vacuum tangent sector**.
 Kinks between different vacua and general multiparticle states are not covered.

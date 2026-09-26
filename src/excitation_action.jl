@@ -122,12 +122,7 @@ function excitation_observable_action(ctx,w,v,rw,spec;method=Vern7(),parallel=fa
     return out
 end
 
-function action_factor(ctx,z;shifted=false)
-    mat=-z.*ctx.schur.T
-    shift=1+(shifted ? im*z*ctx.momentum : 0)
-    @inbounds for i in axes(mat,1);mat[i,i]+=shift;end
-    UpperTriangular(mat)
-end
+action_factor(ctx,z;shifted=false)=resolvent_factor(ctx,z,shifted ? 1 : 0)
 function action_resolve(ctx,b,z;shifted=false,adj=false,factor=nothing)
     f=ctx.schur;s=ctx.state
     isnothing(factor) && (factor=action_factor(ctx,z;shifted))
@@ -137,45 +132,49 @@ end
 function excitation_kinetic_action_sum(ctx,w,v,rw,terms,n)
     s=ctx.state;out=zero(w);wrho=w*s.ρ0
     grid=kinetic_grid(n)
-    for (coefficient,spec) in terms
-        c,cw=action_operators(ctx,w,v,spec.commutator)
-        total_a0,total_a1,total_x0=zero(w),zero(w),zero(w)
-        orders=spec.kinetic ? ((false,true),(true,false)) :
-                             ((false,false),(false,true),(true,false),(true,true))
-        for (left,secondleft) in orders, (theta,weight) in zip(grid...)
-            z=cos(theta);weight*=coefficient/2
-            # Reuse the same shifted matrix for forward and reverse solves.
-            # At p=0 all four solves share it. Do not retain one per grid point.
-            factor=action_factor(ctx,z)
-            shiftedfactor=iszero(ctx.momentum) ? factor : action_factor(ctx,z;shifted=true)
-            # First source and forward resolvent, retaining the ground and ket blocks.
-            b0=left ? c*s.ρ0 : s.ρ0*c'
-            b1=left ? c*rw+cw*s.ρ0 : rw*c'
-            x0=action_resolve(ctx,b0,z;factor)
-            x1=action_resolve(ctx,b1+z*ket_insertion(s,v,w,x0),z;shifted=true,factor=shiftedfactor)
-            xout=secondleft ? c*x0 : x0*c'
-            # Reverse second source; the terminal mixed-block covector is I.
-            if !secondleft # second source is a bra source
-                a0,a1=zero(w),Matrix(c')
-                out .+= weight.*bra_source_pull(ctx,x1,spec.commutator)
-            else
-                a0,a1=copy(cw),copy(c)
+    # The boundary pullback is linear: accumulate every term and order, then solve once.
+    total_a0,total_a1,total_x0=zero(w),zero(w),zero(w)
+    prepared=[(coefficient,spec,action_operators(ctx,w,v,spec.commutator)...) for (coefficient,spec) in terms]
+    for (theta,nodeweight) in zip(grid...)
+        z=cos(theta)
+        # One shifted matrix per node serves every term, order, forward and reverse solve.
+        # At p=0 all four solves share it. Do not retain one per grid point.
+        factor=action_factor(ctx,z)
+        shiftedfactor=iszero(ctx.momentum) ? factor : action_factor(ctx,z;shifted=true)
+        for (coefficient,spec,c,cw) in prepared
+            orders=spec.kinetic ? ((false,true),(true,false)) :
+                                 ((false,false),(false,true),(true,false),(true,true))
+            weight=nodeweight*coefficient/2
+            for (left,secondleft) in orders
+                # First source and forward resolvent, retaining the ground and ket blocks.
+                b0=left ? c*s.ρ0 : s.ρ0*c'
+                b1=left ? c*rw+cw*s.ρ0 : rw*c'
+                x0=action_resolve(ctx,b0,z;factor)
+                x1=action_resolve(ctx,b1+z*ket_insertion(s,v,w,x0),z;shifted=true,factor=shiftedfactor)
+                xout=secondleft ? c*x0 : x0*c'
+                # Reverse second source; the terminal mixed-block covector is I.
+                if !secondleft # second source is a bra source
+                    a0,a1=zero(w),Matrix(c')
+                    out .+= weight.*bra_source_pull(ctx,x1,spec.commutator)
+                else
+                    a0,a1=copy(cw),copy(c)
+                end
+                a1=action_resolve(ctx,a1,z;adj=true,factor)
+                a0=action_resolve(ctx,a0+z*ket_trace_dual(s,v,w,a1),z;shifted=true,adj=true,factor=shiftedfactor)
+                out .+= (weight*z).*(bra_transfer_pull(s,a0,x0)+bra_transfer_pull(s,a1,x1)+
+                                      a1*w*x0-tr(a1*x0)*wrho)
+                # Reverse first source and accumulate the two boundary covectors.
+                if left
+                    a0,a1=a0*c+a1*cw,a1*c
+                else
+                    out .+= weight.*bra_source_pull(ctx,a0*s.ρ0+a1*rw,spec.commutator)
+                    a0,a1=c'*a0,c'*a1
+                end
+                total_a0 .+= weight.*a0;total_a1 .+= weight.*a1;total_x0 .+= weight.*xout
             end
-            a1=action_resolve(ctx,a1,z;adj=true,factor)
-            a0=action_resolve(ctx,a0+z*ket_trace_dual(s,v,w,a1),z;shifted=true,adj=true,factor=shiftedfactor)
-            out .+= (weight*z).*(bra_transfer_pull(s,a0,x0)+bra_transfer_pull(s,a1,x1)+
-                                  a1*w*x0-tr(a1*x0)*wrho)
-            # Reverse first source and accumulate the two boundary covectors.
-            if left
-                a0,a1=a0*c+a1*cw,a1*c
-            else
-                out .+= weight.*bra_source_pull(ctx,a0*s.ρ0+a1*rw,spec.commutator)
-                a0,a1=c'*a0,c'*a1
-            end
-            total_a0 .+= weight.*a0;total_a1 .+= weight.*a1;total_x0 .+= weight.*xout
         end
-        out .+= action_boundaries(ctx,w,v,rw,total_a0,total_a1,total_x0)
     end
+    out .+= action_boundaries(ctx,w,v,rw,total_a0,total_a1,total_x0)
     return out
 end
 function excitation_kinetic_action(ctx,w,v,rw,terms,options)
@@ -196,15 +195,20 @@ end
 such that excitation_matrix_element(s,p,U,W) == dot(U,F). Coordinates here are
 unwhitened W matrices. Dense D² transfer factors are retained, but no D⁴ set of
 bilinear evaluations is needed. Potential contractions use n_quad quadrature.
+With `kinetic_nodes=nothing` the kinetic θ grid is refined adaptively for this W;
+an integer fixes it, which makes the kinetic part exactly linear in W (adaptive ODE
+potential terms are linear to their tolerance), as an iterative eigensolver requires.
+Check a fixed grid by refinement.
 """
 function excitation_hamiltonian_action(ctx::ExcitationContext,w::AbstractMatrix;
         model=ExcitationModel(ctx.state),kinetic_backend=:resolvent,
-        kinetic_options=KineticOptions(),method=Vern7(),parallel=:serial)
+        kinetic_options=KineticOptions(),kinetic_nodes=nothing,method=Vern7(),parallel=:serial)
     s=ctx.state
     size(w)==size(s.R) || throw(DimensionMismatch("tangent dimensions do not match the state"))
     all(isfinite,w) || throw(ArgumentError("nonfinite tangent"))
     kinetic_backend in (:resolvent,:ode) || throw(ArgumentError("unknown excitation kinetic backend"))
     check_parallel(parallel)
+    isnothing(kinetic_nodes) || check_kinetic_nodes(kinetic_nodes)
     w=Matrix{ComplexF64}(w);v=-s.R'*w
     rw=excitation_poisson(ctx,ket_insertion(s,v,w,s.ρ0);shift=1)
     isquadratic(spec)=spec.channels==3 && !spec.kinetic &&
@@ -215,7 +219,8 @@ function excitation_hamiltonian_action(ctx::ExcitationContext,w::AbstractMatrix;
     jobs=collect(1:length(potentials)+(kinetic_backend==:resolvent && !isempty(kinetics)))
     results=evaluation_map(jobs,parallel in (:terms,:both)) do i
         if i>length(potentials)
-            excitation_kinetic_action(ctx,w,v,rw,kinetics,kinetic_options)
+            isnothing(kinetic_nodes) ? excitation_kinetic_action(ctx,w,v,rw,kinetics,kinetic_options) :
+                excitation_kinetic_action_sum(ctx,w,v,rw,kinetics,kinetic_nodes)
         else
             c,spec=potentials[i]
             c.*excitation_observable_action(ctx,w,v,rw,spec;method,

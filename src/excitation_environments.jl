@@ -11,22 +11,63 @@ struct ExcitationContext{F,S}
     tol::Float64
 end
 
-function ExcitationContext(s::State,p::Real;tol=1e-10,max_bond=16)
+"""Dense transfer factors for tangent environments at momentum `p`, on a snapshot of `s`.
+Retained storage is about 48D⁴ bytes (Schur T, Z and one LU) at p=0 and 80D⁴ otherwise,
+plus 16D⁴ with `store_transfer=true` (the generator itself, used by research scripts).
+"""
+function ExcitationContext(s::State,p::Real;tol=1e-10,max_bond=16,store_transfer=true)
     isfinite(p) && isfinite(tol) && tol > 0 || throw(ArgumentError("invalid momentum or environment tolerance"))
     s.D <= max_bond || throw(ArgumentError("dense excitation reference is limited to D≤$max_bond; increase max_bond explicitly to accept its cost"))
     t = deepcopy(s)
     l = generate_T(t)
-    id = Matrix{ComplexF64}(I,t.D,t.D)
-    projector = vec(t.ρ0)*vec(id)'
+    f = schur(l)
     # Reject peripheral modes too: infinite-line boundary integrals need mixing.
-    values = eigvals(l)
-    scale = max(1,opnorm(l))
+    # The Schur diagonal gives the spectrum; the Frobenius norm bounds the spectral norm
+    # without an additional O(D⁶) factorization.
+    values = f.values
+    scale = max(1,norm(l))
     count(z->abs(z)<=tol*scale,values) == 1 &&
         all(z->abs(z)<=tol*scale || real(z)<-tol*scale,values) ||
         throw(SolverFailure("excitation environments require a unique, mixing transfer fixed point"))
-    f = lu(-l+projector)
-    return ExcitationContext(t,Float64(p),l,f,lu(-l+im*p*I+projector),
-                             lu(-l-im*p*I+projector),schur(l),Float64(tol))
+    poisson,ket,bra = transfer_factors(t,l,p)
+    return ExcitationContext(t,Float64(p),store_transfer ? l : Matrix{ComplexF64}(undef,0,0),
+                             poisson,ket,bra,f,Float64(tol))
+end
+
+# Pinned factors of -L, -L+ip and -L-ip; at p=0 all three coincide.
+function transfer_factors(t,l,p;poisson=nothing)
+    projector = vec(t.ρ0)*vec(Matrix{ComplexF64}(I,t.D,t.D))'
+    isnothing(poisson) && (poisson = lu(-l+projector))
+    iszero(p) && return poisson,poisson,poisson
+    return poisson,lu(-l+im*p*I+projector),lu(-l-im*p*I+projector)
+end
+
+# The same state with independent (deep-copied) settings; matrices are shared read-only.
+share_state(s::State;integrator=s.integrator_param) =
+    State(s.D,s.R,s.K,s.Q,s.ρ0,deepcopy(s.model_param),deepcopy(integrator),
+          deepcopy(s.manifold_param),s.e0,s.grad,s.info)
+
+"""
+    ExcitationContext(base; momentum=base.momentum, integrator=base.state.integrator_param)
+
+Reuse the momentum-independent factors of `base` (Schur form and pinned Poisson LU)
+for another momentum or other integration settings. Only the two momentum-shifted
+LU factors are recomputed, and only when the momentum changes to a nonzero value.
+The returned context has its own copy of the settings; matrices are shared read-only.
+"""
+function ExcitationContext(base::ExcitationContext;momentum::Real=base.momentum,
+                           integrator::IntegratorParameters=base.state.integrator_param)
+    isfinite(momentum) || throw(ArgumentError("invalid momentum"))
+    t = share_state(base.state;integrator)
+    p = Float64(momentum)
+    ket,bra = if p == base.momentum
+        base.ketfactor,base.brafactor
+    else
+        l = isempty(base.transfer) ? generate_T(t) : base.transfer
+        _,k,b = transfer_factors(t,l,p;poisson=base.poisson)
+        k,b
+    end
+    return ExcitationContext(t,p,base.transfer,base.poisson,ket,bra,base.schur,base.tol)
 end
 
 function excitation_poisson(ctx,b;shift=0)
@@ -146,19 +187,32 @@ function excitation_source_add!(out,x,ops,left,a)
     return out
 end
 
-function excitation_resolvent(pair,b,z)
+# Triangular Schur form of (1+i z shift p)I - zT, formed once per quadrature node.
+function resolvent_factor(ctx,z,shift)
+    mat = -z .* ctx.schur.T
+    d = 1+im*z*shift*ctx.momentum
+    @inbounds for i in axes(mat,1)
+        mat[i,i] += d
+    end
+    return UpperTriangular(mat)
+end
+function resolvent_factors(ctx,z)
+    f0 = resolvent_factor(ctx,z,0)
+    iszero(ctx.momentum) && return (f0,f0,f0)
+    return (f0,resolvent_factor(ctx,z,1),resolvent_factor(ctx,z,-1))
+end
+
+function excitation_resolvent(pair,b,z;factors=resolvent_factors(pair.context,z))
     ctx,s = pair.context,pair.context.state
     f = ctx.schur
-    function solveblock(rhs,shift)
-        factor = UpperTriangular((1+im*z*shift*ctx.momentum)*I-z*f.T)
-        reshape(f.Z*(factor\(f.Z'*vec(rhs))),s.D,s.D)
-    end
+    f0,fket,fbra = factors
+    solveblock(rhs,factor) = reshape(f.Z*(factor\(f.Z'*vec(rhs))),s.D,s.D)
     x = similar(b)
-    x[:,:,1] = solveblock(b[:,:,1],0)
-    x[:,:,2] = solveblock(b[:,:,2]+z*ket_insertion(s,pair.v,pair.w,x[:,:,1]),1)
-    x[:,:,3] = solveblock(b[:,:,3]+z*bra_insertion(s,pair.vbra,pair.u,x[:,:,1]),-1)
+    x[:,:,1] = solveblock(b[:,:,1],f0)
+    x[:,:,2] = solveblock(b[:,:,2]+z*ket_insertion(s,pair.v,pair.w,x[:,:,1]),fket)
+    x[:,:,3] = solveblock(b[:,:,3]+z*bra_insertion(s,pair.vbra,pair.u,x[:,:,1]),fbra)
     rhs = b[:,:,4]+z*(ket_insertion(s,pair.v,pair.w,x[:,:,3])+
           bra_insertion(s,pair.vbra,pair.u,x[:,:,2])+pair.w*x[:,:,1]*pair.u'-pair.overlap*x[:,:,1])
-    x[:,:,4] = solveblock(rhs,0)
+    x[:,:,4] = solveblock(rhs,f0)
     return x
 end

@@ -769,6 +769,36 @@ within $10^{-7}$. These are qualified mass estimates, not a declaration that
 the stricter eigensolver threshold was reached. Ground-state optimization
 bias and finite-bond effects remain separate from these numerical checks.
 
+\subsection{Library implementation}
+The package function \texttt{excitation\_eigsolve} implements the procedure of this
+section; the research drivers are kept as records. \texttt{TangentCoordinates}
+selects the sector ($W\mapsto-ZWZ$) and forms the white coordinates. With
+\texttt{gauge=:density} it rotates each parity block into the eigenbasis of $\rho$
+(an exact unitary gauge change of $(R,K,\rho)$) and uses the Cholesky factor of the
+stored density, so that $B^\dagger\rho B=\Id$ holds for the $\rho$ entering the
+environments. Coordinates of an arbitrary $W$ are its metric projection
+$c=[W\rho B]_{\rm sector}$, and an action is read as $[F_WB]_{\rm sector}$.
+
+The operator applies the reverse-contracted action with a fixed kinetic grid, so its
+kinetic part is exactly linear; the adaptive potential ODEs are linear to their
+integration tolerance. The field-insertion start vector is defined at any momentum by
+\begin{equation}
+ (\mathcal L^\dagger+ip)X=R+R^\dagger,\qquad W_\phi=\Id+[R,X],
+\end{equation}
+which reduces to the zero-momentum construction above. The shift follows from the
+momentum-$p$ gauge transformation $(V,W)\mapsto(V+[Q,X]-ipX,W+[R,X])$, whose
+left-gauge defect is $-(\mathcal L^\dagger+ip)X$; it is only a start vector. At $p\neq0$ the code solves the trace-projected equation, which is sufficient
+because $V=-R^\dagger W$ is imposed on every tangent. One Davidson routine covers
+both research solvers. Fresh restarts retain the lowest Ritz vectors and recompute
+their actions; thick restarts recombine the stored action columns. Both use the same
+stall rule and require the projected matrix to be Hermitian to $10^{-7}$.
+
+The momentum-independent Schur factor and pinned Poisson factor are shared between
+momenta and between integration settings; only the two $\pm ip$ factors are rebuilt.
+Summing the kinetic boundary covectors of all terms before the two dual Poisson
+solves is exact, because the boundary pullback is linear. Validation repeats the
+research checks: fresh standard and refined actions, and two bilinear energies.
+
 \section{Near-critical signed energies and a direct stability check}
 
 For an approximate symmetric vacuum, the lowest odd tangent energy can be
