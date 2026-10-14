@@ -1,0 +1,8 @@
+# Build and test outputs of the rcmps_gpu package. Hatchling excludes these paths from the
+# sdist and the wheel, and ships this file in the sdist.
+__pycache__/
+*.pyc
+/build/
+/dist/
+*.egg-info/
+.pytest_cache/

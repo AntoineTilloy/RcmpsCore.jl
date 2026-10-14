@@ -151,7 +151,7 @@ Environment variables:
 | `RCMPS_EXCITATION_SLOW=1` | slow tests: planted-bug mutations, larger grids and restarts, D = 16 references |
 | `RCMPS_EXCITATION_D16_SOLVE=1`, `RCMPS_EXCITATION_D16_HISTORY=1` | with the previous one, full D = 16 solves (about 8 and 6 minutes) |
 | `RCMPS_EXCITATION_REPORT=1` | print the largest measured errors |
-| `RCMPS_TEST_FIXTURES` | fixtures shared with the Julia tests (default: `test/fixtures` of the repository) |
+| `RCMPS_TEST_FIXTURES` | fixtures shared with the Julia tests (default: `test/fixtures` of the repository; outside it, as in an unpacked sdist, the tests that read them are skipped unless it is set) |
 | `RCMPS_PHI4_Z2` | companion repository with the stored Julia references (default: `rcmps-phi4-z2` next to this repository) |
 | `RCMPS_CUDA_INCLUDE` | directory with the CUDA header `nv/target`, for the NVRTC compilation test |
 

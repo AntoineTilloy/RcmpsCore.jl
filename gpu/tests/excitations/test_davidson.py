@@ -208,6 +208,7 @@ class DavidsonTests(unittest.TestCase):
         self.assertLessEqual(abs(r["energies"][1] - .5), 1e-9)
         self.assertTrue(r["residuals"][0] > 1e-7 and r["residuals"][1] <= 1e-7 and r["stop_reason"] == "breakdown")
 
+    @unittest.skipUnless(FIXTURE.exists(), "the D = 48 history fixture is not available (RCMPS_TEST_FIXTURES)")
     def test_stall_rule_on_the_captured_d48_history(self):
         # The stall rule on a captured D=48 residual history stops at its plateau only.
         rows = [line.split(",") for line in FIXTURE.read_text().splitlines()[1:]]

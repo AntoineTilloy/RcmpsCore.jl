@@ -1065,6 +1065,7 @@ class DefaultsTest(Case):
             es.sector_dimension(PLAIN, sector="odd")
 
 
+@unittest.skipUnless(os.path.exists(FIXTURE), "the D = 16 Julia fixture is not available (RCMPS_TEST_FIXTURES)")
 class AcceptanceTest(Case):
     """The whole production pipeline on the stored Julia state."""
 

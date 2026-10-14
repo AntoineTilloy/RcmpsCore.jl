@@ -4,10 +4,11 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rcmps-gpu"
-version = "0.1.0"
+dynamic = ["version"]   # rcmps_gpu.__version__, which plan.json records
 description = "CUDA implementations of RcmpsCore: FP64 ground-state optimizer and tangent-space excitation solver for Z2 RCMPS"
 readme = "README.md"
 license = "MIT"
+license-files = ["LICENSE"]   # a copy of the repository LICENSE
 authors = [{ name = "Antoine Tilloy" }]
 requires-python = ">=3.11"
 dependencies = [
@@ -25,8 +26,14 @@ test = ["pytest>=8"]
 rcmps-gpu-optimize = "rcmps_gpu.optimizer.cli:main"
 rcmps-gpu-excitations = "rcmps_gpu.excitations.cli:main"
 
+[tool.hatch.version]
+path = "src/rcmps_gpu/__init__.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/rcmps_gpu"]
+
+[tool.hatch.build.targets.sdist]
+include = ["/src", "/tests", "/qualification", "/README.md", "/LICENSE", "/IMPORTED_FROM_RESEARCH.sha256"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

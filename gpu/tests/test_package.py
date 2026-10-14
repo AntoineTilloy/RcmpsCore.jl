@@ -1,12 +1,18 @@
-"""Package-level checks: the provenance record format (rcmps_gpu.provenance)."""
+"""Package-level checks: the provenance record format (rcmps_gpu.provenance), the version
+and the license."""
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata
 from pathlib import Path
 import tempfile
+import tomllib
 import unittest
 
+import rcmps_gpu
 from rcmps_gpu import provenance
+
+PROJECT = Path(__file__).resolve().parents[1]   # gpu/ of the repository, or an unpacked sdist
 
 
 def sha(raw):
@@ -112,6 +118,30 @@ class ProvenanceRecords(unittest.TestCase):
             path = self.root / "module.py"
             path.write_text(text, encoding="utf-8")
             self.assertEqual(provenance.inert(path), expected, text)
+
+
+class Packaging(unittest.TestCase):
+    @unittest.skipUnless((PROJECT / "pyproject.toml").exists(), "no pyproject.toml next to the tests")
+    def test_the_version_is_written_once(self):
+        project = tomllib.loads((PROJECT / "pyproject.toml").read_text(encoding="utf-8"))
+        self.assertNotIn("version", project["project"])
+        self.assertIn("version", project["project"]["dynamic"])
+        self.assertEqual(project["tool"]["hatch"]["version"], dict(path="src/rcmps_gpu/__init__.py"))
+        self.assertEqual(project["project"]["license-files"], ["LICENSE"])
+
+    def test_an_installed_distribution_has_the_version_of_its_package(self):
+        try:
+            distribution = importlib.metadata.distribution("rcmps-gpu")
+        except importlib.metadata.PackageNotFoundError:
+            self.skipTest("rcmps-gpu is not installed")
+        if Path(distribution.locate_file("rcmps_gpu/__init__.py")).resolve() != Path(rcmps_gpu.__file__).resolve():
+            self.skipTest("the installed rcmps-gpu is not the copy under test")
+        self.assertEqual(distribution.version, rcmps_gpu.__version__)
+        self.assertTrue(any(Path(str(f)).name == "LICENSE" for f in distribution.files))
+
+    @unittest.skipUnless((PROJECT.parent / "Project.toml").exists(), "not in the RcmpsCore.jl repository")
+    def test_the_license_is_that_of_the_repository(self):
+        self.assertEqual((PROJECT / "LICENSE").read_bytes(), (PROJECT.parent / "LICENSE").read_bytes())
 
 
 if __name__ == "__main__":
