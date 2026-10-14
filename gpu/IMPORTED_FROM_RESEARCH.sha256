@@ -1,0 +1,87 @@
+# Files imported byte-identical from the research tree research/gpu_d64 (untracked) on 2026-10-14.
+# Columns: sha256  new path (relative to the repository root)  source path (relative to research/gpu_d64).
+# The sha256 is that of both the imported file and its source at import time.
+#
+# Exceptions to "source as it is now":
+# - excitation eigsolve.py and run.py (now cli.py) come from
+#   excitation_gpu/results/a100_20261013/qualified_sources_final2/, the exact sources of the
+#   A100 final2 runs (their settings.source_sha256); excitation_gpu/eigsolve.py and run.py were
+#   changed afterwards (defaults and documentation only).
+# - tests/excitations/test_eigsolve.py and test_run.py are the versions of excitation_gpu/test_eigsolve.py
+#   and excitation_gpu/test_run.py that went with those sources, i.e. before the same 2026-10-14
+#   change; they were recovered from a backup taken before that change, the research files have
+#   changed since.
+#
+9d38eb2dd557a7157688815279fea6e22916be40f6b3391c8f79176044e107da  gpu/src/rcmps_gpu/optimizer/__init__.py  generic_gpu/__init__.py
+aae5bbe29286e1a3e7e5f197c72805b5a967099cdc9365fdcb58ceb727875ade  gpu/src/rcmps_gpu/optimizer/cli.py  generic_gpu/run.py
+51135acc0108898bfd107c86005da6307cff810fcd4c3acdc9212472cb5ccc57  gpu/src/rcmps_gpu/optimizer/worker.py  generic_gpu/worker.py
+9f3c72d73255747c5c87e423618a7238882521e2f87baa7b816f9940b2332c4d  gpu/src/rcmps_gpu/optimizer/layout.py  generic_gpu/layout.py
+da39690ec50f29e72295a96ea8e71389a2d5b6aa8821af2b090a2ae762ed70be  gpu/src/rcmps_gpu/optimizer/validate_sweep.py  validate_sweep.py
+846bcfdb5000ea7ebdca1ed9a90f47db5e2bdb4ab55c856b9628a6938d5c7faa  gpu/src/rcmps_gpu/optimizer/validate_trajectory_sweep.py  validate_trajectory_sweep.py
+9ef99ae206af6fd7919620aa0dde0e1e4675299fb7eb5a631081363e80175515  gpu/src/rcmps_gpu/optimizer/runtime/cooperative_arnoldi.py  generic_gpu/runtime/cooperative_arnoldi.py
+0c94189823343bc3f15667ac224919eeab8c0ddbdd7bac722b7175aba50d3055  gpu/src/rcmps_gpu/optimizer/runtime/device_control_backend.py  generic_gpu/runtime/device_control_backend.py
+9f3c72d73255747c5c87e423618a7238882521e2f87baa7b816f9940b2332c4d  gpu/src/rcmps_gpu/optimizer/runtime/generic_layout.py  generic_gpu/runtime/generic_layout.py
+d3fe67540446ff86a91177aa8268ed9bba1d84ec3a0977c88f101acadc51350d  gpu/src/rcmps_gpu/optimizer/runtime/jax_source.py  generic_gpu/runtime/jax_source.py
+ca440233a33c1d674f1eeae51abb02e442000aacd283bf5888b6d4d2f1994659  gpu/src/rcmps_gpu/optimizer/runtime/kinetic_backend.py  generic_gpu/runtime/kinetic_backend.py
+09b9d61076d5924d16c7e4a72aad2b953f6982e7ef17750017f1f39daab5697f  gpu/src/rcmps_gpu/optimizer/runtime/numerics.py  generic_gpu/runtime/numerics.py
+84292a8641b65ba690a3a7cd2dca680ee1ff957a57d0be43f5b4177ca5bdf886  gpu/src/rcmps_gpu/optimizer/runtime/ode_backend.py  generic_gpu/runtime/ode_backend.py
+2ffc424b0988e71bbf3f2c856ee4670f2e36379bd9f9a84492c8610ab52b698b  gpu/src/rcmps_gpu/optimizer/runtime/optimizer.py  generic_gpu/runtime/optimizer.py
+d2e9b95e3b1d7881bddd3e8a6f1d41c788071f5ebb45dad102fbebb4ca514d15  gpu/src/rcmps_gpu/optimizer/runtime/overlap_benchmark.py  generic_gpu/runtime/overlap_benchmark.py
+8ba26b991481b0b37d5f4f6527073b345a640ec6ec59c20df9de6eedf0ccb6e4  gpu/src/rcmps_gpu/optimizer/runtime/overlap_sweep_driver.py  generic_gpu/runtime/overlap_sweep_driver.py
+f8027c1d549afa8bcad12462e374ccf5abf381ca3961ad14d517a1c18cc86acc  gpu/src/rcmps_gpu/optimizer/runtime/persistent_backend.py  generic_gpu/runtime/persistent_backend.py
+34291bb1f33c02b0ee9557e7f3ca43395a7b8e9dc122590bd08ca061bf0732ff  gpu/src/rcmps_gpu/optimizer/runtime/persistent_rows.py  generic_gpu/runtime/persistent_rows.py
+122229b4aa11fe896b095d8cdcb216dcfdbfc978bd6554e418b845e6a4aa52b6  gpu/src/rcmps_gpu/optimizer/runtime/persistent_rows_cached.py  generic_gpu/runtime/persistent_rows_cached.py
+2f027ae61ea023c7b5e4ee7d6e502667f79b3d23589bb8816db28920f3bf07b9  gpu/src/rcmps_gpu/optimizer/runtime/persistent_rows_general.py  generic_gpu/runtime/persistent_rows_general.py
+eb8ad6a0c7de5e64367518960e535fd1966fc9493b30ac8c5ef3a49cd94bcb3e  gpu/src/rcmps_gpu/optimizer/runtime/persistent_trajectory_backend.py  generic_gpu/runtime/persistent_trajectory_backend.py
+913daf594a604410e6a4639ab794562489ca041c296b76662e600ae3902562ec  gpu/src/rcmps_gpu/optimizer/runtime/persistent_trajectory_overlap.py  generic_gpu/runtime/persistent_trajectory_overlap.py
+03a96075dc09d7c42b19d1a807ffd83a13aa27db71a88d4c667644634c817111  gpu/src/rcmps_gpu/optimizer/runtime/robust_optimizer.py  generic_gpu/runtime/robust_optimizer.py
+d1d3151e3f7a54ee9f6cc3d20b28458076ee828c23b4d4cefba09eb572e8a699  gpu/src/rcmps_gpu/optimizer/runtime/robust_sweep_driver.py  generic_gpu/runtime/robust_sweep_driver.py
+53c5ee82718e0f079a69744b6fc9e03581cd3f43456450dfe99ad5dfef195020  gpu/src/rcmps_gpu/optimizer/runtime/stationary_correction.py  generic_gpu/runtime/stationary_correction.py
+79a02607d50b303a0df14486bd882e8553f7da2c3ca83e96ef53fbcbe3229995  gpu/src/rcmps_gpu/optimizer/runtime/sweep_driver.py  generic_gpu/runtime/sweep_driver.py
+2959a4cb1ba6dd895d3326b05977403f96aae4f124892c6d88873ff08dbdd689  gpu/src/rcmps_gpu/optimizer/runtime/sweep_stopping.py  generic_gpu/runtime/sweep_stopping.py
+65e222ddde7e74e5a80389c56a952be22b854c636e66ea3b01434158ab38c456  gpu/src/rcmps_gpu/optimizer/runtime/trajectory_sweep_driver.py  generic_gpu/runtime/trajectory_sweep_driver.py
+0b2edf95340781caf4e305f575aeff360ea75f2380051ac72a6344167a1da085  gpu/src/rcmps_gpu/optimizer/runtime/triton_backend.py  generic_gpu/runtime/triton_backend.py
+b7b988d2fa6c5e714a6ecab99aef12a2e3882f59e7f77e304ee35f99e1d20118  gpu/src/rcmps_gpu/optimizer/runtime/warm_sweep_driver.py  generic_gpu/runtime/warm_sweep_driver.py
+dda1fdbfa9f435f04958e418379f269b2381cc3e58d9b09bb81c7f42bdd6beea  gpu/src/rcmps_gpu/optimizer/runtime/manifest.json  generic_gpu/runtime/manifest.json
+e1ff112f16beddc6821dcbf4bb33eedca504c32a872ceb2064c70253cd3d3ff9  gpu/tests/optimizer/test_generic.py  generic_gpu/test_generic.py
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  gpu/src/rcmps_gpu/excitations/__init__.py  excitation_gpu/__init__.py
+7f1a320cd30a6764bc3e8392965f22876bf091210d7320dd72ea6cec355c97c1  gpu/src/rcmps_gpu/excitations/states.py  excitation_gpu/states.py
+83d47a3db0dfd31ba74c061197db1b143c97831d950b6d9ed6a381f86bdde0ea  gpu/src/rcmps_gpu/excitations/models.py  excitation_gpu/models.py
+d3e735a94f129ee65823e657925fb70bc44b961b86b3136282a7ab74938cd049  gpu/src/rcmps_gpu/excitations/coordinates.py  excitation_gpu/coordinates.py
+c7854b5cadf73023d3f269c2796bb13c3dc79d089c8af28c864bad01b1d39594  gpu/src/rcmps_gpu/excitations/davidson.py  excitation_gpu/davidson.py
+8addc00fa16b8c95b0858e3d96bef9eb037bac2fada336061755201fd5795866  gpu/src/rcmps_gpu/excitations/scaled.py  excitation_gpu/scaled.py
+394a7c48ca49c9b11696ff654516a004987b70ffc88cb484c068f1b388764159  gpu/src/rcmps_gpu/excitations/kinetic.py  excitation_gpu/kinetic.py
+bc1ae83505de463146b490dda720d8a7995cc96975b27760f78549caed7c255f  gpu/src/rcmps_gpu/excitations/potential.py  excitation_gpu/potential.py
+372a58f609f9670965f0aaaf780d5acab8e0ae787fd43e38f959a941cc8e9aa6  gpu/src/rcmps_gpu/excitations/ode.py  excitation_gpu/ode.py
+5f698bc5079ba6aa1eacdbf7ed4ee354aa9d4af67e416f8fe55c8bb0c8e92c22  gpu/src/rcmps_gpu/excitations/packed.py  excitation_gpu/packed.py
+35315e71c638ee50c3ec02c775592742ae88a6e22acc5d26343a279974894062  gpu/src/rcmps_gpu/excitations/packed_pair.py  excitation_gpu/packed_pair.py
+8a805a2ed75c59df42d37a391e6ba8fb746d5e7d01399dd4aca0940befc62780  gpu/src/rcmps_gpu/excitations/fused.py  excitation_gpu/fused.py
+68c52fe94e10348e8d3ad97c0df50ebe363c808960af0a0a1d0f8d1c44692061  gpu/src/rcmps_gpu/excitations/hamiltonian.py  excitation_gpu/hamiltonian.py
+5d04482174d348a1226380f689394d05966378a2b59681dd3661c13a59415288  gpu/src/rcmps_gpu/excitations/bilinear.py  excitation_gpu/bilinear.py
+5af3e0913daddc7d5590bb69f3bac70ea5f773f8142a0ea4e0b59910667183f1  gpu/src/rcmps_gpu/excitations/bilinear_fused.py  excitation_gpu/bilinear_fused.py
+55483d3e44144a31f8e4a5e9887663aecbd1ab75f957097b606f38ea0eff333f  gpu/src/rcmps_gpu/excitations/eigsolve.py  excitation_gpu/results/a100_20261013/qualified_sources_final2/eigsolve.py
+70c14052be85a981eefb655762719b23ee9ad52cd9056c3e73d3db56ef627942  gpu/src/rcmps_gpu/excitations/cli.py  excitation_gpu/results/a100_20261013/qualified_sources_final2/run.py
+3eb4714cb4cdba89f57e6f59aa223fd604f4ad120240fe287c964701bf1e29b9  gpu/tests/excitations/test_bilinear.py  excitation_gpu/test_bilinear.py
+ae100829af306474669638198053058cf1af912c54c9847e3273b18054de8015  gpu/tests/excitations/test_coordinates.py  excitation_gpu/test_coordinates.py
+9ae015b2e1d3cf4ada59cfc1df6186afcb484fe963b615a7c9ab4b5a81f68216  gpu/tests/excitations/test_davidson.py  excitation_gpu/test_davidson.py
+2dc43f1ea309a25b2192fdb99ebc53a8cd25cc45da4467baad3f96d7f43948f8  gpu/tests/excitations/test_dense_reference.py  excitation_gpu/test_dense_reference.py
+f2fb84ea469abf9834b1038d01cb991b913738fced12804d487261e77f121504  gpu/tests/excitations/test_device_strict.py  excitation_gpu/test_device_strict.py
+02d33264d2fac31f28747a0773ba0868f6a95c323bd04e7813bd437fa80a26ef  gpu/tests/excitations/test_eigsolve.py  excitation_gpu/test_eigsolve.py
+1d29ed28e6f59b5f44979136da96aa3ce59fb1cff843cdb19a22ea1c2e06a821  gpu/tests/excitations/test_fused.py  excitation_gpu/test_fused.py
+d98c3508097b9a4ca004dd96787f34facd2a1fbed351c9e9266f8a4edce3d286  gpu/tests/excitations/test_hamiltonian.py  excitation_gpu/test_hamiltonian.py
+7f3eee7f7ca37175ac5575e91661111557e13d06b913e90da192d656e6daad12  gpu/tests/excitations/test_kinetic.py  excitation_gpu/test_kinetic.py
+6d3681c36b050b932061ca449bfdb78024cccd7f1de3e0d57a3e466de081fc65  gpu/tests/excitations/test_packed.py  excitation_gpu/test_packed.py
+05cdd5b2c976695e6c4581f82898ad56069ece817d9299e840a394ce7c08f3d7  gpu/tests/excitations/test_packed_pair.py  excitation_gpu/test_packed_pair.py
+c57f8f703853e4541759f9f06d9cf5d325d3a4feffb88c25861cbeb1957e6577  gpu/tests/excitations/test_potential.py  excitation_gpu/test_potential.py
+9c1e21adc8a7693f27699afd805b622bda0a80fd83b5157f41a274496abc75aa  gpu/tests/excitations/test_run.py  excitation_gpu/test_run.py
+f65fecf94f4b727cd6eebef06bb29160dfc28743984c1e87efabc3db034e957d  gpu/tests/excitations/test_scaled.py  excitation_gpu/test_scaled.py
+d9be8f4cf53969987a88c91066bf42443ed3b874661f588fdfc66f71d3713fd0  gpu/tests/excitations/test_stored_references.py  excitation_gpu/test_stored_references.py
+4a3cbd29dcbdab37977ff63af2024994a0d6414eb4896bdcb7325df8c73bda8a  gpu/tests/excitations/test_symmetry.py  excitation_gpu/test_symmetry.py
+48908f314d193013409f1264b058d6679836f9fb2e7372d45c53b8cbc2bef6ad  gpu/tests/excitations/test_validation.py  excitation_gpu/test_validation.py
+f2934cb8859054a38bd1051d3faa0b0d632ab8c12f0b57d9c5c495c352d0391d  gpu/tests/excitations/dense_reference.py  excitation_gpu/dense_reference.py
+d82e2a80334221969a27eb82862f06745d5ce97c3a68408981ae547d9662764e  gpu/tests/excitations/fakecupy.py  excitation_gpu/fakecupy.py
+8dd6cb8b9dd93848f862985ac9ea60b59b8887811ab34d8839879d44160f9304  gpu/qualification/excitations/gpu_action_check.py  excitation_gpu/gpu_action_check.py
+857a29e5b4474fcd153658dd5203eb872f951834c4a4d431708bdaa7c645d953  gpu/qualification/excitations/gpu_bringup.py  excitation_gpu/gpu_bringup.py
+7414c6c7f7f31ffae2c382ea597d69be7c47a5f4d548da4a4c5fea0e379bb5c1  gpu/qualification/excitations/gpu_fused_check.py  excitation_gpu/gpu_fused_check.py
+a7e4eb2b8521e2d8a8f26ab64c797c8a9cbb174b3df80be0516e3b4204d609ce  gpu/qualification/excitations/gpu_pair_check.py  excitation_gpu/gpu_pair_check.py
+17ba8c4fba1a95af10a21348c6b0f40ce453cd8ee0c3ac5ca295ba374e004521  gpu/qualification/excitations/gpu_settings_check.py  excitation_gpu/gpu_settings_check.py
