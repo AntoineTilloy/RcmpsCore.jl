@@ -82,6 +82,16 @@ class ProvenanceRecords(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "overlapping edits of a.py at lines 1 and 1"):
             self.verify({**self.ORIGINAL, "a.py": "from .c import d\n\nx = 1  # é\n\x0cy = 2\n"}, edits)
 
+    def test_a_removed_file_after_edits(self):
+        # Removed files are recorded with their imported sha256; their earlier edits have no content to check.
+        edits = [dict(commit_subject="relative import", imports={"a.py": [[1, "import b", "from . import b"]]}),
+                 dict(commit_subject="prune", removed={"a.py": self.imported["a.py"]})]
+        current = {name: text for name, text in self.ORIGINAL.items() if name != "a.py"}
+        self.assertEqual(self.verify(current, edits), [])
+        edits[1]["removed"]["a.py"] = sha(b"something else\n")
+        with self.assertRaisesRegex(ValueError, "a.py with its recorded edits reverted is not the imported file"):
+            self.verify(current, edits)
+
     def test_later_edits_of_a_rewritten_file(self):
         rewritten = "completely\nnew\n"
         edits = [dict(commit_subject="rewrite", replaced={"b.py": dict(before=self.imported["b.py"],

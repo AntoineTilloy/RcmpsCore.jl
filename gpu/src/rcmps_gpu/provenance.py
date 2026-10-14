@@ -13,8 +13,9 @@ order. An entry has a "commit_subject", optionally a "change" (text), and any of
   `new lines` is empty and n is the line the old ones preceded);
 - "replaced": {file: {"before": sha256, "after": sha256}}: the commit rewrote the file,
   whose diff is in git; earlier edits of that file are covered by the sha256 `before` only;
-- "added": {file: sha256}, "removed": {file: sha256}: the commit added the file with that
-  sha256, or deleted it at that sha256.
+- "added": {file: sha256}: the commit added the file with that sha256;
+- "removed": {file: sha256}: the commit deleted the file, whose sha256 as imported (or as
+  added) this is; its edits before the deletion are not checked against any content.
 
 Lines are written without their newline ("\\n") and line numbers start at 1. The line
 edits of one file in one entry ("imports" and "hunks" together) do not overlap; a file
@@ -69,6 +70,7 @@ def verify(directory, imported, edits, names):
     directory = Path(directory)
     names = set(names)
     files = {name: (directory / name).read_bytes() for name in names}   # bytes, or a sha256 str
+    removed = {}   # deleted files: sha256 as imported or added
     edited = set()
     for entry in reversed(edits):
         subject = entry["commit_subject"]
@@ -80,14 +82,16 @@ def verify(directory, imported, edits, names):
         if len(touched) != len(set(touched)):
             raise ValueError(f"{subject}: a file is both edited by lines and added, removed or replaced")
         for name, digest in entry.get("added", {}).items():
-            if name not in files or _digest(files[name]) != digest:
+            content = removed.pop(name) if name in removed else files.pop(name, None)
+            if content is None or _digest(content) != digest:
                 raise ValueError(f"{name} differs from the file added by '{subject}'")
-            del files[name]
         for name, digest in entry.get("removed", {}).items():
-            if name in files:
+            if name in files or name in removed:
                 raise ValueError(f"{name} was removed by '{subject}' but exists")
-            files[name] = digest
+            removed[name] = digest
         for name, change in entry.get("replaced", {}).items():
+            if name in removed:
+                continue
             if name not in files or _digest(files[name]) != change["after"]:
                 raise ValueError(f"{name} differs from the file written by '{subject}'")
             files[name] = change["before"]
@@ -100,10 +104,13 @@ def verify(directory, imported, edits, names):
         for name, rows in entry.get("hunks", {}).items():
             lines.setdefault(name, []).extend((n, old, new) for n, old, new in rows)
         for name, rows in lines.items():
+            if name in removed:
+                continue
             if name not in files or isinstance(files[name], str):
                 raise ValueError(f"{subject}: no file {name} to revert")
             files[name] = _revert(files[name], rows, name, subject)
         edited.update(touched)
+    files.update(removed)
     if set(files) != set(imported):
         raise ValueError(f"files {sorted(set(files) ^ set(imported))} are not accounted for by the record")
     for name, content in sorted(files.items()):
