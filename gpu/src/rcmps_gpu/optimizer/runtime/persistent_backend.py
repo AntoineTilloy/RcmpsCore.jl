@@ -1,22 +1,17 @@
 """Isolated cooperative FP64 MMA fusion of one complete DOP853 RK attempt.
 
-All inter-block barriers use cooperative_groups::this_grid().sync(). Before
-launch, queried resident-block capacity must cover the complete grid. CuPy's
-silent one-dimensional cooperative-grid truncation is therefore never allowed.
-No CPU objective, FP32 arithmetic, fast math, or software spin barriers.
+All inter-block barriers use cooperative_groups::this_grid().sync(). No CPU
+objective, FP32 arithmetic, fast math, or software spin barriers.
 
 PTX fragment mapping follows NVIDIA's m8n8k4 FP64 specification:
 https://docs.nvidia.com/cuda/parallel-thread-execution/index.html
-Cooperative capture inside a conditional graph is runtime-tested separately;
-importing this file does not initialize CUDA.
+Only the kernel source CUDA remains (the classes that launched it inside the
+native conditional graph were removed): persistent_rows and
+persistent_rows_cached rewrite it, and persistent_trajectory_backend extracts
+the RHS and error reduction of the generated trajectory kernel from the result.
+Importing this file does not initialize CUDA.
 """
 from __future__ import annotations
-import math
-import time
-import numpy as np
-from scipy.integrate._ivp import dop853_coefficients as _dop
-from .device_control_backend import DeviceAdaptiveDOP853
-from .ode_backend import _packed_z2_pullback,quadrature
 
 CUDA=r'''
 #include <cooperative_groups.h>
@@ -137,88 +132,3 @@ extern "C" __global__ void persistent_attempt(
     }
 }
 '''
-
-
-class PersistentAttempt:
-    """Safe cooperative launch with one warp per packed 8x8 output tile."""
-    def __init__(self,rhs,atol,rtol):
-        cp=rhs.xp
-        if cp.__name__!="cupy":raise ValueError("persistent attempt requires CuPy")
-        props=cp.cuda.runtime.getDeviceProperties(cp.cuda.Device().id)
-        if int(props["major"])<8:raise ValueError("native FP64 MMA requires SM80 or later")
-        self.cp,self.rhs,self.atol,self.rtol=cp,rhs,float(atol),float(rtol)
-        self.blocks=10*((rhs.d+7)//8)**2+1
-        self.base=cp.empty_like(rhs.initial);self.temp=cp.empty_like(rhs.initial)
-        self.partials=cp.empty(2*self.blocks,dtype=cp.float64)
-        self.kernel=cp.RawKernel(CUDA,"persistent_attempt",options=("--std=c++17",),
-                                enable_cooperative_groups=True)
-        self.kernel.compile()
-        resident=cp.cuda.driver.occupancyMaxActiveBlocksPerMultiprocessor(self.kernel.kernel.ptr,32,0)
-        sms=int(props["multiProcessorCount"])
-        self.capacity=int(resident)*sms
-        if self.blocks>self.capacity:
-            raise RuntimeError(f"unsafe cooperative grid: {self.blocks} blocks > resident {self.capacity}")
-        self.occupancy=dict(blocks=self.blocks,threads_per_block=32,
-            active_blocks_per_sm=int(resident),multiprocessors=sms,resident_capacity=self.capacity,
-            registers=int(self.kernel.num_regs),local_bytes=int(self.kernel.local_size_bytes),
-            shared_bytes=int(self.kernel.shared_size_bytes),synchronization="cooperative grid.sync")
-
-    def launch(self,attempt):
-        rhs=self.rhs
-        self.kernel((self.blocks,1,1),(32,1,1),
-            (attempt.y,attempt.f,attempt.stages,attempt.intermediate,attempt.proposed,
-             self.base,self.temp,rhs.ql,rhs.qright,rhs.rl,rhs.rright,rhs.ol,rhs.oright,
-             rhs.fixed,rhs.coefficients,rhs.device_indices,rhs.device_adjoint,rhs.a,rhs.b,
-             attempt.linear.a,attempt.linear.b,attempt.linear.e5,attempt.linear.e3,
-             attempt.params,np.float64(self.atol),np.float64(self.rtol),np.int32(rhs.d),
-             self.partials,attempt.norms))
-
-
-class PersistentDeviceDOP853(DeviceAdaptiveDOP853):
-    """Existing native device controller with a cooperative fused RK trial.
-
-    Whether the installed driver permits cooperative conditional-body kernels
-    is tested by actual graph instantiation, with native errors propagated.
-    Dense stages/pullback remain the already validated implementations.
-    """
-    def __init__(self,rhs,points,**options):
-        self.persistent=PersistentAttempt(rhs,options.get("atol",1e-13),options.get("rtol",1e-12))
-        super().__init__(rhs,points,**options)
-
-    def _trial(self):
-        self.kernels["prepare"]((1,),(1,),
-            (self.state,self.counts,self.attempt.params,self.c,self.coefficients,
-             np.float64(self.a),np.int64(self.max_steps)))
-        self.persistent.launch(self.attempt)
-        self.kernels["control"]((1,),(1,),
-            (self.state,self.counts,self.attempt.norms,self.dense.points,
-             np.int64(len(self.dense.points)),np.int64(self.y.size),self.dense.params,
-             self.dense.indices,self.c,self.coefficients,np.float64(self.a),
-             np.uint64(self.dense_handle)))
-
-    def run(self):
-        samples,stats=super().run()
-        stats.update(persistent_attempt=True,occupancy=self.persistent.occupancy)
-        return samples,stats
-
-
-def evaluate_quartic_persistent(R,Q,rho,g=1.,*,xp,half_window=30.,n_quad=512,
-        atol=1e-13,rtol=1e-12,initial_step=None,max_steps=1_000_000,return_samples=False):
-    from .triton_backend import TritonPackedQuarticRHS
-    start=time.perf_counter()
-    r,q,rho=(xp.asarray(x,dtype=xp.complex128) for x in (R,Q,rho))
-    points,weights=quadrature(half_window,n_quad)
-    rhs=TritonPackedQuarticRHS(q,r,rho,xp)
-    solver=PersistentDeviceDOP853(rhs,np.r_[points,math.sqrt(half_window)],
-        atol=atol,rtol=rtol,initial_step=initial_step,max_steps=max_steps)
-    try:
-        samples,stats=solver.run()
-        begin=time.perf_counter()
-        ((value,covector,environment),)=_packed_z2_pullback(q,r,rhs,samples,points,weights)
-        covector,environment=float(g)*covector,float(g)*environment
-        xp.cuda.get_current_stream().synchronize()
-        stats.update(contraction_seconds=time.perf_counter()-begin,total_seconds=time.perf_counter()-start)
-        result=dict(value=float(g)*value,energy=float(g)*value,covector=covector,environment=environment,stats=stats)
-        if return_samples:result["samples"]=samples
-        return result
-    finally:solver.close()

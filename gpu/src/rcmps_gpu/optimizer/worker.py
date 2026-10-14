@@ -169,7 +169,7 @@ def main(argv=None):
                    not np.isfinite(v).all() for v in (r, k, rho)):
                 raise ValueError("initial state requires finite complex128 matrices with the requested D")
             options = [str(reference), "--backend", "cupy", "--mode", "hybrid", "--packed-z2",
-                "--quartic-backend", "persistent_rows_general", "--arnoldi", "gpu", "--projection", "hessenberg_gpu",
+                "--quartic-backend", "persistent_trajectory", "--arnoldi", "gpu", "--projection", "hessenberg_gpu",
                 "--kinetic", "cooperative", "--controller", "robust", "--warm-start-line-search",
                 "--gradient-tolerance", str(plan["gradient_target"]), "--max-device-seconds", str(plan["max_device_seconds"]),
                 "--iterations", str(plan["max_iterations"] + (int(snapshot["state"]["iteration"]) if snapshot else 0)),
@@ -184,7 +184,7 @@ def main(argv=None):
                 args.max_seconds = plan["max_seconds"]
                 return args
             base = parse([str(reference), "--backend", "cupy", "--mode", "hybrid", "--packed-z2",
-                "--quartic-backend", "persistent_rows_general", "--arnoldi", "gpu", "--projection", "hessenberg_gpu"])
+                "--quartic-backend", "persistent_trajectory", "--arnoldi", "gpu", "--projection", "hessenberg_gpu"])
             for name, value in plan["controls"].items():
                 setattr(base, name, value)
             status["state"] = "initial_qualification"

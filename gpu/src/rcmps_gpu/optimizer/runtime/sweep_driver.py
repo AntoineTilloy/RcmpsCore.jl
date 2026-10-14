@@ -42,19 +42,19 @@ def validate_arguments(args):
         gradient_relative_improvement=args.stagnation_gradient_improvement)
     if not 0 < args.initial_step <= 1:
         raise ValueError("--initial-step must be in (0, 1]")
-    if args.quartic_backend in ("persistent", "persistent_rows", "persistent_rows_cached", "persistent_rows_general"):
+    if args.quartic_backend == "persistent_trajectory":
         args.device_controller = True
     if args.quartic_backend != "cuda":
         if args.backend != "cupy" or args.mode != "hybrid" or not args.packed_z2:
             raise ValueError(f"--quartic-backend {args.quartic_backend} requires "
                              "--backend cupy --mode hybrid --packed-z2")
-    if args.dense_graph and not args.device_controller and (args.backend != "cupy" or not args.graph):
-        raise ValueError("--dense-graph requires --backend cupy --graph")
+    if args.graph or args.dense_graph:
+        raise ValueError("--graph and --dense-graph: the CUDA-graph integrator was removed")
     if args.device_controller:
         if (args.backend != "cupy" or args.mode != "hybrid" or
-                args.quartic_backend not in ("triton", "persistent", "persistent_rows", "persistent_rows_cached", "persistent_rows_general") or not args.packed_z2):
+                args.quartic_backend != "persistent_trajectory" or not args.packed_z2):
             raise ValueError("--device-controller requires --backend cupy --mode hybrid "
-                             "--quartic-backend triton/persistent/persistent_rows/persistent_rows_cached --packed-z2")
+                             "--quartic-backend persistent_trajectory --packed-z2")
         if args.reduced or args.fused_rhs:
             raise ValueError("--device-controller is incompatible with --reduced and --fused-rhs")
         if not 0 < args.window <= 40:
@@ -62,19 +62,12 @@ def validate_arguments(args):
 
 
 def source_hashes(args):
-    # The Triton RHS also uses ode_backend's controller and exact pullback.
+    # The persistent trajectory also uses ode_backend's packed equations and exact
+    # pullback; its CUDA source is derived from the persistent_* kernel sources.
     sources = ["sweep_driver.py", "sweep_stopping.py", "ode_backend.py", "kinetic_backend.py",
                "numerics.py", "optimizer.py"]
-    if args.quartic_backend != "cuda":
-        sources.append("triton_backend.py")
-    if args.quartic_backend in ("persistent", "persistent_rows", "persistent_rows_cached", "persistent_rows_general"):
-        sources.append("persistent_backend.py")
-    if args.quartic_backend in ("persistent_rows", "persistent_rows_cached", "persistent_rows_general"):
-        sources.append("persistent_rows.py")
-    if args.quartic_backend in ("persistent_rows_cached", "persistent_rows_general"):
-        sources.append("persistent_rows_cached.py")
-    if args.quartic_backend == "persistent_rows_general":
-        sources.append("persistent_rows_general.py")
+    if args.quartic_backend == "persistent_trajectory":
+        sources += ["persistent_backend.py", "persistent_rows.py", "persistent_rows_cached.py"]
     if args.device_controller:
         sources += ["device_control_backend.py", "jax_source.py"]
     return {name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
@@ -83,15 +76,16 @@ def source_hashes(args):
 
 def objective(r, k, rho, coupling, args, xp):
     validate_arguments(args)
+    if args.device_controller:
+        # The persistent trajectory runs only in the overlap objective, which
+        # trajectory_sweep_driver binds in place of this function.
+        raise ValueError("--quartic-backend persistent_trajectory runs only through trajectory_sweep_driver")
     q = -1j*k-adj(r)@r/2
     synchronize(xp)
     begin = time.perf_counter()
     options = dict(xp=xp, half_window=args.window, n_quad=args.quadrature,
                    atol=args.atol, rtol=args.rtol, max_steps=args.max_steps,
-                   use_graph=args.graph,
                    progress=lambda status: print(json.dumps({"phase":"ode_progress",**status}),flush=True))
-    if args.dense_graph:
-        options["use_dense_graph"] = True
     if args.mode == "ode":
         raw = evaluate_phi4(r, q, rho, coupling, **options)
         stats = {"ode":raw["stats"]}
@@ -102,31 +96,8 @@ def objective(r, k, rho, coupling, args, xp):
                               fallback_tolerance=args.krylov_ceiling,
                               projection_backend=args.projection)
         print(json.dumps({"phase":"kinetic", "stats":kinetic["stats"]}), flush=True)
-        if args.device_controller:
-            # Native conditional WHILE/IF graphs always capture both RK trials
-            # and dense output. Host graph/progress flags are not forwarded.
-            if args.quartic_backend == "persistent_rows_general":
-                from .persistent_rows_general import evaluate_quartic_persistent_rows_general as evaluate
-            elif args.quartic_backend == "persistent_rows_cached":
-                from .persistent_rows_cached import evaluate_quartic_persistent_rows_cached as evaluate
-            elif args.quartic_backend == "persistent_rows":
-                from .persistent_rows import evaluate_quartic_persistent_rows as evaluate
-            elif args.quartic_backend == "persistent":
-                from .persistent_backend import evaluate_quartic_persistent as evaluate
-            else:
-                from .device_control_backend import evaluate_quartic_device_control as evaluate
-            interaction = evaluate(r, q, rho, coupling,
-                xp=xp, half_window=args.window, n_quad=args.quadrature,
-                atol=args.atol, rtol=args.rtol, max_steps=args.max_steps)
-        elif args.quartic_backend == "triton":
-            # Keep Triton optional: CUDA/NumPy runs never import its runtime.
-            # Packed layout, precision and device capability are also checked
-            # by TritonPackedQuarticRHS before any propagation.
-            from .triton_backend import evaluate_quartic_triton
-            interaction = evaluate_quartic_triton(r, q, rho, coupling, **options)
-        else:
-            interaction = evaluate_quartic(r, q, rho, coupling, reduced=args.reduced,
-                                           packed_z2=args.packed_z2, fused_rhs=args.fused_rhs, **options)
+        interaction = evaluate_quartic(r, q, rho, coupling, reduced=args.reduced,
+                                       packed_z2=args.packed_z2, fused_rhs=args.fused_rhs, **options)
         raw = dict(value=kinetic["value"]+interaction["value"],
                    covector=kinetic["covector"]+interaction["covector"],
                    environment=kinetic["environment"]+interaction["environment"])
@@ -152,9 +123,10 @@ def build_parser():
     parser.add_argument("reference")
     parser.add_argument("--backend",choices=["cupy","numpy"],default="cupy")
     parser.add_argument("--mode",choices=["ode","hybrid"],default="ode")
-    parser.add_argument("--quartic-backend",choices=["cuda","triton","persistent","persistent_rows","persistent_rows_cached","persistent_rows_general"],default="cuda",
-                        help="hybrid quartic implementation; custom kernels require CuPy and packed Z2; "
-                             "persistent variants imply the native device controller")
+    parser.add_argument("--quartic-backend",choices=["cuda","persistent_trajectory"],default="cuda",
+                        help="hybrid quartic implementation: cuda (host-driven DOP853) or persistent_trajectory "
+                             "(one cooperative CUDA kernel per trajectory; CuPy and packed Z2, through "
+                             "trajectory_sweep_driver only; implies the device controller)")
     parser.add_argument("--window",type=float,default=30.)
     parser.add_argument("--quadrature",type=int,default=512)
     parser.add_argument("--atol",type=float,default=1e-13)
@@ -168,12 +140,12 @@ def build_parser():
     parser.add_argument("--max-steps",type=int,default=1_000_000)
     parser.add_argument("--metric-reg",type=float,default=1e-3)
     parser.add_argument("--stationary-tolerance",type=float,default=1e-13)
-    parser.add_argument("--graph",action="store_true")
+    parser.add_argument("--graph",action="store_true",
+                        help="refused: the CUDA-graph integrator was removed (checkpoints record this control)")
     parser.add_argument("--dense-graph",action="store_true",
-                        help="capture dense-output stages and fuse interpolation; requires CuPy graphs")
+                        help="refused: removed with --graph (checkpoints record this control)")
     parser.add_argument("--device-controller",action="store_true",
-                        help="native CUDA adaptive WHILE/IF graph; requires hybrid CuPy custom kernels and packed Z2, "
-                             "implies captured RK and dense output, CUDA >=12.4 on A100/H100")
+                        help="adaptive controller on the device; implied by --quartic-backend persistent_trajectory")
     parser.add_argument("--reduced",action="store_true")
     parser.add_argument("--packed-z2",action="store_true")
     parser.add_argument("--fused-rhs",action="store_true")

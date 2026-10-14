@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
-import importlib.util
 import io
 import json
 import os
@@ -30,8 +29,6 @@ GOLDEN = json.loads(Path(__file__).with_name("golden_cuda.json").read_bytes())
 BASE_MANIFEST_SHA = "4b68b5fc76de4cfa3b049364ad1bc9ab7be2f61ea56a2eec0fe9cf9450efb21e"
 # sha256 of research generic_gpu/runtime/manifest.json, imported by "Import the GPU code verbatim"
 IMPORTED_MANIFEST_SHA = "dda1fdbfa9f435f04958e418379f269b2381cc3e58d9b09bb81c7f42bdd6beea"
-needs_triton = unittest.skipUnless(importlib.util.find_spec("triton") is not None,
-                                   "persistent_rows_general imports triton at module level; triton is not installed")
 
 
 def child(code):
@@ -69,12 +66,17 @@ class GenericTests(unittest.TestCase):
         self.assertEqual(manifest["base_manifest_sha256"], BASE_MANIFEST_SHA)
         self.assertFalse(manifest["actual_GPU_qualified"])
         files = sorted(path.name for path in RUNTIME.glob("*.py") if path.name != "__init__.py")
-        self.assertEqual(len(files), 24)
-        self.assertEqual(sorted(manifest["runtime_source_sha256"]), files)
+        # 24 modules were imported; the pruning commit deleted two, recorded with their imported sha256.
+        removed = {name: digest for entry in PROVENANCE["edits"] for name, digest in entry.get("removed", {}).items()}
+        self.assertEqual(len(removed), 2)
+        self.assertEqual(len(manifest["runtime_source_sha256"]), 24)
+        self.assertEqual({name: manifest["runtime_source_sha256"][name] for name in removed}, removed)
+        self.assertEqual(len(files), 22)
+        self.assertEqual(sorted(set(manifest["runtime_source_sha256"]) - set(removed)), files)
         self.assertEqual(sorted(run.runtime_source_sha256()), files)
         record = run.verify_runtime()   # reverts the recorded edits on the bytes of the files
         self.assertEqual(record["edits"], [entry["commit_subject"] for entry in PROVENANCE["edits"]])
-        self.assertEqual(len(record["edited_files"]), 19)
+        self.assertEqual(len(record["edited_files"]), 18)
 
     def test_planner_and_worker_refuse_a_runtime_that_differs_from_its_provenance(self):
         line = "        factor = min(10.0, 0.9 * error**(-1 / 8)) if error else 10.0\n"
@@ -158,7 +160,7 @@ import hashlib
 from rcmps_gpu.optimizer.runtime import persistent_trajectory_backend as t
 print(json.dumps({str(d):dict(trajectory_sha256=hashlib.sha256(t.trajectory_source(d).encode()).hexdigest(),
     options=list(t.compilation_options(d)),geometry=t.geometry(d)) for d in SIZES}))
-assert 'cupy' not in sys.modules and 'triton' not in sys.modules
+assert 'cupy' not in sys.modules
 '''.replace("SIZES", repr(tuple(sizes)))
         self.assertEqual(child(code), GOLDEN["sizes"])
 
@@ -259,23 +261,50 @@ for d in (1,5,7,9,17,33,65,80,95,96,97,129,160,255,256):
     assert 'mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64' in source
     assert 'float ' not in source and '--use_fast_math' not in t.compilation_options(d)
     assert ('extern __shared__ double2 dynamic_panels[];' in source)==bool(dynamic_shared_bytes(d))
-assert 'cupy' not in sys.modules and 'triton' not in sys.modules
-print(json.dumps(dict(new_shapes_generated=True,CUDA_imported=False)))
-''')
-        self.assertTrue(result["new_shapes_generated"])
-
-    @needs_triton
-    def test_new_partial_tiles_and_dynamic_panels_of_the_general_row_source(self):
-        result = child('''
-from rcmps_gpu.optimizer.runtime import persistent_rows_general as g
-from rcmps_gpu.optimizer.runtime.generic_layout import dynamic_shared_bytes
-for d in (1,5,7,9,17,33,65,80,95,96,97,129,160,255,256):
-    row=g.general_row_source(d)
-    assert ('extern __shared__ double2 dynamic_panels[];' in row)==bool(dynamic_shared_bytes(d))
 assert 'cupy' not in sys.modules
 print(json.dumps(dict(new_shapes_generated=True,CUDA_imported=False)))
 ''')
         self.assertTrue(result["new_shapes_generated"])
+
+    def test_removed_backends_and_graph_integrator_are_refused(self):
+        result = child('''
+import argparse,numpy as np
+from rcmps_gpu.optimizer.runtime import sweep_driver,ode_backend,overlap_benchmark
+def refused(call,message,kind=ValueError):
+    try:call()
+    except kind as error:assert message in str(error),error
+    else:raise AssertionError('accepted: '+message)
+def parse(arguments):
+    parser=sweep_driver.build_parser();parser.exit_on_error=False
+    return parser.parse_args(['reference','--backend','cupy','--mode','hybrid','--packed-z2']+arguments)
+args=parse(['--quartic-backend','persistent_trajectory'])
+sweep_driver.validate_arguments(args);assert args.device_controller
+for label in ('persistent_rows_general','persistent_rows_cached','persistent_rows','persistent'):
+    refused(lambda:parse(['--quartic-backend',label]),'invalid choice',argparse.ArgumentError)
+for flag in ('--graph','--dense-graph'):
+    refused(lambda:sweep_driver.validate_arguments(parse([flag])),'the CUDA-graph integrator was removed')
+refused(lambda:sweep_driver.objective(None,None,None,2.7,args,np),'runs only through trajectory_sweep_driver')
+z=np.zeros((4,4),complex)
+refused(lambda:ode_backend.evaluate_quartic(z,z,z,xp=np,packed_z2=True,use_graph=True),'the CUDA-graph integrator was removed')
+refused(lambda:overlap_benchmark.PreparedQuartic(np,(z,z,z),2.7,None),'prepares no solver itself',TypeError)
+assert 'cupy' not in sys.modules
+print(json.dumps(dict(refused=True)))
+''')
+        self.assertTrue(result["refused"])
+
+    def test_overlap_dispatch_logic_self_tests(self):
+        # Bounded D4 NumPy tests of the kinetic/quartic dispatch that the overlap objective
+        # uses; the research benchmark command line ran them with --self-test.
+        result = child('''
+import contextlib,io
+from rcmps_gpu.optimizer.runtime import overlap_benchmark
+log=io.StringIO()
+with contextlib.redirect_stderr(log):status=overlap_benchmark.logic_self_tests()
+assert status==0,log.getvalue()
+assert 'cupy' not in sys.modules
+print(json.dumps(dict(passed=True,tests=log.getvalue().count(' ... ok'))))
+''')
+        self.assertEqual(result, dict(passed=True, tests=3))
 
     def test_occupancy_check_precedes_large_sample_buffers(self):
         source = (RUNTIME / "persistent_trajectory_backend.py").read_text()
@@ -370,9 +399,9 @@ with tempfile.TemporaryDirectory() as tmp:
     refused(dict(launcher_source_sha256={**plan['launcher_source_sha256'],'optimizer/worker.py':'0'*64}),'launcher source changed after planning: optimizer/worker.py')
     refused(dict(launcher_source_sha256={k:v for k,v in plan['launcher_source_sha256'].items() if k!='provenance.py'}),'launcher source changed after planning: provenance.py')
     refused(dict(runtime_provenance={**plan['runtime_provenance'],'edits':[]}),'runtime provenance changed after planning')
-    fake=types.ModuleType('rcmps_gpu.optimizer.runtime.triton_backend');fake.__file__='/elsewhere/triton_backend.py'
+    fake=types.ModuleType('rcmps_gpu.optimizer.runtime.cooperative_arnoldi');fake.__file__='/elsewhere/cooperative_arnoldi.py'
     sys.modules[fake.__name__]=fake
-    refused({},'mixed numerical runtimes: triton_backend.py')
+    refused({},'mixed numerical runtimes: cooperative_arnoldi.py')
     assert not (Path(tmp)/'run').exists()
 from rcmps_gpu.optimizer import validate_trajectory_sweep as v
 assert v.validate_sweep.driver is v.wrapper.overlap_driver.driver
@@ -488,7 +517,7 @@ with tempfile.TemporaryDirectory() as tmp:
         value.ravel(order='F').astype('<c16').tofile(ref/(name+'.bin'))
     (ref/'metadata.toml').write_text('D = 10\\ncoupling = 2.7\\n')
     args=t.ORIGINAL_PARSE([str(ref),'--backend','cupy','--mode','hybrid','--packed-z2',
-        '--quartic-backend','persistent_rows_general','--arnoldi','gpu','--projection','hessenberg_gpu','--window','20'])
+        '--quartic-backend','persistent_trajectory','--arnoldi','gpu','--projection','hessenberg_gpu','--window','20'])
     args.trajectory_controls=dict(enabled=True,whole_trajectory_cooperative_kernel=True,kinetic='cooperative',max_device_seconds=300.)
     args.overlap_controls=dict(enabled=True,controller='robust')
     hashes=t.source_hashes(args);controls=vars(args)

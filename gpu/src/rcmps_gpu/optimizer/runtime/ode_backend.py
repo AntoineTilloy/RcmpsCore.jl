@@ -16,8 +16,6 @@ from __future__ import annotations
 
 import math
 import time
-import ctypes
-import ctypes.util
 from dataclasses import dataclass
 
 import numpy as np
@@ -232,23 +230,6 @@ class _ReducedQuarticRHS(_BatchedRHS):
                         matrix_out[k] += source * coefficient * product[src]
             out[-1] = 4 * source * np.trace(il[2] + ir[2])
         return out
-
-    def graph_rhs_into(self, s, y, out, work, jac, source, matmul):
-        xp, d, n = self.xp, self.d, self.matrix_size
-        matrices = y[:n].reshape(7, d, d)
-        matrix_out = out[:n].reshape(7, d, d)
-        left, right, temp, jump, il, ir = [b[:n].reshape(7, d, d) for b in work[:6]]
-        matmul(self.ql, matrices, out=left)
-        matmul(matrices, self.qright, out=right)
-        matmul(self.rl, matrices, out=temp)
-        matmul(temp, self.rright, out=jump)
-        matmul(self.ol, matrices, out=il)
-        matmul(matrices, self.oright, out=ir)
-        self._combine_rhs(left, right, jump, self.fixed, il, ir,
-            self.edge_indices[0], self.edge_indices[1],
-            self.edge_coefficients[0], self.edge_coefficients[1],
-            d**2, self.edge_width, jac, source, matrix_out)
-        self.trace_kernel(il, ir, d, source, out[-1:])
 
 
 class _PackedZ2QuarticRHS:
@@ -490,25 +471,6 @@ class _PackedZ2QuarticRHS:
             out[-1] = 8 * source * (np.sum(self.a * f3.conj()) + np.sum(self.b * f3.T)).real
         return out
 
-    def graph_rhs_into(self, s, y, out, work, jac, source, matmul):
-        if self.fused_rhs:
-            self._fused_rhs_into(y, out, jac, source)
-            return
-        d, n = self.d, self.matrix_size
-        matrices, matrix_out = y[:n].reshape(10, d, d), out[:n].reshape(10, d, d)
-        gj, gl, gr = self._gather(y)
-        left, right, temp, jump, il, ir = [buf[:n].reshape(10, d, d) for buf in work[:6]]
-        matmul(self.ql, matrices, out=left)
-        matmul(matrices, self.qright, out=right)
-        matmul(self.rl, gj, out=temp)
-        matmul(temp, self.rright, out=jump)
-        matmul(self.ol, gl, out=il)
-        matmul(gr, self.oright, out=ir)
-        self.combine_kernel(left, right, jump, il, ir, self.fixed, self.coefficients,
-                            d, jac, source, matrix_out)
-        self.trace_kernel(y, self.a, self.b, d, source, self.trace_terms)
-        self.xp.sum(self.trace_terms, out=out[-1:].reshape(()))
-
 
 class _LinearCombination:
     """Fuse RK stage sums on GPU; NumPy uses small BLAS contractions."""
@@ -534,271 +496,8 @@ class _LinearCombination:
         return y + h * np.tensordot(coefficients[:stages], k[:stages], axes=(0, 0))
 
 
-class _NativeBatchedGemm:
-    """Native complex128 cuBLAS batches, with row-major operand reversal."""
-    def __init__(self, xp, stream):
-        from pathlib import Path
-        candidates = [ctypes.util.find_library("cublas"), "libcublas.so.12", "libcublas.so.11"]
-        # CUDA wheel dependencies may have been loaded with an extension's
-        # RPATH and therefore be absent from the Python process's loader path.
-        maps = Path("/proc/self/maps")
-        if maps.exists():
-            candidates += [line.split()[-1] for line in maps.read_text().splitlines()
-                           if "/libcublas.so" in line and line.split()[-1].startswith("/")]
-        library = None
-        for candidate in dict.fromkeys(x for x in candidates if x):
-            try:
-                library = ctypes.CDLL(candidate)
-                break
-            except OSError:
-                pass
-        if library is None:
-            raise RuntimeError("native libcublas could not be loaded for CUDA graph capture")
-        self.library = library
-        create, set_stream, destroy = (getattr(library, name) for name in
-            ("cublasCreate_v2", "cublasSetStream_v2", "cublasDestroy_v2"))
-        create.argtypes, create.restype = [ctypes.POINTER(ctypes.c_void_p)], ctypes.c_int
-        set_stream.argtypes, set_stream.restype = [ctypes.c_void_p, ctypes.c_void_p], ctypes.c_int
-        destroy.argtypes, destroy.restype = [ctypes.c_void_p], ctypes.c_int
-        self.handle, self.destroy = ctypes.c_void_p(), destroy
-        self._check(create(ctypes.byref(self.handle)), "create")
-        self._check(set_stream(self.handle, ctypes.c_void_p(stream.ptr)), "set stream")
-        self.gemm = library.cublasZgemmStridedBatched
-        pointer, integer, stride = ctypes.c_void_p, ctypes.c_int, ctypes.c_longlong
-        self.gemm.argtypes = [pointer, integer, integer, integer, integer, integer,
-            pointer, pointer, integer, stride, pointer, integer, stride,
-            pointer, pointer, integer, stride, integer]
-        self.gemm.restype = ctypes.c_int
-        self.alpha, self.beta = (ctypes.c_double * 2)(1., 0.), (ctypes.c_double * 2)(0., 0.)
-
-    @staticmethod
-    def _check(status, action):
-        if status != 0:
-            raise RuntimeError(f"native cuBLAS {action} failed with status {status}")
-
-    def matmul(self, a, b, *, out):
-        if (a.shape != b.shape or out.shape != a.shape or a.ndim != 3 or
-            a.shape[-1] != a.shape[-2] or a.dtype != np.complex128 or
-            not a.flags.c_contiguous or not b.flags.c_contiguous or not out.flags.c_contiguous):
-            raise ValueError("native graph GEMM requires equal contiguous complex128 square batches")
-        batch, d, _ = a.shape
-        # A row-major product's transpose is B_col * A_col.  Both BLAS
-        # operands have op=N and a physical batch stride of d*d elements.
-        status = self.gemm(self.handle, 0, 0, d, d, d,
-            ctypes.cast(self.alpha, ctypes.c_void_p), ctypes.c_void_p(b.data.ptr), d, d*d,
-            ctypes.c_void_p(a.data.ptr), d, d*d,
-            ctypes.cast(self.beta, ctypes.c_void_p), ctypes.c_void_p(out.data.ptr), d, d*d, batch)
-        self._check(status, "ZgemmStridedBatched")
-        return out
-
-    def __del__(self):
-        try:
-            if self.handle.value:
-                self.destroy(self.handle)
-                self.handle.value = None
-        except Exception:
-            pass
-
-
-class _GraphAttempt:
-    """Capture all twelve new RHS evaluations and the error norm per trial.
-
-    Only dt and the exact CPU-evaluated scalar source values are copied before
-    replay.  One pair of error norms returns to the host for the controller.
-    Buffers are fixed; dense interpolation is outside the graph.
-    """
-    def __init__(self, rhs, y, f, stages, linear, atol, rtol):
-        xp = rhs.xp
-        self.rhs, self.y, self.f, self.stages, self.linear = rhs, y, f, stages, linear
-        self.params = xp.zeros((13, 3), dtype=xp.float64)
-        self.host_params = np.zeros((13, 3))
-        self.intermediate, self.proposed = xp.empty_like(y), xp.empty_like(y)
-        self.work = [xp.empty_like(y) for _ in range(7)]
-        self.err5sq = xp.empty(y.shape, dtype=xp.float64)
-        self.err3sq = xp.empty(y.shape, dtype=xp.float64)
-        self.norms = xp.zeros(2, dtype=xp.float64)
-        self.norm5, self.norm3 = self.norms[0:1].reshape(()), self.norms[1:2].reshape(())
-        self.atol, self.rtol = atol, rtol
-        self.dt = self.params[0:1, 0:1].reshape(())
-        self.jac = [self.params[s:s + 1, 1:2].reshape(()) for s in range(13)]
-        self.source = [self.params[s:s + 1, 2:3].reshape(()) for s in range(13)]
-        self.error_kernel = xp.ElementwiseKernel(
-            "complex128 y, complex128 proposed, raw complex128 k, raw float64 e5, "
-            "raw float64 e3, int64 n, float64 atol, float64 rtol",
-            "float64 err5sq, float64 err3sq",
-            """
-            complex<double> a = 0., b = 0.;
-            for (int s = 0; s < 13; ++s) {
-                a += e5[s] * k[s * n + i];
-                b += e3[s] * k[s * n + i];
-            }
-            double scale = atol + rtol * fmax(abs(y), abs(proposed));
-            err5sq = (a.real() * a.real() + a.imag() * a.imag()) / (scale * scale);
-            err3sq = (b.real() * b.real() + b.imag() * b.imag()) / (scale * scale);
-            """, "rcmps_dop853_error_norms")
-        # Compile kernels and initialize cuBLAS/reduction workspaces before
-        # capture.  The temporary trial does not change y or f.
-        self._set_parameters(-1., 0.01)
-        _sync(xp)
-        capture_stream = xp.cuda.Stream(non_blocking=True)
-        # CuPy 14's cuBLAS wrapper rejects stream capture while setting its
-        # handle stream.  Native cuBLAS supports capture; set one private
-        # handle's stream before capture and call the native FP64 API directly.
-        self.native_blas = _NativeBatchedGemm(xp, capture_stream)
-        self.matmul = self.native_blas.matmul
-        for name in ("ql", "qright", "rl", "rright", "ol", "oright"):
-            setattr(rhs, name, xp.ascontiguousarray(getattr(rhs, name)))
-        _sync(xp)
-        with capture_stream:
-            self._launch()
-        capture_stream.synchronize()
-        with capture_stream:
-            capture_stream.begin_capture()
-            self._launch()
-            self.graph = capture_stream.end_capture()
-        self.capture_stream = capture_stream
-
-    def _set_parameters(self, t, h):
-        self.host_params.fill(0)
-        self.host_params[0, 0] = h
-        for s in range(1, 13):
-            ts = t + (_dop.C[s] if s < 12 else 1.) * h
-            self.host_params[s, 1] = 2 * abs(ts)
-            self.host_params[s, 2] = transformed_source(ts)
-        self.params.set(self.host_params)
-
-    def _rhs_into(self, s, y, out, *, jac=None, source=None):
-        xp, rhs = self.rhs.xp, self.rhs
-        jac = self.jac[s] if jac is None else jac
-        source = self.source[s] if source is None else source
-        if hasattr(rhs, "graph_rhs_into"):
-            rhs.graph_rhs_into(s, y, out, self.work, jac, source, self.matmul)
-            return
-        left, right, temp, jump, il, ir, _ = self.work
-        self.matmul(rhs.ql, y, out=left)
-        self.matmul(y, rhs.qright, out=right)
-        self.matmul(rhs.rl, y, out=temp)
-        self.matmul(temp, rhs.rright, out=jump)
-        self.matmul(rhs.ol, y, out=il)
-        self.matmul(y, rhs.oright, out=ir)
-        rhs._combine_rhs(left, right, jump, rhs.fixed, il, ir,
-            rhs.edge_indices[0], rhs.edge_indices[1],
-            rhs.edge_coefficients[0], rhs.edge_coefficients[1],
-            rhs.d**2, rhs.edge_width, jac, source, out)
-
-    def _launch(self):
-        xp, linear, k = self.rhs.xp, self.linear, self.stages
-        k[0] = self.f
-        for s in range(1, 12):
-            linear.kernel(self.y, k, linear.a[s], self.y.size, s, self.dt, self.intermediate)
-            self._rhs_into(s, self.intermediate, k[s])
-        linear.kernel(self.y, k, linear.b, self.y.size, 12, self.dt, self.proposed)
-        self._rhs_into(12, self.proposed, k[12])
-        self.error_kernel(self.y, self.proposed, k, linear.e5, linear.e3,
-            self.y.size, self.atol, self.rtol, self.err5sq, self.err3sq)
-        xp.sum(self.err5sq, out=self.norm5)
-        xp.sum(self.err3sq, out=self.norm3)
-
-    def run(self, t, h):
-        self._set_parameters(t, h)
-        self.graph.launch(self.rhs.xp.cuda.get_current_stream())
-        self.rhs.calls += 12
-        return self.proposed, self.norms
-
-
-class _GraphDenseOutput:
-    """Three extra DOP853 stages and every covered node in one graph.
-
-    Stage buffers and the proposed state belong to the captured RK attempt.
-    Each interpolation thread forms the seven coefficients once, then visits
-    all quadrature nodes covered by this accepted step. No RHS stage is
-    repeated for additional nodes. Exact endpoint values copy the proposal.
-    """
-    def __init__(self, attempt, samples, points):
-        xp = attempt.rhs.xp
-        self.attempt, self.samples = attempt, samples
-        self.points = xp.asarray(points, dtype=xp.float64)
-        self.params = xp.zeros((3, 3), dtype=xp.float64)
-        self.host_params = np.zeros((3, 3), dtype=np.float64)
-        self.indices = xp.zeros(2, dtype=xp.int64)
-        self.host_indices = np.zeros(2, dtype=np.int64)
-        self.dt = self.params[:1, :1].reshape(())
-        self.jac = [self.params[s:s+1, 1:2].reshape(()) for s in range(3)]
-        self.source = [self.params[s:s+1, 2:3].reshape(()) for s in range(3)]
-        self.interpolate = xp.ElementwiseKernel(
-            "complex128 y, complex128 proposed, complex128 f, raw complex128 k, "
-            "raw float64 d, raw float64 points, raw float64 params, raw int64 indices, int64 n",
-            "raw complex128 samples", r"""
-            double h = params[0], t = params[3], t_new = params[6];
-            complex<double> delta = proposed-y;
-            complex<double> coefficients[7];
-            coefficients[0] = delta;
-            coefficients[1] = h*f-delta;
-            coefficients[2] = 2.*delta-h*(k[12*n+i]+f);
-            for (int row=0; row<4; ++row) {
-                complex<double> value = 0.;
-                for (int s=0; s<16; ++s) value += h*d[row*16+s]*k[s*n+i];
-                coefficients[3+row] = value;
-            }
-            for (long node=indices[0]; node<indices[1]; ++node) {
-                if (points[node] == t_new) {
-                    samples[node*n+i] = proposed;
-                } else {
-                    double x = (points[node]-t)/h;
-                    complex<double> value = 0.;
-                    for (int s=0; s<7; ++s) {
-                        value += coefficients[6-s];
-                        value *= (s%2 == 0 ? x : 1.-x);
-                    }
-                    samples[node*n+i] = value+y;
-                }
-            }
-            """, "rcmps_dop853_captured_dense_output_fp64")
-        t = float(points[0])
-        self._set_parameters(t, 0.01, t+0.01, 0, 1)
-        _sync(xp)
-        # The attempt's private cuBLAS handle is bound to this stream.
-        # Reusing it also allows the vendor-GEMM RHS to be captured safely.
-        self.capture_stream = attempt.capture_stream
-        with self.capture_stream:
-            self._launch()
-        self.capture_stream.synchronize()
-        with self.capture_stream:
-            self.capture_stream.begin_capture()
-            self._launch()
-            self.graph = self.capture_stream.end_capture()
-
-    def _set_parameters(self, t, h, t_new, first, last):
-        self.host_params[:, 0] = h, t, t_new
-        for slot, s in enumerate(range(13, 16)):
-            ts = t+_dop.C[s]*h
-            self.host_params[slot, 1] = 2*abs(ts)
-            self.host_params[slot, 2] = transformed_source(ts)
-        self.host_indices[:] = first, last
-        self.params.set(self.host_params)
-        self.indices.set(self.host_indices)
-
-    def _launch(self):
-        a, linear = self.attempt, self.attempt.linear
-        for slot, s in enumerate(range(13, 16)):
-            linear.kernel(a.y, a.stages, linear.a[s], a.y.size, s,
-                          self.dt, a.intermediate)
-            a._rhs_into(s, a.intermediate, a.stages[s],
-                        jac=self.jac[slot], source=self.source[slot])
-        self.interpolate(a.y, a.proposed, a.f, a.stages, linear.d,
-                         self.points, self.params, self.indices, a.y.size, self.samples)
-
-    def run(self, t, h, t_new, first, last):
-        self._set_parameters(t, h, t_new, first, last)
-        self.graph.launch(self.attempt.rhs.xp.cuda.get_current_stream())
-        self.attempt.rhs.calls += 3
-
-
-def _integrate(rhs, points, *, atol, rtol, initial_step, max_steps, use_graph=False,
-               use_dense_graph=False, progress=None):
+def _integrate(rhs, points, *, atol, rtol, initial_step, max_steps, progress=None):
     xp, y = rhs.xp, rhs.initial.copy()
-    if use_dense_graph and (not use_graph or xp.__name__ != "cupy"):
-        raise ValueError("use_dense_graph requires CuPy and use_graph=True")
     a = abs(points[-1])
     # points[-1] includes the actual endpoint, unlike the interior Gauss nodes.
     t, h = -a, min(initial_step or 0.01, 2 * a)
@@ -807,8 +506,6 @@ def _integrate(rhs, points, *, atol, rtol, initial_step, max_steps, use_graph=Fa
     samples = xp.empty((len(points),) + y.shape, dtype=xp.complex128)
     linear = _LinearCombination(xp, y.shape)
     zero = xp.zeros_like(y)
-    graph_attempt = _GraphAttempt(rhs, y, f, stages, linear, atol, rtol) if use_graph else None
-    dense_graph = _GraphDenseOutput(graph_attempt, samples, points) if use_dense_graph else None
     next_point, accepted, rejected, attempts = 0, 0, 0, 0
     dense_steps, dense_nodes_max = 0, 0
     rejected_since_accept = False
@@ -822,19 +519,16 @@ def _integrate(rhs, points, *, atol, rtol, initial_step, max_steps, use_graph=Fa
         if attempts >= max_steps:
             raise RuntimeError("ODE exceeded max_steps")
         attempts += 1
-        if graph_attempt is not None:
-            proposed, norms = graph_attempt.run(t, h)
-        else:
-            stages[0] = f
-            for s in range(1, _dop.N_STAGES):
-                intermediate = linear(y, stages, linear.a[s], s, h)
-                stages[s] = rhs(t + _dop.C[s] * h, intermediate)
-            proposed = linear(y, stages, linear.b, _dop.N_STAGES, h)
-            stages[_dop.N_STAGES] = rhs(t + h, proposed)
-            scale = atol + rtol * xp.maximum(xp.abs(y), xp.abs(proposed))
-            err5 = linear(zero, stages, linear.e5, _dop.N_STAGES + 1, 1) / scale
-            err3 = linear(zero, stages, linear.e3, _dop.N_STAGES + 1, 1) / scale
-            norms = xp.stack([xp.sum(xp.abs(err5)**2), xp.sum(xp.abs(err3)**2)])
+        stages[0] = f
+        for s in range(1, _dop.N_STAGES):
+            intermediate = linear(y, stages, linear.a[s], s, h)
+            stages[s] = rhs(t + _dop.C[s] * h, intermediate)
+        proposed = linear(y, stages, linear.b, _dop.N_STAGES, h)
+        stages[_dop.N_STAGES] = rhs(t + h, proposed)
+        scale = atol + rtol * xp.maximum(xp.abs(y), xp.abs(proposed))
+        err5 = linear(zero, stages, linear.e5, _dop.N_STAGES + 1, 1) / scale
+        err3 = linear(zero, stages, linear.e3, _dop.N_STAGES + 1, 1) / scale
+        norms = xp.stack([xp.sum(xp.abs(err5)**2), xp.sum(xp.abs(err3)**2)])
         # One device-to-host synchronization per attempted adaptive step.
         if xp.__name__ == "cupy":
             e5, e3 = xp.asnumpy(norms)
@@ -856,36 +550,26 @@ def _integrate(rhs, points, *, atol, rtol, initial_step, max_steps, use_graph=Fa
         if next_point < len(points) and points[next_point] <= t_new:
             first_point = next_point
             dense_steps += 1
-            if dense_graph is not None:
-                last_point = int(np.searchsorted(points, t_new, side="right"))
-                dense_graph.run(t, h, t_new, first_point, last_point)
-                next_point = last_point
-            else:
-                for s in range(_dop.N_STAGES + 1, _dop.N_STAGES_EXTENDED):
-                    intermediate = linear(y, stages, linear.a[s], s, h)
-                    stages[s] = rhs(t + _dop.C[s] * h, intermediate)
-                delta = proposed - y
-                dense = [delta, h * f - delta, 2 * delta - h * (stages[_dop.N_STAGES] + f)]
-                dense += [linear(zero, stages, row, _dop.N_STAGES_EXTENDED, h) for row in linear.d]
-                while next_point < len(points) and points[next_point] <= t_new:
-                    point = points[next_point]
-                    if point == t_new:
-                        samples[next_point] = proposed
-                    else:
-                        x = (point - t) / h
-                        result = xp.zeros_like(y)
-                        for i, coefficient in enumerate(reversed(dense)):
-                            result += coefficient
-                            result *= x if i % 2 == 0 else 1 - x
-                        samples[next_point] = result + y
-                    next_point += 1
+            for s in range(_dop.N_STAGES + 1, _dop.N_STAGES_EXTENDED):
+                intermediate = linear(y, stages, linear.a[s], s, h)
+                stages[s] = rhs(t + _dop.C[s] * h, intermediate)
+            delta = proposed - y
+            dense = [delta, h * f - delta, 2 * delta - h * (stages[_dop.N_STAGES] + f)]
+            dense += [linear(zero, stages, row, _dop.N_STAGES_EXTENDED, h) for row in linear.d]
+            while next_point < len(points) and points[next_point] <= t_new:
+                point = points[next_point]
+                if point == t_new:
+                    samples[next_point] = proposed
+                else:
+                    x = (point - t) / h
+                    result = xp.zeros_like(y)
+                    for i, coefficient in enumerate(reversed(dense)):
+                        result += coefficient
+                        result *= x if i % 2 == 0 else 1 - x
+                    samples[next_point] = result + y
+                next_point += 1
             dense_nodes_max = max(dense_nodes_max, next_point-first_point)
-        if graph_attempt is not None:
-            y[...] = proposed
-            f[...] = stages[_dop.N_STAGES]
-            t = t_new
-        else:
-            y, f, t = proposed, stages[_dop.N_STAGES].copy(), t_new
+        y, f, t = proposed, stages[_dop.N_STAGES].copy(), t_new
         h *= min(1, factor) if rejected_since_accept else factor
         rejected_since_accept = False
         if progress is not None and time.perf_counter() - progress_time >= 10:
@@ -896,8 +580,8 @@ def _integrate(rhs, points, *, atol, rtol, initial_step, max_steps, use_graph=Fa
         raise RuntimeError("ODE did not save all quadrature nodes")
     return samples, {"accepted_steps": accepted, "rejected_steps": rejected,
                      "rhs_calls": rhs.calls, "matrix_channels": rhs.channels,
-                     "algorithm": "batched DOP853", "gpu_graph": bool(use_graph),
-                     "dense_graph": bool(use_dense_graph), "dense_steps": dense_steps,
+                     "algorithm": "batched DOP853", "gpu_graph": False,
+                     "dense_graph": False, "dense_steps": dense_steps,
                      "saved_nodes": next_point, "dense_nodes_max": dense_nodes_max}
 
 
@@ -1035,10 +719,10 @@ def _evaluate(r, q, rho, specs, coefficients, *, xp, half_window, n_quad,
               packed_z2=False, fused_rhs=False, use_dense_graph=False):
     if xp is None:
         xp = np
-    if use_graph and xp.__name__ != "cupy":
-        raise ValueError("use_graph requires the CuPy backend")
-    if use_dense_graph and (not use_graph or xp.__name__ != "cupy"):
-        raise ValueError("use_dense_graph requires CuPy and use_graph=True")
+    if use_graph or use_dense_graph:
+        # Accepted as keywords so that callers stay valid; only the host-driven
+        # integrator remains.
+        raise ValueError("the CUDA-graph integrator was removed: use_graph and use_dense_graph must be False")
     if fused_rhs and (xp.__name__ != "cupy" or not packed_z2):
         raise ValueError("fused_rhs requires CuPy and packed_z2=True")
     r, q, rho = (xp.asarray(x, dtype=xp.complex128) for x in (r, q, rho))
@@ -1055,8 +739,7 @@ def _evaluate(r, q, rho, specs, coefficients, *, xp, half_window, n_quad,
     else:
         rhs = _ReducedQuarticRHS(q, r, rho, xp) if reduced else _BatchedRHS(q, r, rho, specs, xp)
     samples, stats = _integrate(rhs, save_points, atol=atol, rtol=rtol,
-        initial_step=initial_step, max_steps=max_steps, use_graph=use_graph,
-        use_dense_graph=use_dense_graph, progress=progress)
+        initial_step=initial_step, max_steps=max_steps, progress=progress)
     _sync(xp)
     propagated = time.perf_counter()
     if packed_z2:

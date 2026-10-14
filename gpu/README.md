@@ -99,18 +99,23 @@ changes only what its message says. For the optimizer runtime,
 `src/rcmps_gpu/optimizer/provenance.json` records the sealed research manifest (the
 imported sha256 of the 24 runtime modules, the H100 base manifest and the builder) and
 every edit made since, commit by commit, in the format described in
-`src/rcmps_gpu/provenance.py`. The optimizer command line reverts those edits in memory
-when it plans a run, and the worker again before and after the run: a runtime that is not
-the imported one with its recorded edits is refused, as the research launcher refused one
-that was not derived from the sealed H100 candidate. The sha256 of the imported manifest
-is written in the code (`cli.IMPORTED_MANIFEST_SHA256`) and in the tests, and the package
-`__init__` modules, which run with every runtime import, must hold only a docstring and
-constants. A test pins the sha256 of the generated CUDA source, compiler options and
-launch geometry (`tests/optimizer/golden_cuda.json`). A run records in `plan.json` the
-package version, the git commit when run from a checkout, the result of the provenance
-check, and the sha256 of every runtime module and of every other file of the package that
-runs with it (`cli.LAUNCHER_SOURCES`); the worker requires them unchanged. Checkpoints
-hash the runtime modules by file name, and a resume requires exactly the same runtime.
+`src/rcmps_gpu/provenance.py`: the import rewrite of the packaging commit, then the
+pruning commit, which deleted two modules that the generic run never imports and code
+paths it never reaches (old evaluators, the CUDA-graph integrator and the driver-library
+bindings it needed, the research benchmark command lines) and renamed the quartic backend
+label of the run to `persistent_trajectory`. The optimizer command line reverts those
+edits in memory when it plans a run, and the worker again before and after the run: a
+runtime that is not the imported one with its recorded edits is refused, as the research
+launcher refused one that was not derived from the sealed H100 candidate. The sha256 of
+the imported manifest is written in the code (`cli.IMPORTED_MANIFEST_SHA256`) and in the
+tests, and the package `__init__` modules, which run with every runtime import, must hold
+only a docstring and constants. A test pins the sha256 of the generated CUDA source,
+compiler options and launch geometry (`tests/optimizer/golden_cuda.json`). A run records
+in `plan.json` the package version, the git commit when run from a checkout, the result
+of the provenance check, and the sha256 of every runtime module and of every other file
+of the package that runs with it (`cli.LAUNCHER_SOURCES`); the worker requires them
+unchanged. Checkpoints hash the runtime modules by file name, and a resume requires
+exactly the same runtime.
 
 For the excitation solver, the import commit holds byte for byte the sources of the A100
 qualification runs (`final2` of the research results, finished 2026-10-14 between 00:45
@@ -159,9 +164,6 @@ Environment variables:
 | `RCMPS_TEST_FIXTURES` | fixtures shared with the Julia tests (default: `test/fixtures` of the repository; outside it, as in an unpacked sdist, the tests that read them are skipped unless it is set) |
 | `RCMPS_PHI4_Z2` | companion repository with the stored Julia references (default: `rcmps-phi4-z2` next to this repository) |
 | `RCMPS_CUDA_INCLUDE` | directory with the CUDA header `nv/target`, for the NVRTC compilation test |
-
-One optimizer test needs Triton (the historical `persistent_rows_general` source imports
-it) and is skipped without it.
 
 The GPU qualification scripts of the excitation solver are in
 `qualification/excitations/` (`gpu_bringup.py`, `gpu_fused_check.py`,

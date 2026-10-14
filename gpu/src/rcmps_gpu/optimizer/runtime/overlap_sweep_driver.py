@@ -7,8 +7,10 @@ choices preserve the physical objective, FP64 precision and strict kinetic
 residual. Quartic graph construction is serialized and included per objective;
 only its propagation/pullback overlaps the independent kinetic calculation.
 
-Example: overlap_sweep_driver.py results/reference_D64_initial --backend cupy
-  --mode hybrid --packed-z2 --quartic-backend persistent_rows_cached
+Example, through trajectory_sweep_driver, which supplies the quartic solver
+(overlap_benchmark.PreparedQuartic no longer builds one):
+  trajectory_sweep_driver.py results/reference_D64_initial --backend cupy
+  --mode hybrid --packed-z2 --quartic-backend persistent_trajectory
   --arnoldi gpu --projection hessenberg_gpu --window 20 --iterations 2000
   --gradient-tolerance 3e-5 --output results/overlap_full/optimization.json
 
@@ -46,8 +48,8 @@ BASE_OPTIMIZE_WITH_PROGRESS = warm.BASE_OPTIMIZE_WITH_PROGRESS
 def validate_overlap_arguments(args):
     driver.validate_arguments(args)
     if (args.backend != "cupy" or args.mode != "hybrid" or not args.packed_z2 or
-            args.quartic_backend not in ("persistent_rows_cached", "persistent_rows_general")):
-        raise ValueError("overlap requires CuPy hybrid packed Z2 and persistent_rows_cached/general")
+            args.quartic_backend != "persistent_trajectory"):
+        raise ValueError("overlap requires CuPy hybrid packed Z2 and persistent_trajectory")
     if (args.arnoldi != "gpu" or args.projection != "hessenberg_gpu" or
             args.krylov_ceiling is not None or not math.isfinite(args.krylov_tolerance) or
             not 0 < args.krylov_tolerance <= 1e-12):
@@ -141,8 +143,6 @@ class OverlapObjective:
                     any(x.shape != r.shape or x.dtype != np.complex128 or not np.isfinite(x).all()
                         for x in matrices)):
                 raise SolverFailure("objective requires equally shaped finite complex128 matrices")
-            if args.quartic_backend == "persistent_rows_cached" and len(r) != 64:
-                raise ValueError("persistent_rows_cached overlap requires D64; use persistent_rows_general")
             self._initialize(xp)
             q = -1j*k-adj(r)@r/2
             original = tuple(np.array(x, dtype=np.complex128, copy=True) for x in (q, r, rho))
@@ -153,8 +153,7 @@ class OverlapObjective:
             inputs = tuple(xp.asarray(x, dtype=xp.complex128) for x in original)
             inputs_ready = xp.cuda.Event()
             inputs_ready.record(xp.cuda.get_current_stream())
-            packed_args = SimpleNamespace(quartic="general" if args.quartic_backend.endswith("general")
-                else "cached", window=args.window, quadrature=args.quadrature,
+            packed_args = SimpleNamespace(window=args.window, quadrature=args.quadrature,
                 atol=args.atol, rtol=args.rtol, max_steps=args.max_steps)
             with self.combine:
                 self.combine.wait_event(inputs_ready)

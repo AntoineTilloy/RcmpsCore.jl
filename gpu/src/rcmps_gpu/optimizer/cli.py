@@ -216,7 +216,7 @@ def main(argv=None):
     except (ValueError, OSError, KeyError) as error:
         p.error(str(error))
     if args.emit_cuda:
-        # The source-generator imports NumPy/SciPy, but never Triton, CuPy or CUDA.
+        # The source generator imports NumPy/SciPy, but never CuPy or CUDA.
         code = ("import sys;from pathlib import Path;from rcmps_gpu.optimizer.runtime import persistent_trajectory_backend as t;"
                 "Path(t.__file__).resolve().parent==Path(sys.argv[1]) or sys.exit('--emit-cuda: rcmps_gpu imported from '+t.__file__);"
                 "print(t.trajectory_source(int(sys.argv[2])),end='')")
