@@ -52,9 +52,10 @@ rcmps-gpu-optimize --D 160 --resume-from RUN/optimization.json --run-gpu --outpu
 ```
 
 Output directories must be new. A run starts from a random Z2 state (`--seed`) or from
-`--initial DIR`, a portable state directory (see State files below), such as the
-`initial/` or `optimized_state/` of an earlier run. Either way the run writes the state
-it starts from to `initial/`. If that state carries an
+`--initial DIR`, a portable state directory (see State files below): the `initial/` or
+`optimized_state/` of an earlier run, a checkpoint of the Julia package exported by
+`gpu/julia/export_state.jl`, or a random state of `gpu/julia/prepare_initial.jl`. Either
+way the run writes the state it starts from to `initial/`. If that state carries an
 energy (and a gradient), the first evaluation must reproduce them, the energy to 1e-8 and
 the gradient to 3e-6 in the metric norm, or the optimizer does not start. There is no
 default wall-time limit (`--max-seconds` sets one). A GPU run first compares the fast
@@ -100,6 +101,13 @@ tree; phi4): `quadrature`/`n_quad`, `window`/`half_window`, `energy`/`saved_ener
 `gradient.bin`/`saved_gradient.bin` are mapped as the docstring describes. The optimizer
 writes `initial/` and `optimized_state/` in format 1; `initial/` has besides the files and
 keys that the runtime reads (`saved_gradient.bin`, the `saved_*` keys, `precond_reg`).
+
+On the Julia side, the scripts of `gpu/julia/` (see its README) export a checkpoint as a
+format-1 directory, import one as a checkpoint, and prepare a random initial state with
+Julia's random draws; they use only the public API of RcmpsCore. The shared fixture
+`test/fixtures/phi4_g2_D16_z2_portable` is the export of `phi4_g2_D16_z2_state.jld2`:
+`tests/test_io.py` checks that Python reads the same state from both, and
+`gpu/julia/check_portable.jl` that the export and import reproduce the checkpoint.
 
 ## Kinetic nodes at large D
 
@@ -211,6 +219,7 @@ src/rcmps_gpu/excitations/       states, models, coordinates, davidson, scaled, 
                                  ode, packed, packed_pair, fused, hamiltonian, bilinear,
                                  bilinear_fused, eigsolve, cli, provenance.json
 src/rcmps_gpu/io.py              state files: JLD2 checkpoints and portable directories
+julia/                           Julia scripts: export, import and initial portable states
 src/rcmps_gpu/provenance.py      provenance record format and check
 tests/optimizer/, tests/excitations/, tests/test_package.py, tests/test_io.py,
 qualification/excitations/

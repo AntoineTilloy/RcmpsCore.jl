@@ -4,15 +4,20 @@ from __future__ import annotations
 
 from dataclasses import replace
 import math
+import os
 from pathlib import Path
 import struct
 import tempfile
+import tomllib
 import unittest
 
 import numpy as np
 
 from rcmps_gpu import io
 from rcmps_gpu.excitations import states
+
+REPOSITORY = Path(__file__).resolve().parents[2]
+FIXTURES = Path(os.environ.get("RCMPS_TEST_FIXTURES") or REPOSITORY / "test" / "fixtures")
 
 
 def complex_matrix(rng, d):
@@ -374,6 +379,51 @@ class JLD2(unittest.TestCase):
             f["schema_version"][()] = 2
         with self.assertRaisesRegex(ValueError, "unsupported schema"):
             io.read_jld2(path)
+
+
+@unittest.skipUnless((FIXTURES / "phi4_g2_D16_z2_portable").is_dir(), "the shared fixtures are not available")
+class SharedFixture(unittest.TestCase):
+    """test/fixtures/phi4_g2_D16_z2_portable is gpu/julia/export_state.jl applied to
+    test/fixtures/phi4_g2_D16_z2_state.jld2 (gpu/julia/check_portable.jl checks it in Julia)."""
+
+    def setUp(self):
+        self.portable = FIXTURES / "phi4_g2_D16_z2_portable"
+        self.jld2 = FIXTURES / "phi4_g2_D16_z2_state.jld2"
+
+    def test_the_export_holds_the_checkpoint(self):
+        exported, saved = io.read_portable(self.portable), io.read_jld2(self.jld2)
+        self.assertEqual((exported.origin, exported.files),
+                         ("portable", ("metadata.toml", "R.bin", "K.bin", "rho.bin", "gradient.bin")))
+        for name in ("R", "K", "gradient"):
+            self.assertEqual(getattr(exported, name).tobytes(), getattr(saved, name).tobytes(), name)
+        for name in ("D", "model", "coupling", "mass", "energy", "integration", "manifold", "info"):
+            self.assertEqual(getattr(exported, name), getattr(saved, name), name)
+        self.assertEqual((exported.D, exported.coupling, exported.energy), (16, 2.0, -0.15648780475169466))
+        from rcmps_gpu.optimizer.runtime.numerics import metric
+        norm = math.sqrt(metric(exported.rho, exported.gradient, exported.gradient, exported.manifold.metric_reg))
+        self.assertAlmostEqual(exported.gradient_norm / norm, 1.0, delta=1e-12)
+        self.assertLess(np.abs(exported.rho - states.load_jld2(self.jld2).rho).max(), 1e-12)
+
+    def test_the_excitation_loaders_agree(self):
+        portable, saved = states.load_portable(self.portable), states.load_jld2(self.jld2)
+        self.assertEqual(portable.R.tobytes(), saved.R.tobytes())
+        self.assertEqual(portable.K.tobytes(), saved.K.tobytes())
+        self.assertLess(np.abs(portable.rho - saved.rho).max(), 1e-12)
+        self.assertEqual((portable.integrator, portable.e0, portable.coupling, portable.model),
+                         (saved.integrator, saved.e0, saved.coupling, saved.model))
+
+    def test_the_files_are_portable(self):
+        for name in ("R.bin", "K.bin", "rho.bin", "gradient.bin"):
+            self.assertEqual((self.portable / name).stat().st_size, 16 * 16 * 16, name)
+        raw = (self.portable / "metadata.toml").read_bytes()
+        metadata = tomllib.loads(raw.decode("utf-8"))
+        self.assertEqual((metadata["format"], metadata["format_version"], metadata["source"]),
+                         ("rcmps-portable-state", 1, "phi4_g2_D16_z2_state.jld2"))
+        self.assertTrue(metadata["producer"].startswith("RcmpsCore 0.2"))
+        for marker in (b"/home", b"/tmp", b"\\", b"Users"):
+            self.assertNotIn(marker, raw)
+        self.assertEqual(sorted(path.name for path in self.portable.iterdir()),
+                         ["K.bin", "R.bin", "gradient.bin", "metadata.toml", "rho.bin"])
 
 
 if __name__ == "__main__":

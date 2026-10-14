@@ -185,8 +185,9 @@ def parser():
     p.add_argument("--D", type=int, required=True, help="full even Z2 bond dimension")
     p.add_argument("--coupling", type=float)
     p.add_argument("--seed", type=int, default=0, help="NumPy PCG64 Z2 initialization, when --initial is absent")
-    p.add_argument("--initial", type=Path, help="initial state, a portable state directory (rcmps_gpu.io), such "
-                   "as the initial/ or optimized_state/ of a run")
+    p.add_argument("--initial", type=Path, help="initial state, a portable state directory (rcmps_gpu.io): the "
+                   "initial/ or optimized_state/ of a run, or an output of gpu/julia/export_state.jl or "
+                   "prepare_initial.jl")
     p.add_argument("--resume-from", type=Path, help="stopped generic JSON checkpoint; keep L-BFGS history")
     p.add_argument("--output", type=Path, help="fresh run directory")
     p.add_argument("--run-gpu", action="store_true")

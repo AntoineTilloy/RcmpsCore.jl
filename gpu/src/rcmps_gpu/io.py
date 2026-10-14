@@ -12,8 +12,8 @@ read_jld2 with h5py:
     precond_reg_prefactor, precond_reg). JLD2 stores Julia's column-major matrices, so
     the HDF5 view is the transpose. rho is not stored: rcmps_load recomputes it.
 
-Portable state directory, "rcmps-portable-state" format 1, written by write_portable and read
-by read_portable:
+Portable state directory, "rcmps-portable-state" format 1, written by write_portable and by
+gpu/julia/export_state.jl, read by read_portable and by gpu/julia/import_state.jl:
 
     metadata.toml (UTF-8 TOML)
       format = "rcmps-portable-state"   required

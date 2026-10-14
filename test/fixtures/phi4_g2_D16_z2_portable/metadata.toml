@@ -1,0 +1,23 @@
+format = "rcmps-portable-state"
+format_version = 1
+D = 16
+model = "phi4"
+coupling = 2.0
+mass = 1.0
+energy = -0.15648780475169466
+gradient_norm = 2.7317828676883325e-6
+producer = "RcmpsCore 0.2.0, gpu/julia/export_state.jl"
+source = "phi4_g2_D16_z2_state.jld2"
+info = "Z2 phi4 D=16 g=2.0; status=complete; see adjacent status.toml"
+
+[integration]
+atol = 1.0e-13
+max_point = 20.0
+maxiters = 1000000
+n_quad = 192
+rtol = 1.0e-12
+
+[manifold]
+metric_reg = 0.001
+precond_reg = 7.46263763619467e-14
+precond_reg_prefactor = 0.01
