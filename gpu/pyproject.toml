@@ -6,6 +6,7 @@ build-backend = "hatchling.build"
 name = "rcmps-gpu"
 version = "0.1.0"
 description = "CUDA implementations of RcmpsCore: FP64 ground-state optimizer and tangent-space excitation solver for Z2 RCMPS"
+readme = "README.md"
 license = "MIT"
 authors = [{ name = "Antoine Tilloy" }]
 requires-python = ">=3.11"
