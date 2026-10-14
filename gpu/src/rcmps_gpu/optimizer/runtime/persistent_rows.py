@@ -9,9 +9,9 @@ from __future__ import annotations
 import math
 import time
 import numpy as np
-from persistent_backend import CUDA,PersistentAttempt,PersistentDeviceDOP853
-from device_control_backend import DeviceAdaptiveDOP853
-from ode_backend import _packed_z2_pullback,quadrature
+from .persistent_backend import CUDA,PersistentAttempt,PersistentDeviceDOP853
+from .device_control_backend import DeviceAdaptiveDOP853
+from .ode_backend import _packed_z2_pullback,quadrature
 
 
 def _replace(source,old,new):
@@ -114,7 +114,7 @@ class PersistentRowsDOP853(PersistentDeviceDOP853):
 def evaluate_quartic_persistent_rows(R,Q,rho,g=1.,*,xp,half_window=30.,n_quad=512,
         atol=1e-13,rtol=1e-12,initial_step=None,max_steps=1_000_000,return_samples=False):
     """Same standard raw observable API as the validated persistent backend."""
-    from triton_backend import TritonPackedQuarticRHS
+    from .triton_backend import TritonPackedQuarticRHS
     start=time.perf_counter();r,q,rho=(xp.asarray(x,dtype=xp.complex128) for x in (R,Q,rho))
     points,weights=quadrature(half_window,n_quad);rhs=TritonPackedQuarticRHS(q,r,rho,xp)
     solver=PersistentRowsDOP853(rhs,np.r_[points,math.sqrt(half_window)],

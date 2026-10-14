@@ -39,22 +39,21 @@ import unittest
 
 import numpy as np
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-import coordinates as tc
+from rcmps_gpu.excitations import coordinates as tc
 import dense_reference as ref
-import eigsolve as es
-import packed as pk
-import states
-from hamiltonian import HamiltonianAction
-from kinetic import TangentFrame
-from models import Edge, Observable, kinetic_spec, monomial_spec, phi4_terms, quadrature, transformed_source
-from ode import integrate_host
-from packed import PackedActionSystem, has_class
-from potential import ActionSystem, PotentialAction
-from scaled import ScaledState, stack
-from states import IntegratorParameters, adj, make_state, random_state
+from rcmps_gpu.excitations import eigsolve as es
+from rcmps_gpu.excitations import packed as pk
+from rcmps_gpu.excitations import states
+from rcmps_gpu.excitations.hamiltonian import HamiltonianAction
+from rcmps_gpu.excitations.kinetic import TangentFrame
+from rcmps_gpu.excitations.models import Edge, Observable, kinetic_spec, monomial_spec, phi4_terms, quadrature, transformed_source
+from rcmps_gpu.excitations.ode import integrate_host
+from rcmps_gpu.excitations.packed import PackedActionSystem, has_class
+from rcmps_gpu.excitations.potential import ActionSystem, PotentialAction
+from rcmps_gpu.excitations.scaled import ScaledState, stack
+from rcmps_gpu.excitations.states import IntegratorParameters, adj, make_state, random_state
 from test_potential import julia_rhs, to_hat    # action_rhs! written out in physical variables
+from _paths import FIXTURES
 
 slow = unittest.skipUnless(os.environ.get("RCMPS_EXCITATION_SLOW") == "1",
                            "set RCMPS_EXCITATION_SLOW=1 (about five minutes)")
@@ -72,8 +71,7 @@ NODES = 16
 BULK = [(4, "explicit", 0.6, 2), (4, "none", 0.0, 3), (6, "explicit", 0.6, 4)]
 ORACLE = [(4, "none", 0.0), (6, "explicit", 0.6)]
 PREFIX = ("x{}", "y{}", "a1_{}", "a0_{}")
-FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "test", "fixtures",
-                       "phi4_g2_D16_z2_state.jld2")
+FIXTURE = str(FIXTURES / "phi4_g2_D16_z2_state.jld2")
 BLOCKS = {2: 12, 3: 18, 4: 26}        # packed blocks and products per right-hand side of :phi^n:
 PRODUCTS = {2: 78, 3: 128, 4: 190}
 WORST = {}

@@ -9,10 +9,10 @@ then one metric steepest direction before reporting numerical stagnation.
 from dataclasses import dataclass
 from time import perf_counter
 import numpy as np
-import optimizer
-from optimizer import _controls, _norm, _initial_direction, _lbfgs_direction
-from numerics import SolverFailure, metric, retract
-from sweep_stopping import ProgressMonitor
+from . import optimizer
+from .optimizer import _controls, _norm, _initial_direction, _lbfgs_direction
+from .numerics import SolverFailure, metric, retract
+from .sweep_stopping import ProgressMonitor
 
 
 @dataclass(frozen=True)

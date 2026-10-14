@@ -28,16 +28,14 @@ import unittest
 
 import numpy as np
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-import fused
-from bilinear import Pair
-from kinetic import TangentFrame
-from models import monomial_spec, transformed_source
-from packed import PackedActionSystem
-from packed_pair import PackedDiagonalPair
-from scaled import ScaledState, stack
-from states import random_state
+from rcmps_gpu.excitations import fused
+from rcmps_gpu.excitations.bilinear import Pair
+from rcmps_gpu.excitations.kinetic import TangentFrame
+from rcmps_gpu.excitations.models import monomial_spec, transformed_source
+from rcmps_gpu.excitations.packed import PackedActionSystem
+from rcmps_gpu.excitations.packed_pair import PackedDiagonalPair
+from rcmps_gpu.excitations.scaled import ScaledState, stack
+from rcmps_gpu.excitations.states import random_state
 
 norm = np.linalg.norm
 DIMS, SECTORS, MOMENTA, DEGREES = (4, 6), ("odd", "even"), (0.0, 0.5), (2, 4)

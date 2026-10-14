@@ -31,6 +31,7 @@ from __future__ import annotations
 import functools
 import math
 import operator
+import re
 import shutil
 import subprocess
 import tempfile
@@ -43,22 +44,20 @@ from unittest import mock
 import numpy as np
 import scipy.linalg
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-import bilinear
-import bilinear_fused
-import coordinates as tc
-import eigsolve as es
+from rcmps_gpu.excitations import bilinear
+from rcmps_gpu.excitations import bilinear_fused
+from rcmps_gpu.excitations import coordinates as tc
+from rcmps_gpu.excitations import eigsolve as es
 import fakecupy as cp
-import packed
-import scaled
-from davidson import DavidsonOptions
-from hamiltonian import HamiltonianAction
-from kinetic import KineticAction, TangentFrame, kinetic_terms
-from models import kinetic_spec, monomial_spec, phi4_terms, quadrature
-from ode import integrate_host
-from potential import ActionSystem, PotentialAction
-from states import IntegratorParameters, adj, random_state
+from rcmps_gpu.excitations import packed
+from rcmps_gpu.excitations import scaled
+from rcmps_gpu.excitations.davidson import DavidsonOptions
+from rcmps_gpu.excitations.hamiltonian import HamiltonianAction
+from rcmps_gpu.excitations.kinetic import KineticAction, TangentFrame, kinetic_terms
+from rcmps_gpu.excitations.models import kinetic_spec, monomial_spec, phi4_terms, quadrature
+from rcmps_gpu.excitations.ode import integrate_host
+from rcmps_gpu.excitations.potential import ActionSystem, PotentialAction
+from rcmps_gpu.excitations.states import IntegratorParameters, adj, random_state
 
 TOL, P, NODES = 1e-12, 0.6, 16
 PHI4 = phi4_terms(1.0)
@@ -621,7 +620,7 @@ class Actions(Case):
     def test_fused_backend_needs_a_gpu(self):
         """The fused trajectory kernel is CUDA: on the stand-in it stops at the first device
         query with NotImplementedError, before any array work."""
-        import fused
+        from rcmps_gpu.excitations import fused
         ss, basis = shared()[cp]
         with self.assertRaisesRegex(NotImplementedError, "needs a real GPU"):
             HamiltonianAction(ss, P, PHI4, integrator=STATE.integrator, kinetic_nodes=NODES,
@@ -786,26 +785,38 @@ class Driver(Case):
 class Mutations(unittest.TestCase):
     """The modules pass the other classes unchanged, so this shows that those classes can
     fail: each entry of MUTATIONS removes one upload or download (or leaves memory
-    uninitialized) in a temporary copy of this directory, and the named test, run there
-    in a subprocess, must fail with the stand-in's TypeError or a nonfinite result."""
+    uninitialized) in excitations/<module> of a temporary copy of the rcmps_gpu package,
+    and the named test, run in a subprocess that imports rcmps_gpu from that copy (checked),
+    must fail with the stand-in's TypeError or a nonfinite result."""
+
+    # Run in the child: report where rcmps_gpu comes from, then run the named test.
+    CHILD = ("import os, sys, unittest, rcmps_gpu\n"
+             "print('rcmps_gpu imported from', os.path.dirname(os.path.realpath(rcmps_gpu.__file__)),"
+             " file=sys.stderr, flush=True)\n"
+             "unittest.main(module=None, argv=['unittest', sys.argv[1]])\n")
 
     def test_planted_bugs_are_detected(self):
-        here = os.path.dirname(os.path.abspath(__file__))
-        names = [name for name in os.listdir(here) if name.endswith(".py") and name != "__init__.py"]
-        environment = dict(os.environ, OPENBLAS_NUM_THREADS="1")
+        tests = os.path.dirname(os.path.abspath(__file__))
+        package = os.path.dirname(os.path.abspath(es.__file__))       # .../rcmps_gpu/excitations
+        root = os.path.dirname(package)                                # .../rcmps_gpu
         for module, old, new, test in MUTATIONS:
             with self.subTest(module=module, bug=new):
-                with open(os.path.join(here, module)) as stream:
+                with open(os.path.join(package, module)) as stream:
                     source = stream.read()
                 if source.count(old) != 1:
-                    self.skipTest(f"{module} no longer has the line {old!r}")
+                    self.skipTest(f"excitations/{module} no longer has the line {old!r}")
                 with tempfile.TemporaryDirectory() as work:
-                    for name in names:
-                        shutil.copy(os.path.join(here, name), work)
-                    with open(os.path.join(work, module), "w") as stream:
+                    copy = os.path.join(work, "src", "rcmps_gpu")
+                    shutil.copytree(root, copy, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+                    with open(os.path.join(copy, "excitations", module), "w") as stream:
                         stream.write(source.replace(old, new))
-                    run = subprocess.run([sys.executable, "-m", "unittest", f"test_device_strict.{test}"], cwd=work,
+                    environment = dict(os.environ, OPENBLAS_NUM_THREADS="1", PYTHONDONTWRITEBYTECODE="1",
+                                       PYTHONPATH=os.pathsep.join([os.path.join(work, "src"), tests]))
+                    run = subprocess.run([sys.executable, "-c", self.CHILD, f"test_device_strict.{test}"], cwd=work,
                                          capture_output=True, text=True, env=environment)
+                    origin = re.search(r"^rcmps_gpu imported from (.*)$", run.stderr, re.M)
+                    self.assertIsNotNone(origin, run.stderr[-2000:])
+                    self.assertEqual(os.path.realpath(origin.group(1)), os.path.realpath(copy))
                 self.assertNotEqual(run.returncode, 0, "the planted bug was not detected")
                 self.assertRegex(run.stderr, "TypeError|nonfinite")
 

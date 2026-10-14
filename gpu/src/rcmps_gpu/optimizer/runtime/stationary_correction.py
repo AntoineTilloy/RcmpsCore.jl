@@ -13,7 +13,7 @@ from time import perf_counter
 
 import numpy as np
 
-from numerics import NoJumpInverse, SolverFailure, _right_solve, adj, lindblad
+from .numerics import NoJumpInverse, SolverFailure, _right_solve, adj, lindblad
 
 
 def stationary_state_correction(q, r, rho_previous, *, tolerance=1e-11,

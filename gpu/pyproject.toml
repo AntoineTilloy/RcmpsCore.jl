@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "rcmps-gpu"
+version = "0.1.0"
+description = "CUDA implementations of RcmpsCore: FP64 ground-state optimizer and tangent-space excitation solver for Z2 RCMPS"
+license = "MIT"
+authors = [{ name = "Antoine Tilloy" }]
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=2.2",
+    # The ODE integrators import scipy.integrate._ivp.dop853_coefficients, a private module.
+    "scipy>=1.16,<1.18",
+    "h5py>=3.8",
+]
+
+[project.optional-dependencies]
+cuda12 = ["cupy-cuda12x[ctk]~=14.2"]
+test = ["pytest>=8"]
+
+[project.scripts]
+rcmps-gpu-optimize = "rcmps_gpu.optimizer.cli:main"
+rcmps-gpu-excitations = "rcmps_gpu.excitations.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rcmps_gpu"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

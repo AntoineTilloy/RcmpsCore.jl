@@ -22,12 +22,12 @@ import statistics
 import time
 from types import SimpleNamespace
 import numpy as np
-import overlap_sweep_driver as overlap_driver
-import overlap_benchmark as overlap
-from warm_sweep_driver import binding
-from numerics import adj,finish_gradient,load_reference,metric
-from ode_backend import _PackedZ2QuarticRHS,_packed_z2_pullback,quadrature
-from persistent_trajectory_backend import PersistentTrajectoryDOP853,trajectory_ptx_report
+from . import overlap_sweep_driver as overlap_driver
+from . import overlap_benchmark as overlap
+from .warm_sweep_driver import binding
+from .numerics import adj,finish_gradient,load_reference,metric
+from .ode_backend import _PackedZ2QuarticRHS,_packed_z2_pullback,quadrature
+from .persistent_trajectory_backend import PersistentTrajectoryDOP853,trajectory_ptx_report
 
 ROOT=Path(__file__).parent
 ORIGINAL_PREPARED=overlap.PreparedQuartic
@@ -51,7 +51,7 @@ def cooperative_kinetic(q,r,rho,nodes=128,*,xp,tolerance,maxdim,arnoldi_backend,
                         projection_backend,fallback_tolerance=None,**options):
     if arnoldi_backend!='gpu' or fallback_tolerance is not None:
         raise ValueError('cooperative experiment requires GPU Arnoldi with no fallback')
-    from cooperative_arnoldi import kinetic_raw_cooperative
+    from .cooperative_arnoldi import kinetic_raw_cooperative
     return kinetic_raw_cooperative(q,r,rho,nodes,xp=xp,tolerance=tolerance,maxdim=maxdim,
         projection_backend=projection_backend,fma=True,**options)
 

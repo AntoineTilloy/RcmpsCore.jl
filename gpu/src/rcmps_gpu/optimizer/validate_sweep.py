@@ -11,8 +11,8 @@ import time
 
 import numpy as np
 
-from numerics import load_reference, metric
-import sweep_driver as driver
+from .runtime.numerics import load_reference, metric
+from .runtime import sweep_driver as driver
 
 
 def main():

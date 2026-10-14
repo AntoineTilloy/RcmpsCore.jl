@@ -21,7 +21,6 @@ from __future__ import annotations
 import contextlib
 import io
 import json
-import os
 import sys
 import tempfile
 import unittest
@@ -30,12 +29,10 @@ from unittest import mock
 
 import numpy as np
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-import eigsolve
-import run
-from davidson import DavidsonOptions
-from states import random_state
+from rcmps_gpu.excitations import eigsolve
+from rcmps_gpu.excitations import cli as run
+from rcmps_gpu.excitations.davidson import DavidsonOptions
+from rcmps_gpu.excitations.states import random_state
 
 
 def export(directory, state, coupling):

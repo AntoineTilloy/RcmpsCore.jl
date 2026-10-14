@@ -34,10 +34,10 @@ import numpy as np
 from scipy.integrate import solve_ivp
 from scipy.linalg import lu_factor, lu_solve
 
-import coordinates as tc  # `coordinates` below is always a TangentCoordinates argument
-import davidson as dv
-from models import default_terms, is_quadratic, kinetic_grid, quadrature, transformed_source
-from states import (IntegratorParameters, SolverFailure, State, adj, lindblad, lindblad_adjoint,
+from rcmps_gpu.excitations import coordinates as tc  # `coordinates` below is always a TangentCoordinates argument
+from rcmps_gpu.excitations import davidson as dv
+from rcmps_gpu.excitations.models import default_terms, is_quadratic, kinetic_grid, quadrature, transformed_source
+from rcmps_gpu.excitations.states import (IntegratorParameters, SolverFailure, State, adj, lindblad, lindblad_adjoint,
                     transfer_matrix, unvec, vec)
 
 MAX_BOND = 16

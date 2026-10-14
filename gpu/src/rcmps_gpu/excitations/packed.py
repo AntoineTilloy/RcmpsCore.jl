@@ -46,9 +46,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from models import monomial_spec
-from potential import ActionSystem
-from states import adj
+from .models import monomial_spec
+from .potential import ActionSystem
+from .states import adj
 
 GROUP_JAC, GROUP_SRC, GROUP_TEMP0, GROUP_TEMP1 = 0, 1, 2, 3
 DG, OFF = 0, 1                        # matrix classes; the class of a product is the XOR

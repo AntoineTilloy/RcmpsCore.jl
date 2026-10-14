@@ -12,10 +12,10 @@ import json
 from pathlib import Path
 import numpy as np
 
-import sweep_driver as driver
-import warm_sweep_driver as warm
-from warm_sweep_driver import binding, digest
-import robust_optimizer
+from . import sweep_driver as driver
+from . import warm_sweep_driver as warm
+from .warm_sweep_driver import binding, digest
+from . import robust_optimizer
 
 
 ROBUST_SOURCES = (*warm.WARM_SOURCES, "robust_sweep_driver.py", "robust_optimizer.py")

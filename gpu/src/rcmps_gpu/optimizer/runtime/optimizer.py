@@ -17,7 +17,7 @@ from time import perf_counter
 
 import numpy as np
 
-from numerics import SolverFailure, metric, precondition, retract, stationary_state
+from .numerics import SolverFailure, metric, precondition, retract, stationary_state
 
 
 @dataclass(frozen=True)

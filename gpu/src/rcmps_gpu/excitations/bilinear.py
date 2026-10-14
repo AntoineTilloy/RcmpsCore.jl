@@ -28,9 +28,9 @@ import math
 import numpy as np
 from scipy.integrate import solve_ivp
 
-from models import kinetic_grid, transformed_source
-from scaled import lmul, rmul
-from states import SolverFailure, adj
+from .models import kinetic_grid, transformed_source
+from .scaled import lmul, rmul
+from .states import SolverFailure, adj
 
 TYPES = (("H", "H"), ("L", "H"), ("H", "L"), ("L", "L"))   # of the blocks x1, x2, x3, x4
 

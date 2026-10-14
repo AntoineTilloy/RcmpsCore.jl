@@ -218,7 +218,7 @@ def load_jld2(path, *, rho=None):
 
 def load_portable(directory):
     """Read a GPU-optimizer portable export: headerless little-endian column-major
-    complex128 R.bin, K.bin, rho.bin and metadata.toml (research/gpu_d64 convention)."""
+    complex128 R.bin, K.bin, rho.bin and metadata.toml (convention of rcmps_gpu.optimizer)."""
     directory = Path(directory)
     with (directory / "metadata.toml").open("rb") as stream:
         metadata = tomllib.load(stream)

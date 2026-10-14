@@ -1,0 +1,162 @@
+{
+ "about": "sha256 of the generated CUDA source persistent_trajectory_backend.trajectory_source(d), the NVRTC options compilation_options(d) and the launch geometry geometry(d), for the packed dimension d = D/2, computed from the runtime as imported (commit 'Import the GPU code verbatim', flat imports) before any edit. For historical_sizes they equal what the research H100 candidate runtime, from which the generic runtime was derived, generates; d = 80 and 96 (D = 160 and 192) equal the CUDA examples of the research review of the generic backend, and have never run on a GPU.",
+ "historical_sizes": [
+  2,
+  3,
+  4,
+  8,
+  16,
+  32,
+  48,
+  64,
+  128
+ ],
+ "sizes": {
+  "2": {
+   "trajectory_sha256": "fc1e6aaff539ffd44bb90db5d891087cee97ab5f8b3dda2144c0491d07a57ceb",
+   "options": [
+    "--std=c++17"
+   ],
+   "geometry": {
+    "blocks": 11,
+    "d": 2,
+    "shared_bytes": 1040,
+    "threads": 32,
+    "warps": 1
+   }
+  },
+  "3": {
+   "trajectory_sha256": "bf346b7a519b14f35292addfa47ef71a00a5d1fca2a15e6b34d76ce028353820",
+   "options": [
+    "--std=c++17"
+   ],
+   "geometry": {
+    "blocks": 11,
+    "d": 3,
+    "shared_bytes": 1552,
+    "threads": 32,
+    "warps": 1
+   }
+  },
+  "4": {
+   "trajectory_sha256": "9cb58c137a987da11f64b73f580d03903fb70ab66d828c5e4420341a9ea6eb58",
+   "options": [
+    "--std=c++17"
+   ],
+   "geometry": {
+    "blocks": 11,
+    "d": 4,
+    "shared_bytes": 2064,
+    "threads": 32,
+    "warps": 1
+   }
+  },
+  "8": {
+   "trajectory_sha256": "68dbd4158fc3ea79b387dd18c5be34814071ed8299ce1ef709001086af34119f",
+   "options": [
+    "--std=c++17"
+   ],
+   "geometry": {
+    "blocks": 11,
+    "d": 8,
+    "shared_bytes": 4112,
+    "threads": 32,
+    "warps": 1
+   }
+  },
+  "16": {
+   "trajectory_sha256": "e3f652e23b3d989b4292b47bd0a9b166f5879ded7c37ef1d5bed13a0bd0133eb",
+   "options": [
+    "--std=c++17"
+   ],
+   "geometry": {
+    "blocks": 21,
+    "d": 16,
+    "shared_bytes": 8224,
+    "threads": 64,
+    "warps": 2
+   }
+  },
+  "32": {
+   "trajectory_sha256": "0dee7c4cde9388dd04bdcec28d01ec08ab49f171b103c3c9cc1c855edf1588d1",
+   "options": [
+    "--std=c++17"
+   ],
+   "geometry": {
+    "blocks": 41,
+    "d": 32,
+    "shared_bytes": 16448,
+    "threads": 128,
+    "warps": 4
+   }
+  },
+  "48": {
+   "trajectory_sha256": "ed1eb6025e6dafe01718f248523e4deb3ff931a9792c785a245dcd703586d563",
+   "options": [
+    "--std=c++17"
+   ],
+   "geometry": {
+    "blocks": 61,
+    "d": 48,
+    "shared_bytes": 24672,
+    "threads": 192,
+    "warps": 6
+   }
+  },
+  "64": {
+   "trajectory_sha256": "27a938ce1d70e748ed8aa66b5051fba669958e89d3204c0d46bcf2d1aa199f4c",
+   "options": [
+    "--std=c++17"
+   ],
+   "geometry": {
+    "blocks": 81,
+    "d": 64,
+    "shared_bytes": 32896,
+    "threads": 256,
+    "warps": 8
+   }
+  },
+  "80": {
+   "trajectory_sha256": "e2b2bb00ab1712fb1013285ef555417b9f8e22c1e26630d4a5934a66bc70206d",
+   "options": [
+    "--std=c++17",
+    "--maxrregcount=64"
+   ],
+   "geometry": {
+    "blocks": 101,
+    "d": 80,
+    "shared_bytes": 41120,
+    "threads": 320,
+    "warps": 10
+   }
+  },
+  "96": {
+   "trajectory_sha256": "51587f25959fee3a5f512ad3ee2d60b5999d2d79c98295b4165f3399cc527986",
+   "options": [
+    "--std=c++17",
+    "--maxrregcount=64"
+   ],
+   "geometry": {
+    "blocks": 121,
+    "d": 96,
+    "shared_bytes": 49344,
+    "threads": 384,
+    "warps": 12
+   }
+  },
+  "128": {
+   "trajectory_sha256": "93278d92ca77558959a9bd904c104296c4f05b336fb088915535ef96e87140e4",
+   "options": [
+    "--std=c++17",
+    "--maxrregcount=64"
+   ],
+   "geometry": {
+    "blocks": 161,
+    "d": 128,
+    "shared_bytes": 65792,
+    "threads": 512,
+    "warps": 16
+   }
+  }
+ }
+}

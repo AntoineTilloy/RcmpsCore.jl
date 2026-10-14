@@ -4,7 +4,7 @@ One persistent CUDA kernel integrates the whole adaptive DOP853 trajectory of a
 packed.PackedActionSystem on the device: step control, the twelve stages, the
 error norm and the seventh-order dense output at the quadrature nodes, with a
 single launch and no host synchronization per step. It follows the design of the
-GPU optimizer's persistent trajectory kernel (research/gpu_d64/generic_gpu/runtime:
+GPU optimizer's persistent trajectory kernel (rcmps_gpu.optimizer.runtime:
 persistent_backend, persistent_rows_cached, persistent_trajectory_backend), whose
 controller arithmetic, source approximation, thread-to-tile mapping and native
 FP64 tensor-core products (mma.sync m8n8k4) are reproduced here, but the
@@ -35,9 +35,9 @@ from pathlib import Path
 import numpy as np
 from scipy.integrate._ivp import dop853_coefficients as dop
 
-from states import SolverFailure
+from ..optimizer.runtime import jax_source
+from .states import SolverFailure
 
-RUNTIME = Path(__file__).resolve().parent.parent / "generic_gpu" / "runtime"
 PANELS = 4          # default cached constant left-operand row panels per thread block
 TEMPS = 2           # default number of two-sided groups (the action system needs 4 and 2)
 STATUS = {0: "success", 1: "max_steps", 2: "step_underflow", 3: "nonfinite_error",
@@ -49,10 +49,7 @@ INT_NAMES = ("status", "attempts", "accepted", "rejected", "was_rejected", "acce
 
 def source_table():
     """The optimizer's validated piecewise Chebyshev fit of 2|t| J(t^2) (|t| <= sqrt(40))."""
-    spec = importlib.util.spec_from_file_location("rcmps_jax_source", RUNTIME / "jax_source.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return jax_source
 
 
 def geometry(d, n_blocks, panels=PANELS, temps=TEMPS):

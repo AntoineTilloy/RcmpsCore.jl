@@ -3,9 +3,9 @@ import argparse
 import json
 from pathlib import Path
 import sys
-import trajectory_sweep_driver as wrapper
-import validate_sweep
-from warm_sweep_driver import binding,digest
+from .runtime import trajectory_sweep_driver as wrapper
+from . import validate_sweep
+from .runtime.warm_sweep_driver import binding,digest
 
 
 def main(argv=None):

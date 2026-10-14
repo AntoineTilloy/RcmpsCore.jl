@@ -18,12 +18,12 @@ import platform
 import time
 import numpy as np
 
-from numerics import (load_reference, adj, finish_gradient, metric, retract,
+from .numerics import (load_reference, adj, finish_gradient, metric, retract,
                       precondition, stationary_state, SolverFailure)
-from ode_backend import evaluate_phi4, evaluate_quartic
-from kinetic_backend import kinetic_raw
-from optimizer import OptimizationControls
-from sweep_stopping import optimize_with_progress, ProgressControls
+from .ode_backend import evaluate_phi4, evaluate_quartic
+from .kinetic_backend import kinetic_raw
+from .optimizer import OptimizationControls
+from .sweep_stopping import optimize_with_progress, ProgressControls
 
 
 def cpu(x, xp):
@@ -106,15 +106,15 @@ def objective(r, k, rho, coupling, args, xp):
             # Native conditional WHILE/IF graphs always capture both RK trials
             # and dense output. Host graph/progress flags are not forwarded.
             if args.quartic_backend == "persistent_rows_general":
-                from persistent_rows_general import evaluate_quartic_persistent_rows_general as evaluate
+                from .persistent_rows_general import evaluate_quartic_persistent_rows_general as evaluate
             elif args.quartic_backend == "persistent_rows_cached":
-                from persistent_rows_cached import evaluate_quartic_persistent_rows_cached as evaluate
+                from .persistent_rows_cached import evaluate_quartic_persistent_rows_cached as evaluate
             elif args.quartic_backend == "persistent_rows":
-                from persistent_rows import evaluate_quartic_persistent_rows as evaluate
+                from .persistent_rows import evaluate_quartic_persistent_rows as evaluate
             elif args.quartic_backend == "persistent":
-                from persistent_backend import evaluate_quartic_persistent as evaluate
+                from .persistent_backend import evaluate_quartic_persistent as evaluate
             else:
-                from device_control_backend import evaluate_quartic_device_control as evaluate
+                from .device_control_backend import evaluate_quartic_device_control as evaluate
             interaction = evaluate(r, q, rho, coupling,
                 xp=xp, half_window=args.window, n_quad=args.quadrature,
                 atol=args.atol, rtol=args.rtol, max_steps=args.max_steps)
@@ -122,7 +122,7 @@ def objective(r, k, rho, coupling, args, xp):
             # Keep Triton optional: CUDA/NumPy runs never import its runtime.
             # Packed layout, precision and device capability are also checked
             # by TritonPackedQuarticRHS before any propagation.
-            from triton_backend import evaluate_quartic_triton
+            from .triton_backend import evaluate_quartic_triton
             interaction = evaluate_quartic_triton(r, q, rho, coupling, **options)
         else:
             interaction = evaluate_quartic(r, q, rho, coupling, reduced=args.reduced,

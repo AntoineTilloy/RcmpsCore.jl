@@ -25,9 +25,9 @@ import math
 
 import numpy as np
 
-from models import monomial_spec
-from packed import DG, OFF, SECTORS, Block, Operand, Term, _Matrix, has_class
-from states import SolverFailure, adj
+from .models import monomial_spec
+from .packed import DG, OFF, SECTORS, Block, Operand, Term, _Matrix, has_class
+from .states import SolverFailure, adj
 
 GROUP_JAC, GROUP_SRC, GROUP_TEMP = 0, 1, 2   # two-sided groups are GROUP_TEMP + i
 TEMPS, MAX_LEFT = 3, 5

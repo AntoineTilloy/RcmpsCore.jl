@@ -15,9 +15,9 @@ import json
 from pathlib import Path
 import numpy as np
 
-import optimizer
-import sweep_driver as driver
-from stationary_correction import stationary_state_correction
+from . import optimizer
+from . import sweep_driver as driver
+from .stationary_correction import stationary_state_correction
 
 
 WARM_SOURCES = ("warm_sweep_driver.py", "stationary_correction.py")

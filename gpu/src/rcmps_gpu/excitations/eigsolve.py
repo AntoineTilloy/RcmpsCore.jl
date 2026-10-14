@@ -31,7 +31,7 @@ keep Julia's 256. davidson_options=None is the Julia library schedule
 (library_davidson_options: search space max(8, 2 nev + 2), retain nev, fresh restarts).
 research_davidson_options(n, nev) is the Davidson part of the Julia D <= 48 research
 configuration (search space min(160, n), retain min(max(12, nev), maxspace - 1), thick
-restarts: Julia's retain 12 wherever Julia accepts it), which run.py uses by default;
+restarts: Julia's retain 12 wherever Julia accepts it), which cli.py uses by default;
 sector_dimension gives the n of a request without building the solver.
 
 Differences from the Julia source: fixed kinetic grids only (Julia's kinetic_nodes=nothing,
@@ -53,14 +53,14 @@ import time
 import numpy as np
 from scipy.linalg import LinAlgError, cholesky, solve_triangular
 
-from coordinates import make_coordinates
-from davidson import DavidsonOptions, check_davidson, davidson
-from hamiltonian import HamiltonianAction
-from kinetic import KineticAction, TangentFrame
-from models import default_terms, quadrature
-from ode import integrate_host
-from scaled import ScaledState, rmul, stack
-from states import IntegratorParameters, SolverFailure, adj
+from .coordinates import make_coordinates
+from .davidson import DavidsonOptions, check_davidson, davidson
+from .hamiltonian import HamiltonianAction
+from .kinetic import KineticAction, TangentFrame
+from .models import default_terms, quadrature
+from .ode import integrate_host
+from .scaled import ScaledState, rmul, stack
+from .states import IntegratorParameters, SolverFailure, adj
 
 norm = np.linalg.norm
 STARTS = ("auto", "field", "kinetic", "random")
@@ -110,7 +110,7 @@ def library_davidson_options(nev=1, *, maxspace=None, retain=None, **controls):
 
 def research_davidson_options(n, nev=1, *, maxspace=None, retain=None, **controls):
     """The Davidson part of the Julia D <= 48 research configuration (docs/excitations.md)
-    for a sector of dimension n, and the default of run.py: maxspace = min(160, n), thick
+    for a sector of dimension n, and the default of cli.py: maxspace = min(160, n), thick
     restarts (refresh=False) keeping retain = min(max(12, nev), maxspace - 1) Ritz vectors.
     That is Julia's DavidsonOptions(maxspace=min(160,n), retain=12, refresh=false) wherever
     Julia's check_davidson accepts it (nev <= 12 and n >= 13); where it refuses retain 12,
@@ -518,7 +518,7 @@ def solve_levels(basis, momentum, terms, *, nev=1, kinetic_nodes=None, precondit
         refined=refined, refined_kinetic_nodes=refined_kinetic_nodes, preconditioner_tol=preconditioner_tol,
         solver_tol=solver_tol, chunk=chunk)
     if validate and bilinear_element is None:
-        from bilinear import BilinearElement as bilinear_element  # independent route: validation only
+        from .bilinear import BilinearElement as bilinear_element  # independent route: validation only
     say = log if log is not None else (lambda line: None)
     kinetic = isinstance(preconditioner, str) and preconditioner == "kinetic"
     tick = time.time()
@@ -755,7 +755,7 @@ def excitation_eigsolve(state, p=0.0, terms=None, *, nev=1, sector="auto", parit
     so the result reports the integer used). `davidson_options` None is the library
     schedule of the CPU code (library_davidson_options: search space max(8, 2 nev + 2),
     retain nev, fresh restarts); research_davidson_options(sector_dimension(state, ...),
-    nev) gives the schedule of the A100 mass and sector runs and of run.py. `solver_tol` is
+    nev) gives the schedule of the A100 mass and sector runs and of cli.py. `solver_tol` is
     the relative residual of every GMRES solve of the actions, `preconditioner_tol` that of
     the coarse kinetic matrix, built `chunk` tangents at a time; `max_basis_bytes` bounds one
     Krylov basis. Energies inherit an error that grows with D: at solver_tol = 1e-12 the validated

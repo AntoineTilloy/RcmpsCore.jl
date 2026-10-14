@@ -6,14 +6,12 @@ import math
 from pathlib import Path
 import sys
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from generic_gpu import build_runtime
-from generic_gpu.run import digest
+from .cli import RUNTIME, digest, runtime_source_sha256
 
 
 def compile_dimension(D, cp, directory=None):
-    from persistent_trajectory_backend import trajectory_source, geometry, trajectory_ptx_report
-    from generic_layout import compilation_options, configure_shared_memory
+    from .runtime.persistent_trajectory_backend import trajectory_source, geometry, trajectory_ptx_report
+    from .runtime.generic_layout import compilation_options, configure_shared_memory
     info = geometry(D // 2)
     props = cp.cuda.runtime.getDeviceProperties(cp.cuda.Device().id)
     kernel = cp.RawKernel(trajectory_source(D // 2), "persistent_trajectory",
@@ -38,7 +36,7 @@ def compile_dimension(D, cp, directory=None):
 
 def random_reference(plan, directory):
     import numpy as np
-    from numerics import stationary_state
+    from .runtime.numerics import stationary_state
     d, n = plan["D"], plan["D"] // 2
     rng = np.random.default_rng(plan["seed"])
     def draw():
@@ -65,11 +63,11 @@ def random_reference(plan, directory):
 def qualify(r, k, rho, coupling, args, cp, timeout, directory):
     """Compare complete fast E/g with independent CuPy propagation and kinetic."""
     import numpy as np
-    import overlap_sweep_driver as driver
-    import persistent_trajectory_overlap as fast
-    from ode_backend import evaluate_quartic
-    from numerics import metric
-    from warm_sweep_driver import binding
+    from .runtime import overlap_sweep_driver as driver
+    from .runtime import persistent_trajectory_overlap as fast
+    from .runtime.ode_backend import evaluate_quartic
+    from .runtime.numerics import metric
+    from .runtime.warm_sweep_driver import binding
     class CuPyQuartic:
         def __init__(self, xp, inputs, coupling, settings):
             self.xp, self.inputs, self.coupling, self.settings = xp, inputs, coupling, settings
@@ -122,8 +120,9 @@ def main(argv=None):
     plan_path = Path((argv or sys.argv[1:])[0])
     plan = json.loads(plan_path.read_bytes())
     output = Path(plan["output"])
-    manifest = build_runtime.verify(plan["runtime"])
-    if digest(Path(plan["runtime"]) / "manifest.json") != plan["runtime_manifest_sha256"]:
+    if plan["schema_version"] != 2 or Path(plan["runtime"]) != RUNTIME:
+        raise ValueError("plan written by another launcher version or installation")
+    if runtime_source_sha256() != plan["runtime_source_sha256"]:
         raise ValueError("runtime changed after planning")
     for name, expected in plan["launcher_source_sha256"].items():
         if digest(Path(__file__).parent / name) != expected:
@@ -135,14 +134,13 @@ def main(argv=None):
         for name, expected in plan["initial"]["sha256"].items():
             if digest(Path(plan["initial"]["path"]) / name) != expected:
                 raise ValueError("initial state changed after planning")
-    sys.path.insert(0, plan["runtime"])
-    import trajectory_sweep_driver as trajectory
-    import numerics
-    from warm_sweep_driver import binding
-    # Numerical imports must all come from this derived bundle, not old experiments.
-    for name in manifest["runtime_source_sha256"]:
-        module = sys.modules.get(Path(name).stem)
-        if module is not None and Path(module.__file__).resolve().parent != Path(plan["runtime"]).resolve():
+    from .runtime import trajectory_sweep_driver as trajectory
+    from .runtime import numerics
+    from .runtime.warm_sweep_driver import binding
+    # Numerical imports must all come from this package's runtime directory, not old experiments.
+    for name in plan["runtime_source_sha256"]:
+        module = sys.modules.get(f"{__package__}.runtime.{Path(name).stem}")
+        if module is not None and Path(module.__file__).resolve().parent != RUNTIME:
             raise ValueError("mixed numerical runtimes: " + name)
     snapshot = trajectory.verify_checkpoint(plan["resume_from"]) if plan["resume_from"] else None
     status = dict(state="preflight", converged=False, final_consistency_passed=False)
@@ -197,13 +195,13 @@ def main(argv=None):
                 stop_reason=stopped["stop_reason"], iteration=len(stopped["history"]),
                 gradient_norm=stopped["final_gradient_norm"], energy=stopped["final_energy"])
             save()
-            sys.path.insert(1, str(Path(__file__).resolve().parents[1]))
-            import validate_trajectory_sweep
+            from . import validate_trajectory_sweep
             validate_trajectory_sweep.main([str(output / "optimization.json"), str(reference),
                                            "--output", str(output / "final_validation.json")])
             status.update(state="completed", final_consistency_passed=True)
             save()
-            build_runtime.verify(plan["runtime"])
+            if runtime_source_sha256() != plan["runtime_source_sha256"]:
+                raise ValueError("runtime changed during the run")
             print(json.dumps(status), flush=True)
             return 0
     except BaseException as error:

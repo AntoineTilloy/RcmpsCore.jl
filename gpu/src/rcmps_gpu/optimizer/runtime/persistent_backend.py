@@ -15,8 +15,8 @@ import math
 import time
 import numpy as np
 from scipy.integrate._ivp import dop853_coefficients as _dop
-from device_control_backend import DeviceAdaptiveDOP853
-from ode_backend import _packed_z2_pullback,quadrature
+from .device_control_backend import DeviceAdaptiveDOP853
+from .ode_backend import _packed_z2_pullback,quadrature
 
 CUDA=r'''
 #include <cooperative_groups.h>
@@ -204,7 +204,7 @@ class PersistentDeviceDOP853(DeviceAdaptiveDOP853):
 
 def evaluate_quartic_persistent(R,Q,rho,g=1.,*,xp,half_window=30.,n_quad=512,
         atol=1e-13,rtol=1e-12,initial_step=None,max_steps=1_000_000,return_samples=False):
-    from triton_backend import TritonPackedQuarticRHS
+    from .triton_backend import TritonPackedQuarticRHS
     start=time.perf_counter()
     r,q,rho=(xp.asarray(x,dtype=xp.complex128) for x in (R,Q,rho))
     points,weights=quadrature(half_window,n_quad)

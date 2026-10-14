@@ -27,7 +27,7 @@ from time import perf_counter
 import math
 import numpy as np
 
-import kinetic_backend as baseline
+from . import kinetic_backend as baseline
 
 
 CUDA_SOURCE = r'''

@@ -29,18 +29,16 @@ import unittest
 
 import numpy as np
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-import coordinates as tc
+from rcmps_gpu.excitations import coordinates as tc
 import dense_reference as ref
-from hamiltonian import HamiltonianAction
-from kinetic import KineticAction, TangentFrame, finish_boundary
-from models import kinetic_spec, monomial_spec, phi4_terms
-from ode import integrate_host
-from packed import PackedActionSystem
-from potential import ActionSystem, PotentialAction
-from scaled import ScaledState, stack
-from states import IntegratorParameters, random_state
+from rcmps_gpu.excitations.hamiltonian import HamiltonianAction
+from rcmps_gpu.excitations.kinetic import KineticAction, TangentFrame, finish_boundary
+from rcmps_gpu.excitations.models import kinetic_spec, monomial_spec, phi4_terms
+from rcmps_gpu.excitations.ode import integrate_host
+from rcmps_gpu.excitations.packed import PackedActionSystem
+from rcmps_gpu.excitations.potential import ActionSystem, PotentialAction
+from rcmps_gpu.excitations.scaled import ScaledState, stack
+from rcmps_gpu.excitations.states import IntegratorParameters, random_state
 
 norm = np.linalg.norm
 INTEGRATOR = IntegratorParameters(n_quad=24, max_point=12.0, atol=1e-14, rtol=1e-13)

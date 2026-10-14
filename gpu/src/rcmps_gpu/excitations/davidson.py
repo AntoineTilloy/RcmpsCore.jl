@@ -15,7 +15,7 @@ import math
 
 import numpy as np
 
-from states import SolverFailure
+from .states import SolverFailure
 
 EPS = float(np.finfo(float).eps)
 norm = np.linalg.norm

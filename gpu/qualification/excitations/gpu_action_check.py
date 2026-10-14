@@ -9,22 +9,19 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 import time
-from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import coordinates  # noqa: E402
-import fused  # noqa: E402
-import hamiltonian  # noqa: E402
-import models  # noqa: E402
-import ode  # noqa: E402
-import packed  # noqa: E402
-import scaled  # noqa: E402
-import states  # noqa: E402
-from gpu_bringup import emit, host, load, white_tangent  # noqa: E402
+from rcmps_gpu.excitations import coordinates
+from rcmps_gpu.excitations import fused
+from rcmps_gpu.excitations import hamiltonian
+from rcmps_gpu.excitations import models
+from rcmps_gpu.excitations import ode
+from rcmps_gpu.excitations import packed
+from rcmps_gpu.excitations import scaled
+from rcmps_gpu.excitations import states
+from gpu_bringup import emit, host, load, white_tangent
 
 
 def main():

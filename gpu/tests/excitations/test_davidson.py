@@ -7,17 +7,15 @@ is norm(x - y) <= a, as Julia's isapprox with an explicit atol.
 from __future__ import annotations
 
 import math
-from pathlib import Path
-import sys
 import unittest
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from davidson import DavidsonOptions, check_davidson, davidson, davidson_stalled, orthogonalize, stall_limit
-from states import SolverFailure
+from rcmps_gpu.excitations.davidson import DavidsonOptions, check_davidson, davidson, davidson_stalled, orthogonalize, stall_limit
+from rcmps_gpu.excitations.states import SolverFailure
+from _paths import FIXTURES
 
-FIXTURE = Path(__file__).resolve().parents[3] / "test" / "fixtures" / "g2725_D48_first85.csv"
+FIXTURE = FIXTURES / "g2725_D48_first85.csv"
 norm = np.linalg.norm
 
 

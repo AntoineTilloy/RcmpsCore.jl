@@ -27,7 +27,7 @@ cond rho 7.0), D = 3 seed 5 (gap 0.16, cond rho 2.7), Z2 D = 4 seed 11 (gap 0.20
 14); D = 6 seed 7 (gap 0.37, cond rho 18) for restarted GMRES; Z2 D = 12 and D = 16, seed 11
 (gaps 0.50 and 0.91, cond rho 16 and 59) under RCMPS_EXCITATION_SLOW=1. Default window:
 max_point 14, atol 1e-13, rtol 1e-12, 16 theta nodes.
-RCMPS_BILINEAR_REPORT=1 prints the largest measured error of every check.
+RCMPS_EXCITATION_REPORT=1 prints the largest measured error of every check.
 """
 from __future__ import annotations
 
@@ -40,17 +40,15 @@ import unittest
 
 import numpy as np
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-import coordinates as tc
+from rcmps_gpu.excitations import coordinates as tc
 import dense_reference as ref
-import models
-import ode
-from bilinear import BilinearElement, Pair, PairSystem, integrate_scipy
-from hamiltonian import HamiltonianAction
-from kinetic import TangentFrame
-from scaled import ScaledState
-from states import IntegratorParameters, SolverFailure, adj, make_state, random_state
+from rcmps_gpu.excitations import models
+from rcmps_gpu.excitations import ode
+from rcmps_gpu.excitations.bilinear import BilinearElement, Pair, PairSystem, integrate_scipy
+from rcmps_gpu.excitations.hamiltonian import HamiltonianAction
+from rcmps_gpu.excitations.kinetic import TangentFrame
+from rcmps_gpu.excitations.scaled import ScaledState
+from rcmps_gpu.excitations.states import IntegratorParameters, SolverFailure, adj, make_state, random_state
 
 slow = unittest.skipUnless(os.environ.get("RCMPS_EXCITATION_SLOW") == "1",
                            "set RCMPS_EXCITATION_SLOW=1 (bond dimensions above 6)")
@@ -67,7 +65,7 @@ REPORT = {}
 
 
 def tearDownModule():
-    if os.environ.get("RCMPS_BILINEAR_REPORT") == "1":
+    if os.environ.get("RCMPS_EXCITATION_REPORT") == "1":
         for (test, tolerance), fraction in REPORT.items():
             print(f"{test:52s} {tolerance:22s} worst error / bound = {fraction:.2e}", file=sys.stderr)
 

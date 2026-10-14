@@ -5,20 +5,16 @@ of test/excitation_eigsolve.jl (same tolerances), with states.random_state(z2=Tr
 place of RandomStateZ2, and adds index-order, duality and gauge-equivalence checks.
 """
 import math
-import os
-import sys
 import unittest
 from dataclasses import replace
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import numpy as np
 from numpy.testing import assert_array_equal
 
-from coordinates import (TangentCoordinates, coordinate_tangent, covector_coordinates,
+from rcmps_gpu.excitations.coordinates import (TangentCoordinates, coordinate_tangent, covector_coordinates,
                          make_coordinates, original_tangent, tangent_basis,
                          tangent_coordinates, tangent_matrix)
-from states import (IntegratorParameters, SolverFailure, adj, excitation_parity, lindblad,
+from rcmps_gpu.excitations.states import (IntegratorParameters, SolverFailure, adj, excitation_parity, lindblad,
                     lindblad_adjoint, make_state, parity_error, random_state, transfer_matrix,
                     unvec, vec)
 

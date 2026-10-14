@@ -25,7 +25,6 @@ from dataclasses import replace
 import functools
 import math
 import os
-import sys
 import time
 import types
 import unittest
@@ -33,19 +32,18 @@ from unittest import mock
 
 import numpy as np
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-import coordinates as tc
+from rcmps_gpu.excitations import coordinates as tc
 import dense_reference as ref
-import eigsolve as es
-import models
-import states
-from davidson import DavidsonOptions, check_davidson
-from ode import integrate_host
-from packed import PackedActionSystem
-from potential import ActionSystem, integrate_scipy
-from scaled import ScaledState
-from states import IntegratorParameters, SolverFailure, adj, make_state, random_state
+from rcmps_gpu.excitations import eigsolve as es
+from rcmps_gpu.excitations import models
+from rcmps_gpu.excitations import states
+from rcmps_gpu.excitations.davidson import DavidsonOptions, check_davidson
+from rcmps_gpu.excitations.ode import integrate_host
+from rcmps_gpu.excitations.packed import PackedActionSystem
+from rcmps_gpu.excitations.potential import ActionSystem, integrate_scipy
+from rcmps_gpu.excitations.scaled import ScaledState
+from rcmps_gpu.excitations.states import IntegratorParameters, SolverFailure, adj, make_state, random_state
+from _paths import FIXTURES
 
 slow = unittest.skipUnless(os.environ.get("RCMPS_EXCITATION_SLOW") == "1",
                            "set RCMPS_EXCITATION_SLOW=1 (more than about a minute)")
@@ -53,8 +51,7 @@ norm = np.linalg.norm
 FREE, PHI4 = models.phi4_terms(0.0), models.phi4_terms(1.0)
 NODES = 32
 WINDOW = dict(max_point=14, n_quad=32, atol=1e-13, rtol=1e-12)
-FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "test", "fixtures",
-                       "phi4_g2_D16_z2_state.jld2")
+FIXTURE = str(FIXTURES / "phi4_g2_D16_z2_state.jld2")
 RECORDED_MASS = 0.3523798021192911   # benchmark/excitation_mass_d16.jl
 
 

@@ -7,7 +7,7 @@ The underlying optimizer retains its independent target and time limits.
 from dataclasses import dataclass
 import math
 
-from optimizer import optimize
+from .optimizer import optimize
 
 
 @dataclass(frozen=True)

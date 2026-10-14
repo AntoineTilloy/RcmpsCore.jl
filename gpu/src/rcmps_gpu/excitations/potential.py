@@ -21,10 +21,10 @@ import math
 import numpy as np
 from scipy.integrate import solve_ivp
 
-from kinetic import Boundary
-from models import quadrature, transformed_source
-from scaled import lmul, rmul
-from states import SolverFailure, adj
+from .kinetic import Boundary
+from .models import quadrature, transformed_source
+from .scaled import lmul, rmul
+from .states import SolverFailure, adj
 
 BLOCKS = ("x", "y", "a1", "a0")   # state[block, channel] is a (D, D) matrix
 

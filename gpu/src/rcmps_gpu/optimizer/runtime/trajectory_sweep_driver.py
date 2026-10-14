@@ -17,9 +17,9 @@ import json
 import math
 from pathlib import Path
 import sys
-import overlap_sweep_driver as overlap_driver
-import persistent_trajectory_overlap as implementation
-from warm_sweep_driver import binding,digest
+from . import overlap_sweep_driver as overlap_driver
+from . import persistent_trajectory_overlap as implementation
+from .warm_sweep_driver import binding,digest
 
 ORIGINAL_PARSE=overlap_driver.BASE_PARSE_ARGS
 ORIGINAL_VERIFY=overlap_driver.verify_checkpoint

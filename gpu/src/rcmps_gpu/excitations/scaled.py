@@ -43,7 +43,7 @@ import math
 
 import numpy as np
 
-from states import SolverFailure, adj
+from .states import SolverFailure, adj
 
 GAUGES = ("L", "H")
 RESTART = 50

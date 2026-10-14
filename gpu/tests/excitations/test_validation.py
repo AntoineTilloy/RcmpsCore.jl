@@ -34,16 +34,14 @@ from unittest import mock
 
 import numpy as np
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-import bilinear
+from rcmps_gpu.excitations import bilinear
 import dense_reference as ref
-import eigsolve as es
-import models
-import ode
-import potential
-from davidson import DavidsonOptions
-from states import SolverFailure, make_state, random_state
+from rcmps_gpu.excitations import eigsolve as es
+from rcmps_gpu.excitations import models
+from rcmps_gpu.excitations import ode
+from rcmps_gpu.excitations import potential
+from rcmps_gpu.excitations.davidson import DavidsonOptions
+from rcmps_gpu.excitations.states import SolverFailure, make_state, random_state
 
 slow = unittest.skipUnless(os.environ.get("RCMPS_EXCITATION_SLOW") == "1",
                            "set RCMPS_EXCITATION_SLOW=1 (more than about a minute)")

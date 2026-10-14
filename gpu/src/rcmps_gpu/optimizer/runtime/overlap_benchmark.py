@@ -37,8 +37,8 @@ import time
 
 import numpy as np
 
-from kinetic_backend import kinetic_raw
-from numerics import adj, finish_gradient, load_reference, metric, stationary_state
+from .kinetic_backend import kinetic_raw
+from .numerics import adj, finish_gradient, load_reference, metric, stationary_state
 
 
 class OverlapFailure(RuntimeError):
@@ -63,19 +63,19 @@ class PreparedQuartic:
     One object is used once; its graph is closed after both workers finish.
     """
     def __init__(self, cp, inputs, coupling, args):
-        from ode_backend import _packed_z2_pullback, quadrature
+        from .ode_backend import _packed_z2_pullback, quadrature
         q, r, rho = inputs
         self.cp, self.q, self.r, self.coupling = cp, q, r, float(coupling)
         self.pullback = _packed_z2_pullback
         started = time.perf_counter()
         self.points, self.weights = quadrature(args.window, args.quadrature)
         if args.quartic == 'cached' or len(q) == 64:
-            from triton_backend import TritonPackedQuarticRHS
-            from persistent_rows_cached import PersistentRowsCachedDOP853
+            from .triton_backend import TritonPackedQuarticRHS
+            from .persistent_rows_cached import PersistentRowsCachedDOP853
             self.rhs = TritonPackedQuarticRHS(q, r, rho, cp)
             solver_type = PersistentRowsCachedDOP853
         else:
-            from persistent_rows_general import make_rhs, GeneralCachedDOP853
+            from .persistent_rows_general import make_rhs, GeneralCachedDOP853
             self.rhs = make_rhs(q, r, rho, cp)
             solver_type = GeneralCachedDOP853
         self.solver = solver_type(self.rhs, np.r_[self.points, math.sqrt(args.window)],
@@ -260,7 +260,7 @@ def compare_finished(first, second, rho, metric_reg):
 def logic_self_tests():
     """Scientific D4/controller tests; no CuPy import or GPU initialization."""
     import unittest
-    from ode_backend import evaluate_quartic
+    from .ode_backend import evaluate_quartic
 
     class LogicTests(unittest.TestCase):
         def test_D4_parallel_raw_sum_and_stationary_response(self):
@@ -373,9 +373,9 @@ def main(argv=None):
     original=tuple(x.copy() for x in (q,r,rho))
     import cupy as cp
     if args.quartic=='general':
-        from persistent_rows_general import evaluate_quartic_persistent_rows_general as evaluate
+        from .persistent_rows_general import evaluate_quartic_persistent_rows_general as evaluate
     else:
-        from persistent_rows_cached import evaluate_quartic_persistent_rows_cached as evaluate
+        from .persistent_rows_cached import evaluate_quartic_persistent_rows_cached as evaluate
     with cp.cuda.Device(args.device):
         inputs=tuple(cp.asarray(x,dtype=cp.complex128) for x in original)
         qg,rg,rhog=inputs

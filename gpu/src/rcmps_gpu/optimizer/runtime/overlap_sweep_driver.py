@@ -30,12 +30,12 @@ from types import SimpleNamespace
 
 import numpy as np
 
-import overlap_benchmark as overlap
-import robust_sweep_driver as robust
-import sweep_driver as driver
-import warm_sweep_driver as warm
-from numerics import SolverFailure, adj
-from warm_sweep_driver import binding, digest
+from . import overlap_benchmark as overlap
+from . import robust_sweep_driver as robust
+from . import sweep_driver as driver
+from . import warm_sweep_driver as warm
+from .numerics import SolverFailure, adj
+from .warm_sweep_driver import binding, digest
 
 
 OVERLAP_SOURCES = (*robust.ROBUST_SOURCES, "overlap_benchmark.py", "overlap_sweep_driver.py")

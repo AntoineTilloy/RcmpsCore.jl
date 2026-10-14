@@ -29,15 +29,13 @@ import numpy as np
 from scipy.integrate import quad
 from scipy.integrate._ivp import dop853_coefficients as dop
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
 import dense_reference as ref
-from kinetic import TangentFrame, finish_boundary
-from models import kinetic_spec, monomial_spec, quadrature, transformed_source
-from ode import integrate_host
-from potential import ActionSystem, PotentialAction, integrate_scipy
-from scaled import ScaledState, stack
-from states import IntegratorParameters, SolverFailure, adj, random_state
+from rcmps_gpu.excitations.kinetic import TangentFrame, finish_boundary
+from rcmps_gpu.excitations.models import kinetic_spec, monomial_spec, quadrature, transformed_source
+from rcmps_gpu.excitations.ode import integrate_host
+from rcmps_gpu.excitations.potential import ActionSystem, PotentialAction, integrate_scipy
+from rcmps_gpu.excitations.scaled import ScaledState, stack
+from rcmps_gpu.excitations.states import IntegratorParameters, SolverFailure, adj, random_state
 
 norm = np.linalg.norm
 INTEGRATOR = IntegratorParameters(n_quad=24, max_point=12.0, atol=1e-13, rtol=1e-12)

@@ -16,11 +16,12 @@ import subprocess
 import sys
 import tomllib
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from generic_gpu import build_runtime
-from generic_gpu.layout import describe
+from .. import __version__
+from .layout import describe
 
 HERE = Path(__file__).resolve().parent
+RUNTIME = HERE / "runtime"
+LAUNCHER_SOURCES = ("cli.py", "worker.py", "layout.py", "validate_sweep.py", "validate_trajectory_sweep.py")
 DEFAULTS = dict(window=30., quadrature=512, nodes=512, atol=1e-13, rtol=1e-12,
                 maxdim=1024, metric_reg=1e-3, krylov_tolerance=1e-12,
                 stationary_tolerance=1e-13, max_steps=1_000_000,
@@ -29,6 +30,29 @@ DEFAULTS = dict(window=30., quadrature=512, nodes=512, atol=1e-13, rtol=1e-12,
 
 def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def runtime_source_sha256():
+    """sha256 of every numerical runtime module, keyed by file name as in the checkpoints."""
+    return {path.name: digest(path) for path in sorted(RUNTIME.glob("*.py")) if path.name != "__init__.py"}
+
+
+def launcher_source_sha256():
+    return {name: digest(HERE / name) for name in LAUNCHER_SOURCES}
+
+
+def package_identity():
+    """Version, and the git commit when these files are tracked in a checkout (else None)."""
+    def git(*arguments):
+        return subprocess.run(("git",) + arguments, cwd=HERE, capture_output=True, text=True,
+                              timeout=30, check=True).stdout.strip()
+    try:
+        git("ls-files", "--error-unmatch", "cli.py")
+        commit = git("rev-parse", "HEAD") or None
+        modified = bool(git("status", "--porcelain", "--untracked-files=no", "--", ".."))
+    except (OSError, subprocess.SubprocessError):
+        commit = modified = None
+    return dict(name="rcmps-gpu", version=__version__, git_commit=commit, git_tracked_files_modified=modified)
 
 
 def input_ledger(directory, D, coupling):
@@ -43,7 +67,7 @@ def input_ledger(directory, D, coupling):
     return dict(path=str(directory), sha256={name: digest(directory / name) for name in names})
 
 
-def prepare(args, manifest):
+def prepare(args, runtime_sha256):
     previous = None
     if args.resume_from:
         previous = json.loads(args.resume_from.read_bytes())
@@ -52,7 +76,7 @@ def prepare(args, manifest):
         if previous["reference"]["D"] != args.D:
             raise ValueError("cannot resume an optimizer at a different D")
         expected = previous["runs"][-1]["source_sha256"]
-        if not expected or any(manifest["runtime_source_sha256"].get(n) != h for n, h in expected.items()):
+        if not expected or any(runtime_sha256.get(n) != h for n, h in expected.items()):
             raise ValueError("resume requires this exact generic runtime; sealed historical runs remain unchanged")
     controls = {}
     for name, default in DEFAULTS.items():
@@ -86,10 +110,9 @@ def prepare(args, manifest):
         coupling = float(tomllib.loads((initial / "metadata.toml").read_text())["coupling"])
         if not math.isfinite(coupling) or coupling < 0:
             raise ValueError("invalid initial coupling")
-    source_files = ("run.py", "worker.py", "build_runtime.py", "layout.py")
-    plan = dict(schema_version=1, D=args.D, coupling=coupling, seed=args.seed,
-                runtime=str(args.runtime.resolve()), runtime_manifest_sha256=digest(args.runtime / "manifest.json"),
-                launcher_source_sha256={n: digest(HERE / n) for n in source_files},
+    plan = dict(schema_version=2, D=args.D, coupling=coupling, seed=args.seed, package=package_identity(),
+                runtime=str(RUNTIME), runtime_source_sha256=dict(runtime_sha256),
+                launcher_source_sha256=launcher_source_sha256(),
                 layout=describe(args.D, controls["quadrature"]), controls=controls,
                 max_seconds=args.max_seconds, max_iterations=args.max_iterations,
                 gradient_target=args.gradient_target, max_device_seconds=args.max_device_seconds,
@@ -112,7 +135,6 @@ def parser():
     p.add_argument("--initial", type=Path, help="existing portable initial export")
     p.add_argument("--resume-from", type=Path, help="stopped generic JSON checkpoint; keep L-BFGS history")
     p.add_argument("--output", type=Path, help="fresh run directory")
-    p.add_argument("--runtime", type=Path, default=build_runtime.TARGET)
     p.add_argument("--run-gpu", action="store_true")
     p.add_argument("--compile-only", action="store_true", help="compile/resource check without a numerical launch")
     p.add_argument("--emit-cuda", type=Path, help="write generated CUDA on the CPU, without --run-gpu")
@@ -139,14 +161,15 @@ def main(argv=None):
             raise ValueError("output already exists; choose a fresh run directory")
         if args.emit_cuda and args.emit_cuda.exists():
             raise ValueError("CUDA output already exists; choose a new file")
-        manifest = build_runtime.build(args.runtime)
-        plan = prepare(args, manifest)
+        plan = prepare(args, runtime_source_sha256())
     except (ValueError, OSError, KeyError) as error:
         p.error(str(error))
     if args.emit_cuda:
-        # The source-generator imports NumPy/SciPy/Triton, but never CuPy/CUDA.
-        code = "import sys;sys.path.insert(0,sys.argv[1]);from persistent_trajectory_backend import trajectory_source;print(trajectory_source(int(sys.argv[2])),end='')"
-        result = subprocess.run([sys.executable, "-c", code, str(args.runtime.resolve()), str(args.D // 2)],
+        # The source-generator imports NumPy/SciPy, but never Triton, CuPy or CUDA.
+        code = ("import sys;from pathlib import Path;from rcmps_gpu.optimizer.runtime import persistent_trajectory_backend as t;"
+                "Path(t.__file__).resolve().parent==Path(sys.argv[1]) or sys.exit('--emit-cuda: rcmps_gpu imported from '+t.__file__);"
+                "print(t.trajectory_source(int(sys.argv[2])),end='')")
+        result = subprocess.run([sys.executable, "-c", code, str(RUNTIME), str(args.D // 2)],
                                 check=True, capture_output=True, text=True)
         args.emit_cuda.parent.mkdir(parents=True, exist_ok=True)
         with args.emit_cuda.open("x") as stream:
@@ -159,7 +182,7 @@ def main(argv=None):
     args.output.mkdir(parents=True, exist_ok=False)
     (args.output / "plan.json").write_text(json.dumps(plan, indent=2, sort_keys=True, allow_nan=False) + "\n")
     environment = dict(os.environ, OPENBLAS_NUM_THREADS="1")
-    return subprocess.run([sys.executable, str(HERE / "worker.py"), str((args.output / "plan.json").resolve())],
+    return subprocess.run([sys.executable, "-m", "rcmps_gpu.optimizer.worker", str((args.output / "plan.json").resolve())],
                           env=environment).returncode
 
 

@@ -62,19 +62,16 @@ from unittest import mock
 import numpy as np
 from scipy.integrate import solve_ivp
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-import coordinates as tc
+from rcmps_gpu.excitations import coordinates as tc
 import dense_reference as ref
-import models
-import states
-from davidson import DavidsonOptions
-from states import IntegratorParameters, SolverFailure, adj
+from rcmps_gpu.excitations import models
+from rcmps_gpu.excitations import states
+from rcmps_gpu.excitations.davidson import DavidsonOptions
+from rcmps_gpu.excitations.states import IntegratorParameters, SolverFailure, adj
+from _paths import FIXTURES, PHI4_Z2
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-FIXTURE = os.path.normpath(os.path.join(HERE, "..", "..", "..", "test", "fixtures", "phi4_g2_D16_z2_state.jld2"))
-RESULTS = os.path.normpath(os.path.join(HERE, "..", "..", "..", "..", "rcmps-phi4-z2", "research", "mass_scan",
-                                        "results", "D16", "g2.0000"))
+FIXTURE = str(FIXTURES / "phi4_g2_D16_z2_state.jld2")
+RESULTS = str(PHI4_Z2 / "research" / "mass_scan" / "results" / "D16" / "g2.0000")
 ENERGY = 0.3523798021196878          # stored real(dot(c, action)), tight action
 MASS = 0.3523798021192911            # recorded validated mass: tight bilinear energy
 STANDARD_BILINEAR = 0.35237980211934294

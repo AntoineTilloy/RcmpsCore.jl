@@ -35,7 +35,6 @@ from __future__ import annotations
 from dataclasses import replace
 import math
 import os
-import sys
 import types
 import unittest
 from unittest import mock
@@ -45,14 +44,12 @@ import numpy as np
 from scipy.integrate import solve_ivp
 from scipy.linalg import expm, lu_solve
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-import coordinates as tc
+from rcmps_gpu.excitations import coordinates as tc
 import dense_reference as ref
-import models
-import states
-from davidson import DavidsonOptions
-from states import IntegratorParameters, SolverFailure, adj, make_state, random_state, unvec, vec
+from rcmps_gpu.excitations import models
+from rcmps_gpu.excitations import states
+from rcmps_gpu.excitations.davidson import DavidsonOptions
+from rcmps_gpu.excitations.states import IntegratorParameters, SolverFailure, adj, make_state, random_state, unvec, vec
 
 slow = unittest.skipUnless(os.environ.get("RCMPS_EXCITATION_SLOW") == "1",
                            "set RCMPS_EXCITATION_SLOW=1 (more than about a minute)")

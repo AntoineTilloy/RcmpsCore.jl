@@ -9,8 +9,8 @@ any element or term the packed system does not cover) is inherited unchanged.
 """
 from __future__ import annotations
 
-from bilinear import BilinearElement
-from packed_pair import diagonal_observable
+from .bilinear import BilinearElement
+from .packed_pair import diagonal_observable
 
 
 class FusedBilinearElement(BilinearElement):

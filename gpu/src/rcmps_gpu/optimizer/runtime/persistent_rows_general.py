@@ -14,16 +14,16 @@ from pathlib import Path
 import numpy as np
 import triton
 import triton.language as tl
-from triton_backend import (TritonPackedQuarticRHS, _Pointer, _load_z, _load_gathered,
+from .triton_backend import (TritonPackedQuarticRHS, _Pointer, _load_z, _load_gathered,
                             _complex_dot, _second, use_cupy_driver)
-from persistent_backend import PersistentDeviceDOP853
-from persistent_rows_cached import (cached_row_source, PersistentRowsCachedAttempt,
+from .persistent_backend import PersistentDeviceDOP853
+from .persistent_rows_cached import (cached_row_source, PersistentRowsCachedAttempt,
                                     evaluate_quartic_persistent_rows_cached)
-from device_control_backend import DeviceAdaptiveDOP853
-from ode_backend import _PackedZ2QuarticRHS, _packed_z2_pullback, quadrature
+from .device_control_backend import DeviceAdaptiveDOP853
+from .ode_backend import _PackedZ2QuarticRHS, _packed_z2_pullback, quadrature
 
 SUPPORTED_PACKED = tuple(range(1, 257))
-from generic_layout import (packed_geometry, dynamic_shared_bytes,
+from .generic_layout import (packed_geometry, dynamic_shared_bytes,
     compilation_options, configure_shared_memory)
 
 

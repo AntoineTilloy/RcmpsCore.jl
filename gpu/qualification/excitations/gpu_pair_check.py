@@ -10,21 +10,18 @@ Every result is one JSON line on stdout.
 from __future__ import annotations
 
 import argparse
-import sys
 import time
-from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import bilinear  # noqa: E402
-import fused  # noqa: E402
-import models  # noqa: E402
-import ode  # noqa: E402
-import packed_pair  # noqa: E402
-import scaled  # noqa: E402
-import states  # noqa: E402
-from gpu_bringup import emit, load, white_tangent  # noqa: E402
+from rcmps_gpu.excitations import bilinear
+from rcmps_gpu.excitations import fused
+from rcmps_gpu.excitations import models
+from rcmps_gpu.excitations import ode
+from rcmps_gpu.excitations import packed_pair
+from rcmps_gpu.excitations import scaled
+from rcmps_gpu.excitations import states
+from gpu_bringup import emit, load, white_tangent
 
 
 def main():

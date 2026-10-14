@@ -20,7 +20,7 @@ import numpy as np
 import triton
 import triton.language as tl
 
-from ode_backend import (_PackedZ2QuarticRHS, _integrate, _packed_z2_pullback,
+from .ode_backend import (_PackedZ2QuarticRHS, _integrate, _packed_z2_pullback,
                          quadrature, transformed_source)
 
 

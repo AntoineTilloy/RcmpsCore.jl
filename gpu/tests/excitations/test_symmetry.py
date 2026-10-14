@@ -10,19 +10,16 @@ test fixture).
 """
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import eigsolve  # noqa: E402
-import models  # noqa: E402
-import ode  # noqa: E402
-import packed  # noqa: E402
-import states  # noqa: E402
-from davidson import DavidsonOptions  # noqa: E402
+from rcmps_gpu.excitations import eigsolve
+from rcmps_gpu.excitations import models
+from rcmps_gpu.excitations import ode
+from rcmps_gpu.excitations import packed
+from rcmps_gpu.excitations import states
+from rcmps_gpu.excitations.davidson import DavidsonOptions
 
 
 class TimeReversal(unittest.TestCase):

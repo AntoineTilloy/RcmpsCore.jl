@@ -25,15 +25,13 @@ import unittest
 
 import numpy as np
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-import coordinates as tc
+from rcmps_gpu.excitations import coordinates as tc
 import dense_reference as ref
-from kinetic import (Boundary, KineticAction, TangentFrame, batch_adjoint, contract, finish_boundary,
+from rcmps_gpu.excitations.kinetic import (Boundary, KineticAction, TangentFrame, batch_adjoint, contract, finish_boundary,
                      kinetic_terms, node_sum)
-from models import kinetic_spec, monomial_spec, phi4_terms
-from scaled import ScaledState, stack
-from states import adj, random_state
+from rcmps_gpu.excitations.models import kinetic_spec, monomial_spec, phi4_terms
+from rcmps_gpu.excitations.scaled import ScaledState, stack
+from rcmps_gpu.excitations.states import adj, random_state
 
 norm = np.linalg.norm
 STATES = ((3, False), (4, True), (5, False), (6, True))

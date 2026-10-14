@@ -30,11 +30,9 @@ import unittest
 
 import numpy as np
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
 import dense_reference as ref
-from scaled import RESTART, ScaledState, batch_norm, gmres, lmul, rmul, stack
-from states import SolverFailure, State, adj, lindblad, lindblad_adjoint, random_state
+from rcmps_gpu.excitations.scaled import RESTART, ScaledState, batch_norm, gmres, lmul, rmul, stack
+from rcmps_gpu.excitations.states import SolverFailure, State, adj, lindblad, lindblad_adjoint, random_state
 
 norm = np.linalg.norm
 STATES = ((2, False), (3, False), (4, False), (4, True), (5, False), (6, False), (6, True))

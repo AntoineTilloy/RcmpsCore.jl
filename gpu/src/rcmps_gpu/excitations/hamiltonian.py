@@ -12,10 +12,10 @@ tr(U' F) = tr(Uh' Fh) for any pair of tangents.
 """
 from __future__ import annotations
 
-from kinetic import KineticAction, TangentFrame, finish_boundary, kinetic_terms
-from potential import PotentialAction, integrate_scipy
-from scaled import stack
-from states import SolverFailure
+from .kinetic import KineticAction, TangentFrame, finish_boundary, kinetic_terms
+from .potential import PotentialAction, integrate_scipy
+from .scaled import stack
+from .states import SolverFailure
 
 
 class HamiltonianAction:

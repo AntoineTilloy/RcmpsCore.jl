@@ -18,8 +18,8 @@ import math
 import numpy as np
 from scipy.linalg import eigh, lapack, solve_triangular
 
-from states import SolverFailure, State, adj, excitation_parity, make_state
-from states import parity_error as state_parity_error
+from .states import SolverFailure, State, adj, excitation_parity, make_state
+from .states import parity_error as state_parity_error
 
 EPS, TINY = np.finfo(float).eps, np.finfo(float).tiny  # Julia eps(), floatmin()
 

@@ -8,9 +8,9 @@ from __future__ import annotations
 import math
 import time
 import numpy as np
-from persistent_rows import PersistentRowsAttempt, PersistentRowsDOP853, row_source
-from device_control_backend import DeviceAdaptiveDOP853
-from ode_backend import _packed_z2_pullback, quadrature
+from .persistent_rows import PersistentRowsAttempt, PersistentRowsDOP853, row_source
+from .device_control_backend import DeviceAdaptiveDOP853
+from .ode_backend import _packed_z2_pullback, quadrature
 
 
 def _replace(source, old, new):
@@ -78,7 +78,7 @@ def evaluate_quartic_persistent_rows_cached(R, Q, rho, g=1., *, xp, half_window=
         n_quad=512, atol=1e-13, rtol=1e-12, initial_step=None, max_steps=1_000_000,
         return_samples=False):
     """Standard raw quartic value, covector and boundary environment API."""
-    from triton_backend import TritonPackedQuarticRHS
+    from .triton_backend import TritonPackedQuarticRHS
     start = time.perf_counter()
     r, q, rho = (xp.asarray(x, dtype=xp.complex128) for x in (R, Q, rho))
     points, weights = quadrature(half_window, n_quad)

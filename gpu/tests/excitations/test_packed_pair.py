@@ -33,14 +33,12 @@ import unittest
 
 import numpy as np
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-import ode
-from bilinear import TYPES, BilinearElement, Pair, PairSystem
-from models import Observable, kinetic_spec, monomial_spec
-from packed_pair import PackedDiagonalPair, diagonal_observable
-from scaled import ScaledState
-from states import IntegratorParameters, adj, make_state, random_state
+from rcmps_gpu.excitations import ode
+from rcmps_gpu.excitations.bilinear import TYPES, BilinearElement, Pair, PairSystem
+from rcmps_gpu.excitations.models import Observable, kinetic_spec, monomial_spec
+from rcmps_gpu.excitations.packed_pair import PackedDiagonalPair, diagonal_observable
+from rcmps_gpu.excitations.scaled import ScaledState
+from rcmps_gpu.excitations.states import IntegratorParameters, adj, make_state, random_state
 
 norm = np.linalg.norm
 STATES = {"gap": {}, "weak": dict(scaling=0.5, seed=11)}

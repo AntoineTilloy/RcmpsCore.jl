@@ -16,14 +16,14 @@ import re
 import time
 import numpy as np
 from scipy.integrate._ivp import dop853_coefficients as dop
-from persistent_rows_cached import cached_row_source
-from device_control_backend import (FLOAT_NAMES, INT_NAMES, STATUS, DeviceControlFailure,
+from .persistent_rows_cached import cached_row_source
+from .device_control_backend import (FLOAT_NAMES, INT_NAMES, STATUS, DeviceControlFailure,
                                     clipped_step, controller_factor)
-from jax_source import COEFFICIENTS, MAXIMUM, SEGMENTS, DEGREE, source_numpy
-from ode_backend import _PackedZ2QuarticRHS, _packed_z2_pullback, quadrature
+from .jax_source import COEFFICIENTS, MAXIMUM, SEGMENTS, DEGREE, source_numpy
+from .ode_backend import _PackedZ2QuarticRHS, _packed_z2_pullback, quadrature
 
 SUPPORTED_PACKED = tuple(range(1, 257))
-from generic_layout import (packed_geometry, dynamic_shared_bytes,
+from .generic_layout import (packed_geometry, dynamic_shared_bytes,
     compilation_options, configure_shared_memory)
 TIMEOUT_STATUS = 6
 
@@ -423,10 +423,10 @@ def integrate_trajectory_numpy(rhs,points,*,atol=1e-13,rtol=1e-12,initial_step=N
     def call(t,z):
         # Same exact packed equations, device-source representation.
         original=rhs(-a if t==-a else t,z)
-        source=source_numpy(t);exact_source=__import__('ode_backend').transformed_source(t)
+        source=source_numpy(t);exact_source=__import__('ode_backend',globals(),level=1).transformed_source(t)
         # Isolate the source-linear term without changing the Lindblad term.
         if source==exact_source:return original
-        return original+(source-exact_source)*(rhs(0.,z)/__import__('ode_backend').transformed_source(0.))
+        return original+(source-exact_source)*(rhs(0.,z)/__import__('ode_backend',globals(),level=1).transformed_source(0.))
     t=-a;f=call(t,y);attempts=accepted=rejected=dense_steps=next_point=0;was_rejected=False
     while t<a:
         if attempts>=max_steps:raise RuntimeError('max_steps')

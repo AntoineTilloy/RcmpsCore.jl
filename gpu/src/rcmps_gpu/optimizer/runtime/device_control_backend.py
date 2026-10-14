@@ -31,8 +31,8 @@ import time
 import numpy as np
 from scipy.integrate._ivp import dop853_coefficients as _dop
 
-from jax_source import COEFFICIENTS, DEGREE, MAXIMUM, SEGMENTS, source_numpy
-from ode_backend import (_GraphAttempt, _GraphDenseOutput, _LinearCombination,
+from .jax_source import COEFFICIENTS, DEGREE, MAXIMUM, SEGMENTS, source_numpy
+from .ode_backend import (_GraphAttempt, _GraphDenseOutput, _LinearCombination,
                          _packed_z2_pullback, quadrature)
 
 
@@ -507,7 +507,7 @@ def evaluate_quartic_device_control(R,Q,rho,g=1.,*,xp,half_window=30.,n_quad=512
     """
     if xp.__name__!="cupy":
         raise ValueError("device control requires CuPy")
-    from triton_backend import TritonPackedQuarticRHS
+    from .triton_backend import TritonPackedQuarticRHS
     started=time.perf_counter()
     r,q,rho=(xp.asarray(x,dtype=xp.complex128) for x in (R,Q,rho))
     points,weights=quadrature(half_window,n_quad)

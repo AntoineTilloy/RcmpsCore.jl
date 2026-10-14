@@ -1,6 +1,6 @@
 """Tangent-space excitation energies of an RCMPS ground state on a GPU (or the CPU).
 
-    python run.py STATE --output DIR [--momentum 0.0] [--nev 1] [--sector auto] [--backend fused]
+    python -m rcmps_gpu.excitations STATE --output DIR [--momentum 0.0] [--nev 1] [--sector auto] [--backend fused]
 
 STATE is an rcmps_store checkpoint (.jld2) or a portable export directory of the GPU
 optimizer (R.bin, K.bin, rho.bin, metadata.toml). The model is phi^4 at the coupling
@@ -44,7 +44,7 @@ configuration.
 
 Kinetic nodes. `--kinetic-nodes` defaults to eigsolve.default_kinetic_nodes(D): 256 up to
 D = 64 and 512 beyond (256 nodes are off by 2e-7 at D = 96 and 1e-5 at D = 128 in the
-resolvent part of the action; README, "Kinetic nodes at large D"). An explicit value below
+resolvent part of the action; gpu/README.md, "Kinetic nodes at large D"). An explicit value below
 that default is logged as a warning. Node counts were measured up to D = 128 only: beyond,
 512 nodes are used and a note is logged; the refined check of the validation (twice the
 nodes unless --refined-kinetic-nodes) is what would expose an unconverged quadrature.
@@ -54,24 +54,23 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import sys
 import time
 from pathlib import Path
 
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
-import eigsolve  # noqa: E402
-import models  # noqa: E402
-import ode  # noqa: E402
-import states  # noqa: E402
-from davidson import check_davidson  # noqa: E402
+from . import eigsolve  # noqa: E402
+from . import models  # noqa: E402
+from . import ode  # noqa: E402
+from . import states  # noqa: E402
+from .davidson import check_davidson  # noqa: E402
 
 SOURCES = ("states.py", "models.py", "coordinates.py", "davidson.py", "scaled.py", "kinetic.py", "potential.py",
            "ode.py", "hamiltonian.py", "bilinear.py", "bilinear_fused.py", "packed.py", "packed_pair.py", "fused.py",
-           "eigsolve.py", "run.py")
-MEASURED_D = 128   # largest D at which kinetic node counts were measured (README)
+           "eigsolve.py", "cli.py")
+SHARED_SOURCES = ("optimizer/runtime/jax_source.py",)   # relative to the rcmps_gpu package
+MEASURED_D = 128   # largest D at which kinetic node counts were measured (gpu/README.md)
 
 
 def jsonable(value):
@@ -181,7 +180,7 @@ def resolve_defaults(args, state):
     if nodes < default_nodes:
         messages.append(f"warning: kinetic_nodes={nodes} is below the default {default_nodes} for D = {d}; "
                         f"measured: 256 nodes are converged up to D = 64, 512 up to D = 128 "
-                        f"(README, 'Kinetic nodes at large D')")
+                        f"(gpu/README.md, 'Kinetic nodes at large D')")
     if d > MEASURED_D:
         messages.append(f"note: kinetic node counts are measured only up to D = {MEASURED_D}; at D = {d} the "
                         f"refined check of the validation ({refined_nodes} nodes) would expose an unconverged "
@@ -235,12 +234,12 @@ def main(argv=None):
                       cupy=xp.__version__, driver=int(xp.cuda.runtime.driverGetVersion()))
         basis_bytes = args.basis_bytes
         if args.backend == "fused":
-            import fused
-            import packed
+            from . import fused
+            from . import packed
             integrate, system = fused.fused_integrator(xp, use_mma=not args.scalar_tiles), packed.PackedActionSystem
             if not args.host_bilinear:
                 # The bilinear validation energies also go through the fused kernel.
-                import bilinear_fused
+                from . import bilinear_fused
                 bilinear_element = bilinear_fused.bound(integrate)
         else:
             integrate, system = ode.integrate_host, None
@@ -259,7 +258,9 @@ def main(argv=None):
                     arguments=arguments, coupling=state.coupling, D=state.D, saved_energy=state.e0, device=device,
                     numpy=np.__version__, davidson_schedule=resolved["schedule"],
                     sector_dimension=resolved["dimension"], default_kinetic_nodes=resolved["default_kinetic_nodes"],
-                    source_sha256={name: hashlib.sha256((HERE / name).read_bytes()).hexdigest() for name in SOURCES})
+                    source_sha256={**{name: hashlib.sha256((HERE / name).read_bytes()).hexdigest() for name in SOURCES},
+                                   **{name: hashlib.sha256((HERE.parent / name).read_bytes()).hexdigest()
+                                      for name in SHARED_SOURCES}})
     log(f"state {path.name} D={state.D} g={state.coupling} backend={args.backend} scaling={args.scaling}")
     for message in resolved["messages"]:
         log(message)

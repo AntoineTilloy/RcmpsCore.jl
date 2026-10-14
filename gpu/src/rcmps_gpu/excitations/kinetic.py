@@ -20,9 +20,9 @@ from __future__ import annotations
 
 import numpy as np
 
-from models import is_quadratic, kinetic_grid
-from scaled import lmul, rmul, stack
-from states import adj
+from .models import is_quadratic, kinetic_grid
+from .scaled import lmul, rmul, stack
+from .states import adj
 
 
 def node_sum(x, weights):

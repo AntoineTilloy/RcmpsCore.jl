@@ -4,7 +4,7 @@ The integrator of the simple GPU path and of CPU tests: the state lives on the
 device (`system.xp`), each right-hand side is a handful of array operations, and
 the step controller runs on the host. Method, error norm, step controller, cusp
 handling at t = 0 and seventh-order dense output are those of the GPU optimizer's
-device controller (research/gpu_d64/generic_gpu/runtime), which follow SciPy's
+device controller (rcmps_gpu.optimizer.runtime), which follow SciPy's
 DOP853; the source 2|t| J(t^2) is evaluated exactly on the host.
 
 A system provides `xp`, `initial` (any shape, complex128) and
@@ -17,8 +17,8 @@ import math
 import numpy as np
 from scipy.integrate._ivp import dop853_coefficients as dop
 
-from models import transformed_source
-from states import SolverFailure
+from .models import transformed_source
+from .states import SolverFailure
 
 
 def integrate_host(system, points, endpoint, integrator, *, initial_step=0.01, statistics=None):
