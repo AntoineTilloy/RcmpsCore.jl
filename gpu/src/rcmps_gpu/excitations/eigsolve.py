@@ -24,12 +24,23 @@ then differ from the CPU ones, and from scaling 'none' (which keeps the stored r
 up to about eps cond(rho) |H|, and equal the CPU formulas evaluated on S rh S
 (test_eigsolve.IllConditioned: 9e-8 against 1.5e-11 at cond(rho) = 1.6e9).
 
-Differences from the Julia source: fixed kinetic grids only (kinetic_nodes=nothing is
-not ported); `environment_tol` and `max_bond` are replaced by `solver_tol`, the
-relative residual of every GMRES solve; the spectral test of ExcitationContext (unique,
-mixing fixed point) is replaced by `check_mixing`, one pinned Poisson solve;
-terms=None exists for the phi4 model only and the result has no `model` entry (Julia:
-model.name), a model being a plain list of terms here; ArgumentError and
+Defaults. kinetic_nodes=None (every entry point of this module) is default_kinetic_nodes(D):
+256, the Julia default, up to D = 64 and 512 beyond, where 256 nodes are measurably not
+converged; the building blocks hamiltonian.HamiltonianAction and bilinear.BilinearElement
+keep Julia's 256. davidson_options=None is the Julia library schedule
+(library_davidson_options: search space max(8, 2 nev + 2), retain nev, fresh restarts).
+research_davidson_options(n, nev) is the Davidson part of the Julia D <= 48 research
+configuration (search space min(160, n), retain min(max(12, nev), maxspace - 1), thick
+restarts: Julia's retain 12 wherever Julia accepts it), which run.py uses by default;
+sector_dimension gives the n of a request without building the solver.
+
+Differences from the Julia source: fixed kinetic grids only (Julia's kinetic_nodes=nothing,
+an adaptive theta grid, is not ported; None is the D-dependent default above, which
+differs from Julia's 256 for D > 64); `environment_tol` and `max_bond` are replaced by
+`solver_tol`, the relative residual of every GMRES solve; the spectral test of
+ExcitationContext (unique, mixing fixed point) is replaced by `check_mixing`, one pinned
+Poisson solve; terms=None exists for the phi4 model only and the result has no `model`
+entry (Julia: model.name), a model being a plain list of terms here; ArgumentError and
 DimensionMismatch become ValueError; the random start draws from
 np.random.default_rng(1234).
 """
@@ -64,6 +75,67 @@ def check_kinetic_nodes(n):
     if not (isinstance(n, (int, np.integer)) and not isinstance(n, bool) and n >= 2):
         raise ValueError("kinetic_nodes must be an integer of at least 2")
     return int(n)
+
+
+def default_kinetic_nodes(d):
+    """Fixed theta nodes of the kinetic resolvent quadrature at bond dimension d: 256 (the
+    CPU default) for d <= 64, 512 for d > 64. Measured on the g = 2.7 phi^4 states against
+    1024 nodes (README, "Kinetic nodes at large D"): with 256 nodes the resolvent part of
+    the action of the converged vector is off by 9.6e-11 at D = 64, 2.1e-7 at D = 96 and
+    1.2e-5 at D = 128; with 512 nodes by at most 3.1e-10 up to D = 128. Nothing was
+    measured beyond D = 128 and the count is not extrapolated: it stays 512 there, and the
+    refined check of the validation (twice the nodes by default) is what would expose an
+    unconverged quadrature."""
+    if not (isinstance(d, (int, np.integer)) and not isinstance(d, bool) and d >= 1):
+        raise ValueError("D must be a positive integer")
+    return 256 if d <= 64 else 512
+
+
+def resolve_kinetic_nodes(kinetic_nodes, d):
+    """`kinetic_nodes` unchanged, or default_kinetic_nodes(d) for None."""
+    return default_kinetic_nodes(d) if kinetic_nodes is None else kinetic_nodes
+
+
+RESEARCH_MAXSPACE, RESEARCH_RETAIN = 160, 12
+
+
+def library_davidson_options(nev=1, *, maxspace=None, retain=None, **controls):
+    """The library schedule, davidson_options=None of excitation_eigsolve (as in Julia):
+    search space maxspace = max(8, 2 nev + 2), retain = nev (None), and every restart
+    recomputes the actions of the retained vectors (refresh=True). `maxspace` and
+    `retain` replace the respective rule; `controls` are the other DavidsonOptions fields."""
+    return DavidsonOptions(maxspace=max(8, 2 * nev + 2) if maxspace is None else maxspace, retain=retain,
+                           refresh=True, **controls)
+
+
+def research_davidson_options(n, nev=1, *, maxspace=None, retain=None, **controls):
+    """The Davidson part of the Julia D <= 48 research configuration (docs/excitations.md)
+    for a sector of dimension n, and the default of run.py: maxspace = min(160, n), thick
+    restarts (refresh=False) keeping retain = min(max(12, nev), maxspace - 1) Ritz vectors.
+    That is Julia's DavidsonOptions(maxspace=min(160,n), retain=12, refresh=false) wherever
+    Julia's check_davidson accepts it (nev <= 12 and n >= 13); where it refuses retain 12,
+    retain is raised to nev (nev > 12) or lowered to maxspace - 1 (n <= 12).
+    The A100 runs of the README's mass and sector tables used it (with maxspace 160 given
+    also at D = 16, where n = 128; no search there came near n) and never restarted; those
+    of its comparison of scaled and unscaled variables used the library schedule and
+    restarted. `maxspace` or
+    `retain` replace the respective rule (retain then follows the given maxspace).
+    nev >= maxspace leaves no admissible retain (check_davidson needs
+    nev <= retain < maxspace) and is a ValueError, as is any combination check_davidson
+    refuses. `controls` are the other DavidsonOptions fields. The stall controls of the
+    Julia research configuration (stall_residual_limit=1e-6, stall_energy_atol=1e-10) are
+    not implied: unless given, the DavidsonOptions defaults apply, as in the A100 runs."""
+    if not (isinstance(n, (int, np.integer)) and not isinstance(n, bool) and n >= 1):
+        raise ValueError("the sector dimension n must be a positive integer")
+    maxspace = min(RESEARCH_MAXSPACE, int(n)) if maxspace is None else maxspace
+    if retain is None:
+        if not nev < maxspace:
+            raise ValueError(f"nev={nev} leaves no room in a search space of maxspace={maxspace} vectors "
+                             f"(sector dimension {n}): nev must be below maxspace (give a larger maxspace)")
+        retain = min(max(RESEARCH_RETAIN, nev), maxspace - 1)
+    options = DavidsonOptions(maxspace=maxspace, retain=retain, refresh=False, **controls)
+    check_davidson(options, nev)
+    return options
 
 
 class SolverState(ScaledState):
@@ -229,12 +301,14 @@ class WhiteBasis:
 
 class ExcitationOperator:
     """Hermitian excitation operator in white coordinates, x -> [Fh(Wh(x)) Bh]_sector, on a
-    fixed kinetic grid (exactly linear kinetic part; ODE terms linear to their tolerance).
-    `calls` counts applications. `integrate=None` is ode.integrate_host."""
-    def __init__(self, basis, momentum, terms, *, integrator, kinetic_nodes=256, tol=1e-12,
+    fixed kinetic grid of `kinetic_nodes` theta nodes (None: default_kinetic_nodes(D))
+    (exactly linear kinetic part; ODE terms linear to their tolerance). `calls` counts
+    applications. `integrate=None` is ode.integrate_host."""
+    def __init__(self, basis, momentum, terms, *, integrator, kinetic_nodes=None, tol=1e-12,
                  integrate=None, system=None, **controls):
         self.basis, self.ss, self.momentum, self.terms = basis, basis.ss, float(momentum), terms
-        self.integrator, self.kinetic_nodes = replace(integrator), check_kinetic_nodes(kinetic_nodes)
+        self.integrator = replace(integrator)
+        self.kinetic_nodes = check_kinetic_nodes(resolve_kinetic_nodes(kinetic_nodes, basis.D))
         self.tol = tol
         self.settings = dict(tol=tol, integrate=integrate_host if integrate is None else integrate,
                              system=system, **controls)
@@ -367,11 +441,12 @@ LEVEL_KEYWORDS = ("integrate", "system", "bilinear_integrate", "bilinear_element
 
 
 def check_levels_request(chart, *, nev=1, davidson_options=None, start="auto", preconditioner="kinetic",
-                         refine_steps=0, kinetic_nodes=256, preconditioner_nodes=8,
+                         refine_steps=0, kinetic_nodes=None, preconditioner_nodes=8,
                          acceptance_residual=1e-5, validation_tol=1e-7, validate=True, refined=None,
                          refined_kinetic_nodes=None, preconditioner_tol=1e-10, solver_tol=1e-14, chunk=64,
                          **other):
-    """Validate the cheap request before any solve; returns the Davidson options."""
+    """Validate the cheap request before any solve; returns the Davidson options
+    (library_davidson_options(nev) for None). kinetic_nodes=None is default_kinetic_nodes(D)."""
     n, d = len(chart), chart.state.D
     integer = (int, np.integer)
     unknown = sorted(set(other) - set(LEVEL_KEYWORDS))
@@ -379,7 +454,7 @@ def check_levels_request(chart, *, nev=1, davidson_options=None, start="auto", p
         raise ValueError(f"unknown excitation_eigsolve keywords: {', '.join(unknown)}")
     if not (isinstance(nev, integer) and 1 <= nev <= n):
         raise ValueError(f"nev={nev} must lie between 1 and the sector dimension {n}")
-    options = DavidsonOptions(maxspace=max(8, 2 * nev + 2)) if davidson_options is None else davidson_options
+    options = library_davidson_options(nev) if davidson_options is None else davidson_options
     check_davidson(options, nev)
     if not (isinstance(refine_steps, integer) and refine_steps >= 0 and (refine_steps == 0 or nev == 1)):
         raise ValueError("refine_steps must be a nonnegative integer and requires nev=1")
@@ -406,7 +481,7 @@ def check_levels_request(chart, *, nev=1, davidson_options=None, start="auto", p
         quadrature(refined)
     if refined_kinetic_nodes is not None:
         check_kinetic_nodes(refined_kinetic_nodes)
-    check_kinetic_nodes(kinetic_nodes)
+    check_kinetic_nodes(resolve_kinetic_nodes(kinetic_nodes, d))
     if named and preconditioner == "kinetic":
         check_kinetic_nodes(preconditioner_nodes)
     if not (math.isfinite(acceptance_residual) and acceptance_residual > 0
@@ -420,7 +495,7 @@ def check_levels_request(chart, *, nev=1, davidson_options=None, start="auto", p
     return options
 
 
-def solve_levels(basis, momentum, terms, *, nev=1, kinetic_nodes=256, preconditioner="kinetic",
+def solve_levels(basis, momentum, terms, *, nev=1, kinetic_nodes=None, preconditioner="kinetic",
                  preconditioner_nodes=8, preconditioner_tol=1e-10, start="auto", davidson_options=None,
                  validate=True, refined=None, refined_kinetic_nodes=None, refine_steps=0,
                  validation_tol=1e-7, acceptance_residual=1e-5, solver_tol=1e-14, integrate=None,
@@ -429,11 +504,13 @@ def solve_levels(basis, momentum, terms, *, nev=1, kinetic_nodes=256, preconditi
     """solve_levels: preconditioned Davidson search on Hamiltonian actions, optional
     refinement of the first level under the refined action, and validation by fresh
     actions and bilinear energies (`bilinear_element`, default bilinear.BilinearElement,
-    on `bilinear_integrate`). The integration settings are those of basis.chart.state."""
+    on `bilinear_integrate`). The integration settings are those of basis.chart.state;
+    kinetic_nodes=None is default_kinetic_nodes(D)."""
     chart, ss = basis.chart, basis.ss
     if not math.isfinite(momentum):
         raise ValueError("invalid momentum")
     momentum = float(momentum)
+    kinetic_nodes = resolve_kinetic_nodes(kinetic_nodes, basis.D)
     options = check_levels_request(
         chart, nev=nev, davidson_options=davidson_options, start=start, preconditioner=preconditioner,
         refine_steps=refine_steps, kinetic_nodes=kinetic_nodes, preconditioner_nodes=preconditioner_nodes,
@@ -623,6 +700,16 @@ def check_mixing(ss, *, tol=1e-6):
         raise SolverFailure(f"{MIXING_ERROR} ({error})") from error
 
 
+def sector_dimension(state, *, sector="auto", parity="auto", parity_tol=1e-12, gauge="density", metric_tol=0.0):
+    """Dimension n of the white coordinates that excitation_eigsolve and iterative_dispersion
+    use for the same arguments: make_basis builds them by the same make_coordinates call,
+    so sector resolution ('auto'), parity and metric cutoff are the same. Costs one
+    Hermitian eigensolve per parity block of rho and no transfer solve (e.g. for
+    research_davidson_options before the solve)."""
+    return len(make_coordinates(state, sector=sector, parity=parity, parity_tol=parity_tol, gauge=gauge,
+                                metric_tol=metric_tol))
+
+
 def make_basis(state, request, *, sector="auto", parity="auto", parity_tol=1e-12, gauge="density",
                scaling="density", metric_tol=0.0, xp=np, max_basis_bytes=None, log=None):
     """Coordinates, the request check, the ScaledState, the fixed-point test and the white
@@ -647,7 +734,7 @@ def make_basis(state, request, *, sector="auto", parity="auto", parity_tol=1e-12
 
 
 def excitation_eigsolve(state, p=0.0, terms=None, *, nev=1, sector="auto", parity="auto", parity_tol=1e-12,
-                        gauge="density", scaling="density", metric_tol=0.0, kinetic_nodes=256,
+                        gauge="density", scaling="density", metric_tol=0.0, kinetic_nodes=None,
                         preconditioner="kinetic", preconditioner_nodes=8, preconditioner_tol=1e-10,
                         start="auto", davidson_options=None, validate=True, refined=None,
                         refined_kinetic_nodes=None, refine_steps=0, validation_tol=1e-7,
@@ -663,10 +750,15 @@ def excitation_eigsolve(state, p=0.0, terms=None, *, nev=1, sector="auto", parit
     or a positive vector) selects the scaled variables, and gauge='original' requires
     scaling='none'. Potential terms use state.integrator and `integrate` (None:
     ode.integrate_host) on the equations `system` (None: potential.ActionSystem); the
-    kinetic part uses `kinetic_nodes` fixed theta nodes. `solver_tol` is the relative
-    residual of every GMRES solve of the actions, `preconditioner_tol` that of the coarse
-    kinetic matrix, built `chunk` tangents at a time; `max_basis_bytes` bounds one Krylov
-    basis. Energies inherit an error that grows with D: at solver_tol = 1e-12 the validated
+    kinetic part uses `kinetic_nodes` fixed theta nodes, None meaning
+    default_kinetic_nodes(state.D) (256 up to D = 64, 512 beyond; resolved before any check,
+    so the result reports the integer used). `davidson_options` None is the library
+    schedule of the CPU code (library_davidson_options: search space max(8, 2 nev + 2),
+    retain nev, fresh restarts); research_davidson_options(sector_dimension(state, ...),
+    nev) gives the schedule of the A100 mass and sector runs and of run.py. `solver_tol` is
+    the relative residual of every GMRES solve of the actions, `preconditioner_tol` that of
+    the coarse kinetic matrix, built `chunk` tangents at a time; `max_basis_bytes` bounds one
+    Krylov basis. Energies inherit an error that grows with D: at solver_tol = 1e-12 the validated
     mass is 2e-11 from Julia's at D = 16 (-3e-12 at 1e-14) and the Davidson energy is off
     by 1e-8 at D = 64, hence the default 1e-14. Where roundoff stops GMRES above the
     request (pinned Poisson problems from D = 96 on) the attained residual is accepted
@@ -687,6 +779,7 @@ def excitation_eigsolve(state, p=0.0, terms=None, *, nev=1, sector="auto", parit
     if not math.isfinite(p):
         raise ValueError("invalid momentum")
     terms = default_terms(state) if terms is None else terms
+    kinetic_nodes = resolve_kinetic_nodes(kinetic_nodes, state.D)
     request = dict(nev=nev, kinetic_nodes=kinetic_nodes, preconditioner=preconditioner,
                    preconditioner_nodes=preconditioner_nodes, preconditioner_tol=preconditioner_tol,
                    start=start, davidson_options=davidson_options, validate=validate, refined=refined,
@@ -703,13 +796,15 @@ def excitation_eigsolve(state, p=0.0, terms=None, *, nev=1, sector="auto", parit
 
 def iterative_dispersion(state, momenta, terms=None, *, sector="auto", parity="auto", parity_tol=1e-12,
                          gauge="density", scaling="density", metric_tol=0.0, start="auto", strict=True,
-                         xp=np, max_basis_bytes=None, **request):
+                         xp=np, max_basis_bytes=None, kinetic_nodes=None, **request):
     """iterative_dispersion: one solve per momentum on shared coordinates and a shared
     ScaledState (both are momentum independent). Each momentum warm-starts from the
     previous coefficients unless `start` is supplied. With `strict`, stop with a
     SolverFailure at the first momentum whose levels are not accepted. `request` holds the
-    solver keywords of excitation_eigsolve. Returns the list of results."""
+    other solver keywords of excitation_eigsolve, with its defaults (kinetic_nodes=None:
+    default_kinetic_nodes(state.D)). Returns the list of results."""
     terms = default_terms(state) if terms is None else terms
+    request = dict(request, kinetic_nodes=resolve_kinetic_nodes(kinetic_nodes, state.D))
     basis, seconds = make_basis(state, dict(request, start=start), sector=sector, parity=parity,
                                 parity_tol=parity_tol, gauge=gauge, scaling=scaling, metric_tol=metric_tol,
                                 xp=xp, max_basis_bytes=max_basis_bytes, log=request.get("log"))

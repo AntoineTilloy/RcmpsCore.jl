@@ -27,6 +27,7 @@ import math
 import os
 import sys
 import time
+import types
 import unittest
 from unittest import mock
 
@@ -39,7 +40,7 @@ import dense_reference as ref
 import eigsolve as es
 import models
 import states
-from davidson import DavidsonOptions
+from davidson import DavidsonOptions, check_davidson
 from ode import integrate_host
 from packed import PackedActionSystem
 from potential import ActionSystem, integrate_scipy
@@ -741,7 +742,7 @@ class EigsolveTest(Case):
                     dict(preconditioner="invalid"),
                     dict(preconditioner=3),
                     dict(kinetic_nodes=1),
-                    dict(kinetic_nodes=None),                             # adaptive refinement is not ported
+                    dict(kinetic_nodes=256.0),                            # None is the D default (DefaultsTest)
                     dict(preconditioner_nodes=1),
                     dict(refined=dict(n_quad=64)),
                     dict(refined=IntegratorParameters(n_quad=4)),
@@ -895,6 +896,176 @@ class DispersionTest(Case):
         with self.assertRaises(SolverFailure):
             es.accepted_energies(lax[1])
         self.assertEqual(es.iterative_dispersion(PLAIN, [], PHI4, **request), [])
+
+
+class DefaultsTest(Case):
+    """default_kinetic_nodes, its resolution by every public entry point, the two Davidson
+    schedules and sector_dimension."""
+
+    def test_default_kinetic_nodes(self):
+        """256 up to D = 64, 512 beyond, not extrapolated past the measured D = 128."""
+        for d, nodes in ((1, 256), (16, 256), (64, 256), (np.int64(64), 256), (65, 512), (96, 512), (128, 512),
+                         (129, 512), (256, 512), (1024, 512)):
+            self.assertEqual(es.default_kinetic_nodes(d), nodes, f"D = {d}")
+        for bad in (0, -4, 64.0, True, None):
+            with self.assertRaises(ValueError):
+                es.default_kinetic_nodes(bad)
+        self.assertEqual((es.resolve_kinetic_nodes(None, 64), es.resolve_kinetic_nodes(None, 65),
+                          es.resolve_kinetic_nodes(16, 128)), (256, 512, 16))
+
+    def test_entry_points_resolve_none(self):
+        """excitation_eigsolve and iterative_dispersion hand the integer default to the
+        request check (D = 16: 256; D = 66: 512, from a state that is never solved); an
+        explicit integer is passed unchanged. check_levels_request, solve_levels and
+        ExcitationOperator resolve None the same way, each on its own (D = 66: 512, seen
+        through the node count each one checks or passes on; nothing is solved there)."""
+        seen = []
+
+        def capture(state, request, **controls):
+            seen.append(request["kinetic_nodes"])
+            raise RuntimeError("request captured")
+
+        small, large = (random_state(d, seed=3, scaling=0.5, z2=True) for d in (16, 66))
+        with mock.patch.object(es, "make_basis", side_effect=capture):
+            for call in (lambda s, **kw: es.excitation_eigsolve(s, 0.0, PHI4, **kw),
+                         lambda s, **kw: es.iterative_dispersion(s, [0.0], PHI4, **kw)):
+                for state, request in ((small, {}), (large, {}), (small, dict(kinetic_nodes=None)),
+                                       (large, dict(kinetic_nodes=None)), (large, dict(kinetic_nodes=300))):
+                    with self.assertRaisesRegex(RuntimeError, "request captured"):
+                        call(state, **request)
+        self.assertEqual(seen, [256, 512, 256, 512, 300] * 2)
+        self.assertTrue(all(type(nodes) is int for nodes in seen))
+        es.check_levels_request(tc.make_coordinates(large))                     # None accepted at any D
+        with self.assertRaises(ValueError):
+            es.check_levels_request(tc.make_coordinates(large), kinetic_nodes=1)
+        c = tc.make_coordinates(Z2)
+        basis = production(c, "density")[1]
+        self.assertEqual(es.ExcitationOperator(basis, 0.5, PHI4, integrator=c.state.integrator).kinetic_nodes, 256)
+
+        # check_levels_request checks the D-dependent default, not a constant.
+        charts = {16: tc.make_coordinates(small), 66: tc.make_coordinates(large)}
+        for d, request, nodes in ((16, {}, 256), (66, {}, 512), (66, dict(kinetic_nodes=None), 512),
+                                  (66, dict(kinetic_nodes=300), 300)):
+            with mock.patch.object(es, "check_kinetic_nodes", wraps=es.check_kinetic_nodes) as checked:
+                es.check_levels_request(charts[d], preconditioner="none", **request)
+            self.assertEqual([call.args[0] for call in checked.call_args_list], [nodes], f"D = {d}, {request}")
+
+        # solve_levels hands the integer default to the request check (stub basis of D = 66).
+        passed = []
+
+        def captured(chart, **request):
+            passed.append(request["kinetic_nodes"])
+            raise RuntimeError("request captured")
+
+        for d, request, nodes in ((16, {}, 256), (66, {}, 512), (66, dict(kinetic_nodes=None), 512),
+                                  (66, dict(kinetic_nodes=300), 300)):
+            stub = types.SimpleNamespace(chart=charts[d], ss=None, D=d)
+            with mock.patch.object(es, "check_levels_request", side_effect=captured), \
+                    self.assertRaisesRegex(RuntimeError, "request captured"):
+                es.solve_levels(stub, 0.0, PHI4, **request)
+            self.assertEqual((passed[-1], type(passed[-1])), (nodes, int), f"D = {d}, {request}")
+
+        # ExcitationOperator builds its action with the D-dependent default (stub basis).
+        built = []
+
+        def action(ss, momentum, terms, **controls):
+            built.append(controls["kinetic_nodes"])
+            return object()
+
+        integrator = IntegratorParameters(**WINDOW)
+        with mock.patch.object(es, "HamiltonianAction", side_effect=action):
+            for d, request, nodes in ((16, {}, 256), (66, {}, 512), (66, dict(kinetic_nodes=None), 512),
+                                      (66, dict(kinetic_nodes=300), 300)):
+                op = es.ExcitationOperator(types.SimpleNamespace(D=d, ss=None), 0.0, PHI4, integrator=integrator,
+                                           **request)
+                self.assertEqual((op.kinetic_nodes, built[-1]), (nodes, nodes), f"D = {d}, {request}")
+                self.assertEqual(op.with_action().kinetic_nodes, nodes)        # with_action keeps the count
+                self.assertEqual(op.with_action(kinetic_nodes=600).kinetic_nodes, 600)
+
+    def test_none_is_bitwise_256(self):
+        """On the D = 4 state, kinetic_nodes=None and kinetic_nodes=256 give the same result
+        to the last bit: two Davidson operations, then validation (refined: 512 nodes)."""
+        options = DavidsonOptions(maxops=2, stall_window=0)
+        runs = [es.excitation_eigsolve(Z2, 0.5, PHI4, davidson_options=options, **request)
+                for request in ({}, dict(kinetic_nodes=None), dict(kinetic_nodes=256))]
+        for r in runs:
+            self.assertEqual((r["kinetic_nodes"], r["refined_kinetic_nodes"], r["numops"]), (256, 512, 2))
+        for r in runs[:2]:
+            for key in ("energies", "residuals", "coefficients", "vectors"):
+                self.assertTrue(np.array_equal(np.asarray(r[key]), np.asarray(runs[2][key])), key)
+            self.assertEqual(r["history"], runs[2]["history"])
+            self.assertEqual(r["validation"], runs[2]["validation"])
+            self.assertEqual(r["validated_energies"], runs[2]["validated_energies"])
+        dispersion = [es.iterative_dispersion(Z2, [0.5], PHI4, validate=False, davidson_options=options, strict=False,
+                                              **request)[0] for request in ({}, dict(kinetic_nodes=256))]
+        self.assertEqual(dispersion[0]["kinetic_nodes"], 256)
+        self.assertTrue(np.array_equal(dispersion[0]["coefficients"], dispersion[1]["coefficients"]))
+        self.assertEqual(dispersion[0]["history"], dispersion[1]["history"])
+
+    def test_davidson_schedules(self):
+        """research_davidson_options: maxspace = min(160, n), retain = min(max(12, nev),
+        maxspace - 1), thick restarts; ValueError when nev >= maxspace; equal to Julia's
+        research DavidsonOptions wherever Julia's check_davidson accepts them. The library
+        schedule is the default of excitation_eigsolve."""
+        def fields(o):
+            return (o.maxspace, o.retain, o.refresh)
+
+        for (n, nev), expected in (((128, 1), (128, 12, False)), ((2048, 1), (160, 12, False)),
+                                   ((8, 1), (8, 7, False)), ((16, 13), (16, 13, False)), ((16, 15), (16, 15, False)),
+                                   ((2048, 13), (160, 13, False)), ((2048, 159), (160, 159, False)),
+                                   ((np.int64(12), 1), (12, 11, False))):
+            self.assertEqual(fields(es.research_davidson_options(n, nev)), expected, f"n = {n}, nev = {nev}")
+        self.assertEqual(fields(es.research_davidson_options(2048, 1, maxspace=40)), (40, 12, False))
+        self.assertEqual(fields(es.research_davidson_options(2048, 1, maxspace=10)), (10, 9, False))
+        self.assertEqual(fields(es.research_davidson_options(2048, 2, retain=3)), (160, 3, False))
+        controlled = es.research_davidson_options(2048, 1, tol=1e-9, maxops=50, stall_energy_atol=1e-10)
+        self.assertEqual((controlled.tol, controlled.maxops, controlled.stall_energy_atol,
+                          controlled.stall_residual_limit), (1e-9, 50, 1e-10, None))
+        self.assertEqual(es.research_davidson_options(2048, 1),
+                         DavidsonOptions(maxspace=160, retain=12, refresh=False))
+        for n, nev, kw in ((8, 8, {}), (16, 16, {}), (1, 1, {}), (2048, 13, dict(maxspace=13)),
+                           (2048, 1, dict(retain=160)), (2048, 3, dict(retain=2)), (0, 1, {}), (8.0, 1, {})):
+            with self.assertRaises(ValueError, msg=f"n = {n}, nev = {nev}, {kw}"):
+                es.research_davidson_options(n, nev, **kw)
+        # Julia's research configuration DavidsonOptions(maxspace=min(160,n), retain=12, refresh=false)
+        # wherever Julia's check_davidson accepts it (nev <= 12, n >= 13); elsewhere retain is nev
+        # (nev > 12) or maxspace - 1 (n <= 12).
+        for n in (2, 8, 12, 13, 14, 128, 160, 161, 2048):
+            for nev in (1, 2, 7, 12, 13, 40, 159):
+                if nev >= min(160, n):
+                    continue
+                julia = DavidsonOptions(maxspace=min(160, n), retain=12, refresh=False)
+                try:
+                    check_davidson(julia, nev)
+                    accepted = True
+                except ValueError:
+                    accepted = False
+                self.assertEqual(accepted, nev <= 12 and n >= 13, f"n = {n}, nev = {nev}")
+                options = es.research_davidson_options(n, nev)
+                retain = 12 if accepted else nev if nev > 12 else options.maxspace - 1
+                self.assertEqual(fields(options), (min(160, n), retain, False), f"n = {n}, nev = {nev}")
+                if accepted:
+                    self.assertEqual(options, julia)
+        c = tc.make_coordinates(Z2)
+        for nev in (1, 4):
+            self.assertEqual(es.library_davidson_options(nev), es.check_levels_request(c, nev=nev))
+            self.assertEqual(es.library_davidson_options(nev), DavidsonOptions(maxspace=max(8, 2 * nev + 2)))
+        self.assertEqual(fields(es.library_davidson_options(13)), (28, None, True))
+        self.assertEqual(fields(es.library_davidson_options(2, maxspace=20, retain=3, tol=1e-9)), (20, 3, True))
+
+    def test_sector_dimension(self):
+        """sector_dimension is the dimension the solver builds, with the same sector
+        resolution and metric cutoff."""
+        for state, request, n in ((Z2, {}, 8), (Z2, dict(sector="even"), 8), (Z2, dict(sector="all"), 16),
+                                  (Z2, dict(metric_tol=DROP), 6), (Z2, dict(sector="all", metric_tol=DROP), 12),
+                                  (Z2, dict(parity=None), 16), (PLAIN, {}, 9)):
+            self.assertEqual(es.sector_dimension(state, **request), n, str(request))
+            self.assertEqual(len(tc.make_coordinates(state, **request)), n)
+        r = es.excitation_eigsolve(Z2, 0.5, PHI4, metric_tol=DROP, kinetic_nodes=NODES, validate=False,
+                                   davidson_options=DavidsonOptions(maxops=1))
+        self.assertEqual(r["dimension"], es.sector_dimension(Z2, metric_tol=DROP))
+        with self.assertRaises(ValueError):
+            es.sector_dimension(PLAIN, sector="odd")
 
 
 class AcceptanceTest(Case):
