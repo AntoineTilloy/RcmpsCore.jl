@@ -10,7 +10,7 @@ one JSON line on stdout.
     python gpu_settings_check.py STATE VECTORS.npz [--kinetic-nodes 256 512 1024]
         [--ode 512:30:1e-13:1e-12 1024:40:1e-14:1e-13 2048:40:1e-14:1e-13]
 
-VECTORS.npz is the vectors.npz of run.py for the same state and sector; an --ode entry is
+VECTORS.npz is the vectors.npz of cli.py for the same state and sector; an --ode entry is
 n_quad:window:atol:rtol. The last entry of each list is the reference.
 """
 from __future__ import annotations

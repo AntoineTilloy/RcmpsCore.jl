@@ -28,11 +28,16 @@ them too, with a scalar-tile variant (`--scalar-tiles`) meant for debugging.
 Python 3.11 or later. From the repository root:
 
 ```bash
-pip install "./gpu[cuda12]"     # with CuPy for CUDA 12 (cupy-cuda12x[ctk])
-pip install "./gpu[test]"       # CPU only: enough for the tests and for the CUDA source
+pip install -e "./gpu[cuda12]"  # with CuPy for CUDA 12 (cupy-cuda12x[ctk])
+pip install -e "./gpu[test]"    # CPU only: enough for the tests and for the CUDA source
 ```
 
-Importing `rcmps_gpu` or its subpackages never imports CuPy; only a GPU run does.
+Importing `rcmps_gpu` or its subpackages never imports CuPy; only a GPU run does. With
+`-e` (editable), the installed package is the checkout itself: the tests test it, and a
+run records in `plan.json` the git commit and whether tracked files of the package were
+modified. A regular install copies the package into site-packages: the tests and runs then
+use that copy, edits to the checkout take effect only after a reinstall, and `plan.json`
+has no git commit (`package.git_commit` null), only the version.
 
 ## Command line
 
@@ -126,7 +131,7 @@ line logs a warning, but runs, when the check fails.
 CPU only (NumPy, SciPy, h5py); no test imports CuPy.
 
 ```bash
-pip install "./gpu[test]"
+pip install -e "./gpu[test]"
 cd gpu && python -m pytest
 ```
 

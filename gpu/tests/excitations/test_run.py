@@ -1,4 +1,4 @@
-"""Tests of the command line run.py that need no GPU.
+"""Tests of the command line cli.py that need no GPU.
 
 The fused backend integrates packed.PackedActionSystem, which takes tangents of one Z2
 class: `--sector all` cannot work there (the second Davidson vector mixes the classes) and
@@ -7,7 +7,7 @@ control supports sector=:all (src/excitation_eigsolve.jl:113), and so do the hos
 numpy backends: one short CPU run on a portable export written here (random_state(4,
 seed=11, scaling=0.5, z2=True), window 14, n_quad 32, 16 theta nodes, two actions).
 
-Defaults resolved by run.py (Defaults): the research Davidson schedule (maxspace
+Defaults resolved by cli.py (Defaults): the research Davidson schedule (maxspace
 min(160, n), retain min(max(12, nev), maxspace - 1), thick restarts), --fresh-restarts,
 explicit --maxspace/--retain, the clamp in small sectors, nev > 12, and the kinetic nodes
 of eigsolve.default_kinetic_nodes, on random Z2 states of D = 4, 16, 72 and 130 that are
@@ -44,14 +44,14 @@ def export(directory, state, coupling):
 
 
 def parse(*arguments):
-    """Parsed arguments of `run.py STATE --output OUT *arguments`."""
+    """Parsed arguments of `rcmps-gpu-excitations STATE --output OUT *arguments`."""
     return run.make_parser().parse_args(["STATE", "--output", "OUT", *map(str, arguments)])
 
 
 def main(*arguments):
     """run.main() on the given arguments; returns what it printed."""
     printed = io.StringIO()
-    with mock.patch.object(sys, "argv", ["run.py", *map(str, arguments)]), \
+    with mock.patch.object(sys, "argv", ["rcmps-gpu-excitations", *map(str, arguments)]), \
             contextlib.redirect_stdout(printed), contextlib.redirect_stderr(printed):
         run.main()
     return printed.getvalue()
@@ -108,7 +108,7 @@ class Defaults(unittest.TestCase):
         return run.resolve_defaults(parse(*arguments), self.states[d])
 
     def schedule(self, d, *arguments):
-        """(maxspace, retain, refresh) of the DavidsonOptions that run.py passes."""
+        """(maxspace, retain, refresh) of the DavidsonOptions that cli.py passes."""
         o = self.resolve(d, *arguments)["davidson"]
         return o.maxspace, o.retain, o.refresh
 
@@ -224,7 +224,7 @@ class Defaults(unittest.TestCase):
 
     def test_defaults_end_to_end(self):
         """The D = 4 state on every default of the CPU backend (odd sector n = 8; window 14
-        and n_quad 32 for speed): run.py passes maxspace 8, retain 7, thick restarts and 256
+        and n_quad 32 for speed): cli.py passes maxspace 8, retain 7, thick restarts and 256
         kinetic nodes, the solver works in the same dimension and its eight actions span the
         sector. --nev 8 is a usage error before the output directory exists."""
         with tempfile.TemporaryDirectory() as scratch:
