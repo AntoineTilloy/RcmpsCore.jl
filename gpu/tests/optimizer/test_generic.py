@@ -173,6 +173,48 @@ assert 'cupy' not in sys.modules and 'triton' not in sys.modules
             self.assertEqual(digest, GOLDEN["sizes"]["8"]["trajectory_sha256"])
             self.assertEqual(plan["emitted_cuda_sha256"], digest)
 
+    def test_children_import_this_copy_whatever_the_working_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            decoy = Path(tmp) / "rcmps_gpu"
+            (decoy / "optimizer" / "runtime").mkdir(parents=True)
+            for directory in (decoy, decoy / "optimizer", decoy / "optimizer" / "runtime"):
+                (directory / "__init__.py").write_text("raise ImportError('decoy rcmps_gpu')\n", encoding="utf-8")
+            command, environment = run.child_process("-c", "import rcmps_gpu\nprint(rcmps_gpu.__file__)")
+            self.assertEqual(command[:2], [sys.executable, "-P"])
+            found = subprocess.run(command, env=environment, cwd=tmp, capture_output=True, text=True, timeout=60)
+            self.assertEqual(Path(found.stdout.strip()).resolve(), Path(rcmps_gpu.__file__).resolve(), found.stderr)
+            # Without -P the working directory comes first and the decoy is imported.
+            shadowed = subprocess.run([sys.executable, *command[2:]], env=environment, cwd=tmp,
+                                      capture_output=True, text=True, timeout=60)
+            self.assertIn("decoy rcmps_gpu", shadowed.stderr)
+            target, cwd = Path(tmp) / "D16.cu", os.getcwd()
+            os.chdir(tmp)
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(run.main(["--D", "16", "--emit-cuda", str(target)]), 0)
+                # The worker is started the same way (not run here).
+                with mock.patch.object(run.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")) as spawn:
+                    self.assertEqual(run.main(["--D", "8", "--run-gpu", "--output", "run"]), 0)
+            finally:
+                os.chdir(cwd)
+            self.assertEqual(hashlib.sha256(target.read_bytes()).hexdigest(), GOLDEN["sizes"]["8"]["trajectory_sha256"])
+            worker = spawn.call_args_list[-1]
+            self.assertEqual(worker.args[0], [sys.executable, "-P", "-m", "rcmps_gpu.optimizer.worker",
+                                              str((Path(tmp) / "run" / "plan.json").resolve())])
+            self.assertEqual(worker.kwargs["env"], environment)
+
+    def test_a_failed_CUDA_generation_reports_the_error_of_the_child(self):
+        failed = subprocess.CompletedProcess([], 1, "", "Traceback (most recent call last):\nValueError: mock failure\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "D16.cu"
+            with mock.patch.object(run.subprocess, "run", return_value=failed), \
+                    mock.patch("sys.stderr", new_callable=io.StringIO) as stderr, \
+                    self.assertRaises(SystemExit) as stopped:
+                run.main(["--D", "16", "--emit-cuda", str(target)])
+            self.assertEqual(stopped.exception.code, 2)
+            self.assertIn("CUDA source generation failed: ValueError: mock failure", stderr.getvalue())
+            self.assertFalse(target.exists())
+
     def test_every_even_D_has_geometry_and_non_integer_odd_oversize_rejected(self):
         for D in range(2, 513, 2):
             info = layout.bond_geometry(D)

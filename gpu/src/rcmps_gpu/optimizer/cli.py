@@ -12,6 +12,7 @@ import json
 import math
 import os
 from pathlib import Path
+import site
 import subprocess
 import sys
 import tomllib
@@ -74,6 +75,20 @@ def verify_runtime():
     return dict(imported_manifest_sha256=IMPORTED_MANIFEST_SHA256, provenance_sha256=provenance.sha256(raw),
                 edits=[entry["commit_subject"] for entry in record["edits"]], edited_files=edited,
                 imported_bytes_with_recorded_edits=True)
+
+
+def child_process(*arguments):
+    """Command and environment of a child interpreter that imports this copy of rcmps_gpu.
+
+    -P keeps the working directory off the child's sys.path, where another copy could shadow
+    this one; the directory that holds this copy goes first on PYTHONPATH, unless it is one
+    of the interpreter's site directories, which the child searches as the parent does."""
+    root = str(PACKAGE.parent)
+    environment = dict(os.environ, OPENBLAS_NUM_THREADS="1")
+    sites = {str(Path(path).resolve()) for path in (*site.getsitepackages(), site.getusersitepackages())}
+    if root not in sites:
+        environment["PYTHONPATH"] = os.pathsep.join([root, *filter(None, [os.environ.get("PYTHONPATH")])])
+    return [sys.executable, "-P", *arguments], environment
 
 
 def package_identity():
@@ -205,8 +220,11 @@ def main(argv=None):
         code = ("import sys;from pathlib import Path;from rcmps_gpu.optimizer.runtime import persistent_trajectory_backend as t;"
                 "Path(t.__file__).resolve().parent==Path(sys.argv[1]) or sys.exit('--emit-cuda: rcmps_gpu imported from '+t.__file__);"
                 "print(t.trajectory_source(int(sys.argv[2])),end='')")
-        result = subprocess.run([sys.executable, "-c", code, str(RUNTIME), str(args.D // 2)],
-                                check=True, capture_output=True, text=True)
+        command, environment = child_process("-c", code, str(RUNTIME), str(args.D // 2))
+        result = subprocess.run(command, env=environment, capture_output=True, text=True)
+        if result.returncode:
+            lines = result.stderr.strip().splitlines()
+            p.error("CUDA source generation failed: " + (lines[-1] if lines else f"exit status {result.returncode}"))
         args.emit_cuda.parent.mkdir(parents=True, exist_ok=True)
         with args.emit_cuda.open("x") as stream:
             stream.write(result.stdout)
@@ -217,9 +235,8 @@ def main(argv=None):
         return 0
     args.output.mkdir(parents=True, exist_ok=False)
     (args.output / "plan.json").write_text(json.dumps(plan, indent=2, sort_keys=True, allow_nan=False) + "\n")
-    environment = dict(os.environ, OPENBLAS_NUM_THREADS="1")
-    return subprocess.run([sys.executable, "-m", "rcmps_gpu.optimizer.worker", str((args.output / "plan.json").resolve())],
-                          env=environment).returncode
+    command, environment = child_process("-m", "rcmps_gpu.optimizer.worker", str((args.output / "plan.json").resolve()))
+    return subprocess.run(command, env=environment).returncode
 
 
 if __name__ == "__main__":

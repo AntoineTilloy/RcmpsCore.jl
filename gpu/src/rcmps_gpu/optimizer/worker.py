@@ -121,7 +121,8 @@ def main(argv=None):
     plan = json.loads(plan_path.read_bytes())
     output = Path(plan["output"])
     if plan["schema_version"] != 3 or Path(plan["runtime"]) != RUNTIME:
-        raise ValueError("plan written by another launcher version or installation")
+        raise ValueError(f"plan written by another launcher version or installation: schema "
+                         f"{plan['schema_version']}, runtime {plan['runtime']}; this worker is schema 3, runtime {RUNTIME}")
     if runtime_source_sha256() != plan["runtime_source_sha256"]:
         raise ValueError("runtime changed after planning")
     launcher = launcher_source_sha256()
