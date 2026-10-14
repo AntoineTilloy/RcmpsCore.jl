@@ -11,13 +11,13 @@ stationary density rho solves L(rho) = 0 with unit trace.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from pathlib import Path
 import math
-import tomllib
 
 import numpy as np
 from scipy.linalg import get_lapack_funcs, schur
 from scipy.sparse.linalg import LinearOperator, gmres
+
+from ..io import read_jld2, read_portable
 
 
 class SolverFailure(RuntimeError):
@@ -188,56 +188,28 @@ def make_state(R, K, rho=None, *, integrator=None, steady_tol=1e-11, **metadata)
     return State(R, K, Q, rho, integrator or IntegratorParameters(), **metadata)
 
 
-def _complex(dataset):
-    value = dataset[()]
-    return value["re"] + 1j * value["im"]
+def _from_record(record, rho, source):
+    """A checked State from an rcmps_gpu.io.StateRecord (rho None: recomputed)."""
+    i = record.integration
+    integrator = IntegratorParameters() if i is None else IntegratorParameters(
+        i.n_quad, i.max_point, i.atol, i.rtol, *(() if i.maxiters is None else (i.maxiters,)))
+    return make_state(record.R, record.K, rho, integrator=integrator, model=record.model,
+                      coupling=record.coupling, e0=math.nan if record.energy is None else record.energy,
+                      source=source)
 
 
 def load_jld2(path, *, rho=None):
-    """Read an `rcmps_store` checkpoint (schema 1) with h5py. JLD2 stores Julia's
-    column-major matrices, so the HDF5 view is the transpose. rho is not stored and is
-    recomputed and checked, exactly as `rcmps_load` does; integration settings in the file
-    are the optimizer's and are returned unchanged (override them for excitations)."""
-    import h5py
-
-    with h5py.File(path, "r") as f:
-        if int(f["schema_version"][()]) != 1:
-            raise ValueError("unsupported schema; migrate old JLD with examples/migrate_legacy.jl")
-        R, K = _complex(f["R"]).T, _complex(f["K"]).T
-        coupling = _complex(f["coupling"])
-        model = f["model"][()].decode()
-        e0 = float(f["e0"][()])
-        row = f["integration"][()]
-        integrator = IntegratorParameters(int(row["n_quad"]), float(row["max_point"]),
-                                          float(row["atol"]), float(row["rtol"]), int(row["maxiters"]))
-    if coupling.imag != 0:
-        raise ValueError("model coupling must be real")
-    return make_state(R, K, rho, integrator=integrator, model=model, coupling=float(coupling.real),
-                      e0=e0, source=str(path))
+    """Read an `rcmps_store` checkpoint (schema 1) with rcmps_gpu.io.read_jld2. rho is not
+    stored and is recomputed and checked, exactly as `rcmps_load` does; integration settings
+    in the file are the optimizer's and are returned unchanged (override them for excitations)."""
+    return _from_record(read_jld2(path), rho, str(path))
 
 
 def load_portable(directory):
-    """Read a GPU-optimizer portable export: headerless little-endian column-major
-    complex128 R.bin, K.bin, rho.bin and metadata.toml (convention of rcmps_gpu.optimizer)."""
-    directory = Path(directory)
-    with (directory / "metadata.toml").open("rb") as stream:
-        metadata = tomllib.load(stream)
-    d = int(metadata["D"])
-
-    def matrix(name):
-        path = directory / f"{name}.bin"
-        if path.stat().st_size != 16 * d * d:
-            raise ValueError(f"{path} does not hold a {d}x{d} complex128 matrix")
-        return np.fromfile(path, dtype="<c16").reshape((d, d), order="F")
-
-    integrator = IntegratorParameters(
-        int(metadata.get("quadrature", metadata.get("n_quad", 128))),
-        float(metadata.get("window", metadata.get("half_window", 20.0))),
-        float(metadata.get("atol", 1e-11)), float(metadata.get("rtol", 1e-10)))
-    return make_state(matrix("R"), matrix("K"), matrix("rho"), integrator=integrator,
-                      model="phi4", coupling=float(metadata["coupling"]),
-                      e0=float(metadata.get("energy", metadata.get("saved_energy", math.nan))),
-                      source=str(directory))
+    """Read a portable state directory with rcmps_gpu.io.read_portable: format 1 or a
+    research export. rho is checked, or recomputed when the directory has none."""
+    record = read_portable(directory)
+    return _from_record(record, record.rho, str(directory))
 
 
 def parity_error(state, z):

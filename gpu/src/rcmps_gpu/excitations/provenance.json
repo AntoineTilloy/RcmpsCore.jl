@@ -538,6 +538,147 @@
      ]
     ]
    }
+  },
+  {
+   "commit_subject": "Define the portable state format 1 shared by Julia and the GPU package",
+   "change": "state files: states.load_jld2 and states.load_portable read through rcmps_gpu.io (read_jld2: same values, and a phi4 state with a mass other than 1 is refused; read_portable: format 1 and the research dialects, rho recomputed when absent); cli.py hashes rcmps_gpu/io.py with the shared sources and its docstring names the format",
+   "hunks": {
+    "cli.py": [
+     [
+      5,
+      [
+       "STATE is an rcmps_store checkpoint (.jld2) or a portable export directory of the GPU",
+       "optimizer (R.bin, K.bin, rho.bin, metadata.toml). The model is phi^4 at the coupling",
+       "stored with the state. The output directory must be new; it receives result.json"
+      ],
+      [
+       "STATE is an rcmps_store checkpoint (.jld2) or a portable state directory (rcmps_gpu.io,",
+       "format 1 or a research export). The model is phi^4 at the coupling stored with the",
+       "state. The output directory must be new; it receives result.json"
+      ]
+     ],
+     [
+      74,
+      [
+       "# coefficient table, and the package modules on the import path.",
+       "SHARED_SOURCES = (\"optimizer/runtime/jax_source.py\", \"__init__.py\", \"provenance.py\", \"excitations/__init__.py\",",
+       "                  \"excitations/__main__.py\", \"excitations/provenance.json\", \"optimizer/__init__.py\",",
+       "                  \"optimizer/runtime/__init__.py\")"
+      ],
+      [
+       "# coefficient table, the state file reader, and the package modules on the import path.",
+       "SHARED_SOURCES = (\"optimizer/runtime/jax_source.py\", \"__init__.py\", \"io.py\", \"provenance.py\",",
+       "                  \"excitations/__init__.py\", \"excitations/__main__.py\", \"excitations/provenance.json\",",
+       "                  \"optimizer/__init__.py\", \"optimizer/runtime/__init__.py\")"
+      ]
+     ]
+    ],
+    "states.py": [
+     [
+      14,
+      [
+       "from pathlib import Path"
+      ],
+      []
+     ],
+     [
+      15,
+      [
+       "import tomllib"
+      ],
+      []
+     ],
+     [
+      20,
+      [],
+      [
+       "from ..io import read_jld2, read_portable",
+       ""
+      ]
+     ],
+     [
+      191,
+      [
+       "def _complex(dataset):",
+       "    value = dataset[()]",
+       "    return value[\"re\"] + 1j * value[\"im\"]"
+      ],
+      [
+       "def _from_record(record, rho, source):",
+       "    \"\"\"A checked State from an rcmps_gpu.io.StateRecord (rho None: recomputed).\"\"\"",
+       "    i = record.integration",
+       "    integrator = IntegratorParameters() if i is None else IntegratorParameters(",
+       "        i.n_quad, i.max_point, i.atol, i.rtol, *(() if i.maxiters is None else (i.maxiters,)))",
+       "    return make_state(record.R, record.K, rho, integrator=integrator, model=record.model,",
+       "                      coupling=record.coupling, e0=math.nan if record.energy is None else record.energy,",
+       "                      source=source)"
+      ]
+     ],
+     [
+      202,
+      [
+       "    \"\"\"Read an `rcmps_store` checkpoint (schema 1) with h5py. JLD2 stores Julia's",
+       "    column-major matrices, so the HDF5 view is the transpose. rho is not stored and is",
+       "    recomputed and checked, exactly as `rcmps_load` does; integration settings in the file",
+       "    are the optimizer's and are returned unchanged (override them for excitations).\"\"\"",
+       "    import h5py",
+       "",
+       "    with h5py.File(path, \"r\") as f:",
+       "        if int(f[\"schema_version\"][()]) != 1:",
+       "            raise ValueError(\"unsupported schema; migrate old JLD with examples/migrate_legacy.jl\")",
+       "        R, K = _complex(f[\"R\"]).T, _complex(f[\"K\"]).T",
+       "        coupling = _complex(f[\"coupling\"])",
+       "        model = f[\"model\"][()].decode()",
+       "        e0 = float(f[\"e0\"][()])",
+       "        row = f[\"integration\"][()]",
+       "        integrator = IntegratorParameters(int(row[\"n_quad\"]), float(row[\"max_point\"]),",
+       "                                          float(row[\"atol\"]), float(row[\"rtol\"]), int(row[\"maxiters\"]))",
+       "    if coupling.imag != 0:",
+       "        raise ValueError(\"model coupling must be real\")",
+       "    return make_state(R, K, rho, integrator=integrator, model=model, coupling=float(coupling.real),",
+       "                      e0=e0, source=str(path))"
+      ],
+      [
+       "    \"\"\"Read an `rcmps_store` checkpoint (schema 1) with rcmps_gpu.io.read_jld2. rho is not",
+       "    stored and is recomputed and checked, exactly as `rcmps_load` does; integration settings",
+       "    in the file are the optimizer's and are returned unchanged (override them for excitations).\"\"\"",
+       "    return _from_record(read_jld2(path), rho, str(path))"
+      ]
+     ],
+     [
+      209,
+      [
+       "    \"\"\"Read a GPU-optimizer portable export: headerless little-endian column-major",
+       "    complex128 R.bin, K.bin, rho.bin and metadata.toml (convention of rcmps_gpu.optimizer).\"\"\"",
+       "    directory = Path(directory)",
+       "    with (directory / \"metadata.toml\").open(\"rb\") as stream:",
+       "        metadata = tomllib.load(stream)",
+       "    d = int(metadata[\"D\"])",
+       "",
+       "    def matrix(name):",
+       "        path = directory / f\"{name}.bin\"",
+       "        if path.stat().st_size != 16 * d * d:",
+       "            raise ValueError(f\"{path} does not hold a {d}x{d} complex128 matrix\")",
+       "        return np.fromfile(path, dtype=\"<c16\").reshape((d, d), order=\"F\")",
+       "",
+       "    integrator = IntegratorParameters(",
+       "        int(metadata.get(\"quadrature\", metadata.get(\"n_quad\", 128))),",
+       "        float(metadata.get(\"window\", metadata.get(\"half_window\", 20.0))),",
+       "        float(metadata.get(\"atol\", 1e-11)), float(metadata.get(\"rtol\", 1e-10)))",
+       "    return make_state(matrix(\"R\"), matrix(\"K\"), matrix(\"rho\"), integrator=integrator,",
+       "                      model=\"phi4\", coupling=float(metadata[\"coupling\"]),",
+       "                      e0=float(metadata.get(\"energy\", metadata.get(\"saved_energy\", math.nan))),",
+       "                      source=str(directory))"
+      ],
+      [
+       "    \"\"\"Read a portable state directory with rcmps_gpu.io.read_portable: format 1 or a",
+       "    research export. rho is checked, or recomputed when the directory has none.\"\"\"",
+       "    record = read_portable(directory)",
+       "    return _from_record(record, record.rho, str(directory))"
+      ]
+     ]
+    ]
+   }
   }
  ]
 }

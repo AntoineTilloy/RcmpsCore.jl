@@ -15,10 +15,10 @@ from pathlib import Path
 import site
 import subprocess
 import sys
-import tomllib
 
 from .. import __version__
 from .. import provenance
+from ..io import read_portable
 from .layout import describe
 
 HERE = Path(__file__).resolve().parent
@@ -26,7 +26,7 @@ PACKAGE = HERE.parent
 RUNTIME = HERE / "runtime"
 # Every other file that runs with the runtime, relative to the rcmps_gpu package; plan.json
 # records their sha256 and the worker requires them unchanged.
-LAUNCHER_SOURCES = ("__init__.py", "provenance.py", "optimizer/__init__.py", "optimizer/__main__.py",
+LAUNCHER_SOURCES = ("__init__.py", "io.py", "provenance.py", "optimizer/__init__.py", "optimizer/__main__.py",
                     "optimizer/cli.py", "optimizer/worker.py", "optimizer/layout.py",
                     "optimizer/validate_sweep.py", "optimizer/validate_trajectory_sweep.py",
                     "optimizer/provenance.json", "optimizer/runtime/__init__.py")
@@ -106,15 +106,17 @@ def package_identity():
 
 
 def input_ledger(directory, D, coupling):
+    """Check an initial state directory, any dialect of rcmps_gpu.io.read_portable (format 1,
+    as initial/ and optimized_state/ of a run, or a research export), and hash the files the
+    worker will read from it."""
     directory = Path(directory).resolve()
-    metadata = tomllib.loads((directory / "metadata.toml").read_text())
-    if metadata["D"] != D or float(metadata["coupling"]) != coupling:
+    record = read_portable(directory, arrays=False)
+    if record.D != D or record.coupling != coupling:
         raise ValueError("initial state D/coupling differs from the requested model")
-    names = ("R.bin", "K.bin", "rho.bin", "saved_gradient.bin", "metadata.toml")
-    for name in names[:-1]:
-        if (directory / name).stat().st_size != 16 * D * D:
-            raise ValueError("wrong complex128 matrix byte count: " + name)
-    return dict(path=str(directory), sha256={name: digest(directory / name) for name in names})
+    if record.model != "phi4":
+        raise ValueError(f"the optimizer implements the phi4 model, not {record.model!r} (initial state)")
+    record = read_portable(directory)   # sizes and finiteness of the matrices
+    return dict(path=str(directory), sha256={name: digest(directory / name) for name in record.files})
 
 
 def prepare(args, runtime_sha256):
@@ -157,7 +159,7 @@ def prepare(args, runtime_sha256):
             raise ValueError("resume initial reference differs from the saved checkpoint")
         initial = prior
     elif initial and args.coupling is None:
-        coupling = float(tomllib.loads((initial / "metadata.toml").read_text())["coupling"])
+        coupling = read_portable(initial, arrays=False).coupling
         if not math.isfinite(coupling) or coupling < 0:
             raise ValueError("invalid initial coupling")
     plan = dict(schema_version=3, D=args.D, coupling=coupling, seed=args.seed, package=package_identity(),
@@ -183,7 +185,8 @@ def parser():
     p.add_argument("--D", type=int, required=True, help="full even Z2 bond dimension")
     p.add_argument("--coupling", type=float)
     p.add_argument("--seed", type=int, default=0, help="NumPy PCG64 Z2 initialization, when --initial is absent")
-    p.add_argument("--initial", type=Path, help="existing portable initial export")
+    p.add_argument("--initial", type=Path, help="initial state, a portable state directory (rcmps_gpu.io), such "
+                   "as the initial/ or optimized_state/ of a run")
     p.add_argument("--resume-from", type=Path, help="stopped generic JSON checkpoint; keep L-BFGS history")
     p.add_argument("--output", type=Path, help="fresh run directory")
     p.add_argument("--run-gpu", action="store_true")

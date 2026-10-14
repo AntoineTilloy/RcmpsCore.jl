@@ -2,9 +2,9 @@
 
     python -m rcmps_gpu.excitations STATE --output DIR [--momentum 0.0] [--nev 1] [--sector auto] [--backend fused]
 
-STATE is an rcmps_store checkpoint (.jld2) or a portable export directory of the GPU
-optimizer (R.bin, K.bin, rho.bin, metadata.toml). The model is phi^4 at the coupling
-stored with the state. The output directory must be new; it receives result.json
+STATE is an rcmps_store checkpoint (.jld2) or a portable state directory (rcmps_gpu.io,
+format 1 or a research export). The model is phi^4 at the coupling stored with the
+state. The output directory must be new; it receives result.json
 (energies, validation, history, timings, solver statistics, settings and source hashes;
 `settings` holds the options with the values used, kinetic_nodes, maxspace, retain and
 thick_restart/fresh_restarts resolved, and `settings.arguments` the parsed command line),
@@ -71,10 +71,10 @@ SOURCES = ("states.py", "models.py", "coordinates.py", "davidson.py", "scaled.py
            "ode.py", "hamiltonian.py", "bilinear.py", "bilinear_fused.py", "packed.py", "packed_pair.py", "fused.py",
            "eigsolve.py", "cli.py")
 # The other files that run with them, relative to the rcmps_gpu package: the kernel's
-# coefficient table, and the package modules on the import path.
-SHARED_SOURCES = ("optimizer/runtime/jax_source.py", "__init__.py", "provenance.py", "excitations/__init__.py",
-                  "excitations/__main__.py", "excitations/provenance.json", "optimizer/__init__.py",
-                  "optimizer/runtime/__init__.py")
+# coefficient table, the state file reader, and the package modules on the import path.
+SHARED_SOURCES = ("optimizer/runtime/jax_source.py", "__init__.py", "io.py", "provenance.py",
+                  "excitations/__init__.py", "excitations/__main__.py", "excitations/provenance.json",
+                  "optimizer/__init__.py", "optimizer/runtime/__init__.py")
 # sha256 of json.dumps(table, indent=2, sort_keys=True) + newline for the table
 # settings.source_sha256 of the A100 final2 result.json files (keyed run.py for cli.py),
 # held by provenance.json as qualified.source_sha256.

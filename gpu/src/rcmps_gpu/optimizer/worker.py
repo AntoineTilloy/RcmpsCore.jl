@@ -1,12 +1,17 @@
 """Fresh-interpreter generic GPU execution; invoked only by explicit --run-gpu."""
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 import math
 from pathlib import Path
 import sys
 
+from .. import __version__
+from ..io import Integration, StateRecord, read_portable, write_portable
 from .cli import RUNTIME, digest, launcher_source_sha256, runtime_source_sha256, verify_runtime
+
+PRODUCER = f"rcmps_gpu {__version__}, optimizer worker"
 
 
 def compile_dimension(D, cp, directory=None):
@@ -34,6 +39,32 @@ def compile_dimension(D, cp, directory=None):
                 compiled=True, PTX=ptx, numerical_launch_performed=False, actual_GPU_qualified=False)
 
 
+def write_reference(directory, record, plan, **extra):
+    """Write the run's initial state, the reference directory of the runtime: a portable
+    state, format 1 (rcmps_gpu.io), plus what runtime/sweep_driver.py reads besides R, K and
+    rho: saved_gradient.bin (zero without a gradient), saved_energy, saved_gradient_norm and
+    their saved_*_available flags, and precond_reg (from [manifold], which starts the
+    optimizer's regularization; 1e-4 without one). An energy, gradient or gradient norm
+    carried by the initial state are thus those the first evaluation is compared with:
+    unless it reproduces the energy to 1e-8 and the gradient to 3e-6 (metric norm), the
+    optimizer is not started, as for the research exports of Julia states. A state without
+    energy or gradient gets the run's integration settings as [integration]."""
+    import numpy as np
+    controls = plan["controls"]
+    if record.integration is None and record.energy is None and record.gradient is None:
+        record = replace(record, integration=Integration(
+            controls["quadrature"], controls["window"], controls["atol"], controls["rtol"]))
+    runtime = dict(saved_energy=0.0 if record.energy is None else record.energy,
+                   saved_energy_available=record.energy is not None,
+                   saved_gradient_available=record.gradient is not None,
+                   saved_gradient_norm=0.0 if record.gradient_norm is None else record.gradient_norm,
+                   saved_gradient_norm_available=record.gradient_norm is not None)
+    if record.manifold is not None:
+        runtime["precond_reg"] = record.manifold.precond_reg
+    gradient = np.zeros_like(record.R) if record.gradient is None else record.gradient
+    write_portable(directory, record, extra={**extra, **runtime}, extra_matrices=dict(saved_gradient=gradient))
+
+
 def random_reference(plan, directory):
     import numpy as np
     from .runtime.numerics import stationary_state
@@ -47,16 +78,27 @@ def random_reference(plan, directory):
     k = np.block([[k1 + k1.conj().T, zero], [zero, k2 + k2.conj().T]]) / math.sqrt(d)
     q = -1j * k - r.conj().T @ r / 2
     rho, stats = stationary_state(q, r, tolerance=plan["controls"]["stationary_tolerance"])
-    directory.mkdir(exist_ok=False)
-    for name, value in (("R", r), ("K", k), ("Q", q), ("rho", rho),
-                        ("saved_gradient", np.zeros_like(r))):
-        value.ravel(order="F").astype("<c16").tofile(directory / (name + ".bin"))
-    (directory / "metadata.toml").write_text(
-        f'D = {d}\ncoupling = {plan["coupling"]!r}\nseed = {plan["seed"]}\n'
-        'symmetry = "Z2"\nrandom_generator = "NumPy PCG64; complex standard normal"\n'
-        'saved_energy = 0.0\nsaved_gradient_norm = 0.0\n'
-        'saved_energy_available = false\nsaved_gradient_available = false\n'
-        'saved_gradient_norm_available = false\nCPU_objective_evaluated = false\nCPU_optimizer_run = false\n')
+    write_reference(directory, StateRecord(D=d, model="phi4", coupling=plan["coupling"], R=r, K=k, rho=rho,
+                                           producer=PRODUCER, source=f"random Z2 state, seed {plan['seed']}"),
+                    plan, seed=plan["seed"], symmetry="Z2",
+                    random_generator="NumPy PCG64; complex standard normal; scaled by 1/sqrt(D)")
+    return stats
+
+
+def initial_reference(plan, directory):
+    """The --initial state (any dialect of rcmps_gpu.io.read_portable) as the run's initial/;
+    rho is solved for if the directory has none (the statistics are returned, else None)."""
+    from .runtime.numerics import stationary_state
+    path = Path(plan["initial"]["path"])
+    record = read_portable(path)
+    if set(record.files) != set(plan["initial"]["sha256"]):
+        raise ValueError("initial state changed after planning")
+    stats = None
+    if record.rho is None:
+        q = -1j * record.K - record.R.conj().T @ record.R / 2
+        rho, stats = stationary_state(q, record.R, tolerance=plan["controls"]["stationary_tolerance"])
+        record = replace(record, rho=rho)
+    write_reference(directory, replace(record, producer=PRODUCER, source=record.source or path.name), plan)
     return stats
 
 
@@ -159,9 +201,13 @@ def main(argv=None):
                 status["state"] = "compiled_without_numerical_launch"
                 save()
                 return 0
-            reference = Path(plan["initial"]["path"]) if plan["initial"] else output / "initial"
-            if not plan["initial"]:
-                status["initial_stationary_solve"] = random_reference(plan, reference)
+            # A resumed run keeps the reference of its checkpoint; a new run writes initial/.
+            if plan["resume_from"]:
+                reference = Path(plan["initial"]["path"])
+            else:
+                reference = output / "initial"
+                status["initial_stationary_solve"] = (initial_reference if plan["initial"] else random_reference)(
+                    plan, reference)
             matrices, metadata = numerics.load_reference(reference)
             state = snapshot["state"] if snapshot else matrices
             r, k, rho = (state[n] for n in ("R", "K", "rho"))

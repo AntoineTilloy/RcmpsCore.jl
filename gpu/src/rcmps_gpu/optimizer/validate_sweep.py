@@ -11,7 +11,9 @@ import time
 
 import numpy as np
 
-from .runtime.numerics import load_reference, metric
+from .. import __version__
+from ..io import Integration, Manifold, StateRecord, read_portable, write_portable
+from .runtime.numerics import metric
 from .runtime import sweep_driver as driver
 
 
@@ -37,12 +39,12 @@ def main():
     hashes = driver.source_hashes(args)
     if hashes != report["runs"][-1]["source_sha256"]:
         raise ValueError("Current sources differ from the final optimizer invocation")
-    _, cpu_metadata = load_reference(cli.initial_reference)
-    comparison_metadata = load_reference(cli.comparison_reference)[1] if cli.comparison_reference else None
-    if comparison_metadata and comparison_metadata["D"] != cpu_metadata["D"]:
+    initial = read_portable(cli.initial_reference, arrays=False)
+    comparison = read_portable(cli.comparison_reference, arrays=False) if cli.comparison_reference else None
+    if comparison and comparison.D != initial.D:
         raise ValueError("Comparison reference dimension differs")
     r, k, rho, cached_gradient = (state[name] for name in ("R", "K", "rho", "gradient"))
-    if len(r) != cpu_metadata["D"]:
+    if len(r) != initial.D:
         raise ValueError("CPU reference dimension differs")
     import cupy as cp
     target = args.gradient_tolerance
@@ -52,7 +54,7 @@ def main():
         iteration=int(state["iteration"]), gradient_target=target,
         cached_energy=float(state["energy"]),
         cached_gradient_norm=float(np.sqrt(max(0., metric(rho, cached_gradient, cached_gradient, args.metric_reg)))),
-        saved_cpu_energy=comparison_metadata["saved_energy"] if comparison_metadata else None,
+        saved_cpu_energy=comparison.energy if comparison else None,
         optimization_target_reached=bool(report.get("converged")),
         optimization_stop_reason=report["stop_reason"],
         checkpoint_sha256={p.name: hashlib.sha256(p.read_bytes()).hexdigest()
@@ -75,7 +77,7 @@ def main():
             controls.atol = 1e-14
             controls.rtol = 1e-13
         begin = time.perf_counter()
-        energy, gradient, stats = driver.objective(r, k, rho, cpu_metadata["coupling"], controls, cp)
+        energy, gradient, stats = driver.objective(r, k, rho, initial.coupling, controls, cp)
         seconds = time.perf_counter() - begin
         if standard_gradient is None:
             standard_energy, standard_gradient = energy, gradient
@@ -86,7 +88,7 @@ def main():
                    energy=energy, gradient_norm=float(np.sqrt(max(0., metric(rho, gradient, gradient, args.metric_reg)))),
                    energy_difference_standard=abs(energy-standard_energy),
                    energy_difference_cached=abs(energy-float(state["energy"])),
-                   energy_difference_saved_cpu=abs(energy-comparison_metadata["saved_energy"]) if comparison_metadata else None,
+                   energy_difference_saved_cpu=abs(energy-comparison.energy) if comparison and comparison.energy is not None else None,
                    gradient_metric_difference_standard=float(np.sqrt(max(0., metric(rho, difference, difference, args.metric_reg)))),
                    gradient_metric_difference_cached=float(np.sqrt(max(0., metric(rho, cached_difference, cached_difference, args.metric_reg)))),
                    stats=stats)
@@ -107,22 +109,22 @@ def main():
     output.write_text(json.dumps(validation, indent=2)+"\n")
     if not validation["passed"]:
         raise RuntimeError("Final GPU accuracy refinement failed; inspect the saved report")
-    # Portable Julia import: no NPZ dependency is added to the CPU package.
+    # Portable state, format 1 of rcmps_gpu.io: gpu/julia/import_state.jl imports it into Julia
+    # (no NPZ dependency is added to the CPU package), and it is a valid --initial.
     export = output.parent / "optimized_state"
-    export.mkdir(exist_ok=True)
-    for name, matrix in (("R", r), ("K", k), ("rho", rho),
-                         ("gradient", gradients["refined_1024"])):
-        matrix.ravel(order="F").astype("<c16").tofile(export / (name+".bin"))
     final = validation["evaluations"][-1]
-    metadata = dict(D=len(r), coupling=cpu_metadata["coupling"],
-                    energy=final["energy"], gradient_norm=final["gradient_norm"],
-                    gradient_target=target, gradient_target_reached=bool(final["gradient_target_reached"]),
-                    metric_reg=args.metric_reg,
-                    precond_reg=float(state["precond_reg"]),
-                    window=40., quadrature=1024, atol=1e-14, rtol=1e-13)
-    (export / "metadata.toml").write_text(
-        "validation_passed = true\n" +
-        "".join(f"{key} = {str(value).lower() if isinstance(value,bool) else repr(value)}\n" for key, value in metadata.items()))
+    refined = final["controls"]
+    reached = bool(final["gradient_target_reached"])
+    write_portable(export, StateRecord(
+        D=len(r), model="phi4", coupling=initial.coupling, R=r, K=k, rho=rho, gradient=gradients[final["name"]],
+        energy=final["energy"], gradient_norm=final["gradient_norm"], validation_passed=True,
+        integration=Integration(refined["quadrature"], refined["window"], refined["atol"], refined["rtol"]),
+        manifold=Manifold(args.metric_reg, float(state["precond_reg"])),
+        producer=f"rcmps_gpu {__version__}, optimizer validate_sweep",
+        source=f"{checkpoint.name} iteration {validation['iteration']}, evaluation {final['name']}",
+        info=f"FP64 GPU optimization (rcmps_gpu {__version__}) at D={len(r)}; energy and gradient of the "
+             f"refined validation; gradient target {target} reached: {reached}"),
+        extra=dict(gradient_target=target, gradient_target_reached=reached))
     print(f"Validated portable state: {export}", flush=True)
 
 

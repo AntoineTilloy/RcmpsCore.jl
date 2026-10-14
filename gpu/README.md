@@ -51,12 +51,17 @@ rcmps-gpu-optimize --D 160 --seed 42 --coupling 2.7 --run-gpu --output RUN
 rcmps-gpu-optimize --D 160 --resume-from RUN/optimization.json --run-gpu --output RUN2
 ```
 
-Output directories must be new. `--initial DIR` starts from a portable export (R.bin,
-K.bin, rho.bin, saved_gradient.bin as little-endian complex128 in column-major order,
-and metadata.toml) instead of a random Z2 state. There is no default wall-time limit
-(`--max-seconds` sets one). A GPU run first compares the fast energy and gradient with an
-independent CuPy evaluation at the initial state; after stopping it runs a five-row
-consistency check at refined settings and, if it passes, writes `optimized_state/`.
+Output directories must be new. A run starts from a random Z2 state (`--seed`) or from
+`--initial DIR`, a portable state directory (see State files below), such as the
+`initial/` or `optimized_state/` of an earlier run. Either way the run writes the state
+it starts from to `initial/`. If that state carries an
+energy (and a gradient), the first evaluation must reproduce them, the energy to 1e-8 and
+the gradient to 3e-6 in the metric norm, or the optimizer does not start. There is no
+default wall-time limit (`--max-seconds` sets one). A GPU run first compares the fast
+energy and gradient with an independent CuPy evaluation at the initial state; after
+stopping it runs a five-row consistency check at refined settings and, if it passes,
+writes `optimized_state/`, with the energy and gradient of the refined check (window 40,
+1024 nodes, 1e-14/1e-13).
 
 Excitations (`rcmps-gpu-excitations`, or `python -m rcmps_gpu.excitations`):
 
@@ -64,11 +69,37 @@ Excitations (`rcmps-gpu-excitations`, or `python -m rcmps_gpu.excitations`):
 rcmps-gpu-excitations STATE --output DIR [--momentum 0.0] [--nev 1] [--sector odd|even|all]
 ```
 
-STATE is an `rcmps_store` checkpoint (.jld2) or a portable export directory. `--backend
+STATE is an `rcmps_store` checkpoint (.jld2) or a portable state directory. `--backend
 numpy` runs the same code on the CPU. `--help` describes the defaults: the Davidson
 schedule of the A100 runs (search space min(160, n), thick restarts) and the kinetic
 nodes of `eigsolve.default_kinetic_nodes` (below). From Python the entry points are
 `rcmps_gpu.excitations.eigsolve.excitation_eigsolve` and `iterative_dispersion`.
+
+## State files
+
+`rcmps_gpu.io` reads the states of both subpackages and writes those of the optimizer:
+
+- `read_jld2`: an `rcmps_store` checkpoint of the Julia package (JLD2 schema 1 of
+  `src/storage.jl`), read with h5py. `mass` is read when present (1.0 otherwise); a φ⁴
+  state with another mass is refused. `rho` is not stored, and is recomputed.
+- `read_portable`, `write_portable`: a portable state directory, "rcmps-portable-state"
+  format 1, the format exchanged with Julia. `metadata.toml` holds `format =
+  "rcmps-portable-state"`, `format_version = 1`, `D`, `model`, `coupling` (real), and
+  optionally `mass` (default 1.0, and 1.0 for φ⁴), `energy`, `gradient_norm`,
+  `validation_passed`, `producer`, `source`, `info`, an `[integration]` table (`n_quad`,
+  `max_point`, `atol`, `rtol`, optional `maxiters`: the settings of the energy and
+  gradient) and a `[manifold]` table (`metric_reg`, `precond_reg`, optional
+  `precond_reg_prefactor`). `R.bin` and `K.bin` are required, `rho.bin` (recomputed when
+  absent) and `gradient.bin` optional: each a headerless D x D complex128 matrix,
+  little-endian, column-major, exactly 16 D² bytes. Readers ignore other keys and files.
+  The module docstring is the specification.
+
+`read_portable` also reads the unversioned directories of the research code (the
+optimizer's former `initial/` and `optimized_state/`, the Julia exports of the research
+tree; phi4): `quadrature`/`n_quad`, `window`/`half_window`, `energy`/`saved_energy` and
+`gradient.bin`/`saved_gradient.bin` are mapped as the docstring describes. The optimizer
+writes `initial/` and `optimized_state/` in format 1; `initial/` has besides the files and
+keys that the runtime reads (`saved_gradient.bin`, the `saved_*` keys, `precond_reg`).
 
 ## Kinetic nodes at large D
 
@@ -144,8 +175,8 @@ or file by file (each line from the repository root):
 
 ```bash
 cd gpu/tests/excitations && for t in test_*.py; do OPENBLAS_NUM_THREADS=1 python -m unittest ${t%.py}; done
-cd gpu/tests/optimizer && OPENBLAS_NUM_THREADS=1 python -m unittest test_generic
-cd gpu/tests && python -m unittest test_package
+cd gpu/tests/optimizer && OPENBLAS_NUM_THREADS=1 python -m unittest test_generic test_portable
+cd gpu/tests && OPENBLAS_NUM_THREADS=1 python -m unittest test_package test_io
 ```
 
 Without installing, put the absolute path of `gpu/src` on `PYTHONPATH`. The optimizer
@@ -179,6 +210,8 @@ src/rcmps_gpu/optimizer/runtime/ numerical runtime, research file names kept
 src/rcmps_gpu/excitations/       states, models, coordinates, davidson, scaled, kinetic, potential,
                                  ode, packed, packed_pair, fused, hamiltonian, bilinear,
                                  bilinear_fused, eigsolve, cli, provenance.json
+src/rcmps_gpu/io.py              state files: JLD2 checkpoints and portable directories
 src/rcmps_gpu/provenance.py      provenance record format and check
-tests/optimizer/, tests/excitations/, tests/test_package.py, qualification/excitations/
+tests/optimizer/, tests/excitations/, tests/test_package.py, tests/test_io.py,
+qualification/excitations/
 ```
