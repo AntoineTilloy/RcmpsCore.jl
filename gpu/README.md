@@ -93,12 +93,19 @@ with its sha256 and research path); git is the seal from there on, and each late
 changes only what its message says. For the optimizer runtime,
 `src/rcmps_gpu/optimizer/provenance.json` records the sealed research manifest (the
 imported sha256 of the 24 runtime modules, the H100 base manifest and the builder) and
-every line edited since; a test reverts those edits and checks the imported bytes, and
-another pins the sha256 of the generated CUDA source, compiler options and launch
-geometry (`tests/optimizer/golden_cuda.json`). A run records the package version, the git
-commit when run from a checkout, and the sha256 of every runtime and launcher file in
-`plan.json`; checkpoints hash the runtime modules by file name, and a resume requires
-exactly the same runtime.
+every edit made since, commit by commit, in the format described in
+`src/rcmps_gpu/provenance.py`. The optimizer command line reverts those edits in memory
+when it plans a run, and the worker again before and after the run: a runtime that is not
+the imported one with its recorded edits is refused, as the research launcher refused one
+that was not derived from the sealed H100 candidate. The sha256 of the imported manifest
+is written in the code (`cli.IMPORTED_MANIFEST_SHA256`) and in the tests, and the package
+`__init__` modules, which run with every runtime import, must hold only a docstring and
+constants. A test pins the sha256 of the generated CUDA source, compiler options and
+launch geometry (`tests/optimizer/golden_cuda.json`). A run records in `plan.json` the
+package version, the git commit when run from a checkout, the result of the provenance
+check, and the sha256 of every runtime module and of every other file of the package that
+runs with it (`cli.LAUNCHER_SOURCES`); the worker requires them unchanged. Checkpoints
+hash the runtime modules by file name, and a resume requires exactly the same runtime.
 
 ## Tests
 
@@ -114,6 +121,7 @@ or file by file (each line from the repository root):
 ```bash
 cd gpu/tests/excitations && for t in test_*.py; do OPENBLAS_NUM_THREADS=1 python -m unittest ${t%.py}; done
 cd gpu/tests/optimizer && OPENBLAS_NUM_THREADS=1 python -m unittest test_generic
+cd gpu/tests && python -m unittest test_package
 ```
 
 Without installing, put the absolute path of `gpu/src` on `PYTHONPATH`. The optimizer

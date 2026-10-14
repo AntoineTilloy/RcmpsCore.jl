@@ -6,7 +6,7 @@ import math
 from pathlib import Path
 import sys
 
-from .cli import RUNTIME, digest, runtime_source_sha256
+from .cli import RUNTIME, digest, launcher_source_sha256, runtime_source_sha256, verify_runtime
 
 
 def compile_dimension(D, cp, directory=None):
@@ -120,13 +120,16 @@ def main(argv=None):
     plan_path = Path((argv or sys.argv[1:])[0])
     plan = json.loads(plan_path.read_bytes())
     output = Path(plan["output"])
-    if plan["schema_version"] != 2 or Path(plan["runtime"]) != RUNTIME:
+    if plan["schema_version"] != 3 or Path(plan["runtime"]) != RUNTIME:
         raise ValueError("plan written by another launcher version or installation")
     if runtime_source_sha256() != plan["runtime_source_sha256"]:
         raise ValueError("runtime changed after planning")
-    for name, expected in plan["launcher_source_sha256"].items():
-        if digest(Path(__file__).parent / name) != expected:
+    launcher = launcher_source_sha256()
+    for name in sorted(set(launcher) | set(plan["launcher_source_sha256"])):
+        if launcher.get(name) != plan["launcher_source_sha256"].get(name):
             raise ValueError("launcher source changed after planning: " + name)
+    if verify_runtime() != plan["runtime_provenance"]:
+        raise ValueError("runtime provenance changed after planning")
     for path, expected in plan["resume_sha256"].items():
         if digest(path) != expected:
             raise ValueError("resume checkpoint changed after planning")
@@ -200,7 +203,7 @@ def main(argv=None):
                                            "--output", str(output / "final_validation.json")])
             status.update(state="completed", final_consistency_passed=True)
             save()
-            if runtime_source_sha256() != plan["runtime_source_sha256"]:
+            if runtime_source_sha256() != plan["runtime_source_sha256"] or verify_runtime() != plan["runtime_provenance"]:
                 raise ValueError("runtime changed during the run")
             print(json.dumps(status), flush=True)
             return 0

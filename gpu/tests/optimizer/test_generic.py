@@ -12,7 +12,7 @@ import io
 import json
 import os
 from pathlib import Path
-import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -20,13 +20,16 @@ import unittest
 from unittest import mock
 
 import rcmps_gpu
+from rcmps_gpu import provenance
 from rcmps_gpu.optimizer import cli as run
 from rcmps_gpu.optimizer import layout
 
 RUNTIME = run.RUNTIME
-PROVENANCE = json.loads((run.HERE / "provenance.json").read_text())
-GOLDEN = json.loads(Path(__file__).with_name("golden_cuda.json").read_text())
+PROVENANCE = json.loads((run.HERE / "provenance.json").read_bytes())
+GOLDEN = json.loads(Path(__file__).with_name("golden_cuda.json").read_bytes())
 BASE_MANIFEST_SHA = "4b68b5fc76de4cfa3b049364ad1bc9ab7be2f61ea56a2eec0fe9cf9450efb21e"
+# sha256 of research generic_gpu/runtime/manifest.json, imported by "Import the GPU code verbatim"
+IMPORTED_MANIFEST_SHA = "dda1fdbfa9f435f04958e418379f269b2381cc3e58d9b09bb81c7f42bdd6beea"
 needs_triton = unittest.skipUnless(importlib.util.find_spec("triton") is not None,
                                    "persistent_rows_general imports triton at module level; triton is not installed")
 
@@ -43,39 +46,109 @@ def child(code):
     return json.loads(result.stdout.strip().splitlines()[-1])
 
 
-def flat_import(line):
-    """The research form of a runtime line made package-relative by the packaging commit."""
-    line = re.sub(r"\bfrom \. import ", "import ", line, count=1)
-    line = re.sub(r"\bfrom \.(\w)", r"from \1", line, count=1)
-    return line.replace("__import__('ode_backend',globals(),level=1)", "__import__('ode_backend')")
+def package_copy(root):
+    """A copy of this rcmps_gpu source tree under root/src, for tests that edit it."""
+    shutil.copytree(run.PACKAGE, root / "src" / "rcmps_gpu", ignore=shutil.ignore_patterns("__pycache__"))
+    return root / "src" / "rcmps_gpu"
+
+
+def run_copy(root, *arguments, code=None):
+    """python -m rcmps_gpu.optimizer *arguments (or -c code) on the copy under root/src."""
+    command = [sys.executable, "-c", code] if code else [sys.executable, "-m", "rcmps_gpu.optimizer", *arguments]
+    return subprocess.run(command, cwd=root, capture_output=True, text=True, timeout=120,
+                          env=dict(os.environ, PYTHONPATH=str(root / "src"), OPENBLAS_NUM_THREADS="1"))
 
 
 class GenericTests(unittest.TestCase):
     def test_provenance_lists_the_runtime_and_reverting_its_edits_gives_the_imported_bytes(self):
         manifest = PROVENANCE["manifest"]
         raw = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
-        self.assertEqual(hashlib.sha256(raw).hexdigest(), PROVENANCE["imported"]["manifest_sha256"])
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), IMPORTED_MANIFEST_SHA)
+        self.assertEqual(PROVENANCE["imported"]["manifest_sha256"], IMPORTED_MANIFEST_SHA)
+        self.assertEqual(run.IMPORTED_MANIFEST_SHA256, IMPORTED_MANIFEST_SHA)
         self.assertEqual(manifest["base_manifest_sha256"], BASE_MANIFEST_SHA)
         self.assertFalse(manifest["actual_GPU_qualified"])
-        imported = manifest["runtime_source_sha256"]
         files = sorted(path.name for path in RUNTIME.glob("*.py") if path.name != "__init__.py")
         self.assertEqual(len(files), 24)
-        self.assertEqual(sorted(imported), files)
+        self.assertEqual(sorted(manifest["runtime_source_sha256"]), files)
         self.assertEqual(sorted(run.runtime_source_sha256()), files)
-        edits = {}
-        for commit in PROVENANCE["edits"]:
-            for name, lines in commit["lines"].items():
-                self.assertIn(name, imported)
-                edits.setdefault(name, []).extend((commit["imports_only"], *line) for line in lines)
-        for name in files:
-            with self.subTest(name=name):
-                lines = (RUNTIME / name).read_text().splitlines(keepends=True)
-                for imports_only, number, old, new in reversed(edits.get(name, [])):
-                    self.assertEqual(lines[number - 1], new + "\n")
-                    if imports_only:
-                        self.assertEqual(flat_import(new), old)
-                    lines[number - 1] = old + "\n"
-                self.assertEqual(hashlib.sha256("".join(lines).encode()).hexdigest(), imported[name])
+        record = run.verify_runtime()   # reverts the recorded edits on the bytes of the files
+        self.assertEqual(record["edits"], [entry["commit_subject"] for entry in PROVENANCE["edits"]])
+        self.assertEqual(len(record["edited_files"]), 19)
+
+    def test_planner_and_worker_refuse_a_runtime_that_differs_from_its_provenance(self):
+        line = "        factor = min(10.0, 0.9 * error**(-1 / 8)) if error else 10.0\n"
+        edited = line.replace("0.9 *", "0.8 *")   # the DOP853 step-size safety factor
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            package = package_copy(root)
+            target = package / "optimizer" / "runtime" / "ode_backend.py"
+            record_path = package / "optimizer" / "provenance.json"
+            source = target.read_text(encoding="utf-8")
+            self.assertEqual(source.count(line), 1)
+            number = source[:source.index(line)].count("\n") + 1
+            planned = run_copy(root, code="import json\nfrom rcmps_gpu.optimizer import cli\n"
+                               "print(json.dumps(cli.prepare(cli.parser().parse_args(['--D','8','--output','run']),"
+                               "cli.runtime_source_sha256())))")
+            self.assertEqual(planned.returncode, 0, planned.stderr)
+            target.write_text(source.replace(line, edited), encoding="utf-8")
+            refused = run_copy(root, "--D", "8")
+            self.assertEqual(refused.returncode, 2)
+            self.assertIn("runtime differs from its recorded provenance: ode_backend.py with its recorded edits "
+                          "reverted is not the imported file", refused.stderr)
+            # The worker refuses it too, even with the runtime hashes of the plan made to match.
+            plan = json.loads(planned.stdout)
+            plan["runtime_source_sha256"]["ode_backend.py"] = hashlib.sha256(target.read_bytes()).hexdigest()
+            (root / "plan.json").write_text(json.dumps(plan))
+            worker = run_copy(root, code="from rcmps_gpu.optimizer import worker\nworker.main(['plan.json'])")
+            self.assertIn("ValueError: runtime differs from its recorded provenance", worker.stderr)
+            self.assertFalse((root / "run").exists())
+            # Rewriting the imported manifest to match the edited file is refused as well.
+            record = json.loads(record_path.read_bytes())
+            lines = target.read_bytes().splitlines(keepends=True)
+            for n, old, new in record["edits"][0]["imports"].get("ode_backend.py", []):
+                lines[n - 1] = (old + "\n").encode()
+            manifest = record["manifest"]
+            manifest["runtime_source_sha256"]["ode_backend.py"] = hashlib.sha256(b"".join(lines)).hexdigest()
+            record["imported"]["manifest_sha256"] = hashlib.sha256(
+                (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()).hexdigest()
+            record_path.write_text(json.dumps(record, indent=1) + "\n")
+            self.assertIn("the imported runtime manifest changed", run_copy(root, "--D", "8").stderr)
+            # A recorded edit is accepted, and the plan lists it.
+            record = json.loads((run.HERE / "provenance.json").read_bytes())
+            record["edits"].append(dict(commit_subject="test", hunks={"ode_backend.py": [
+                [number, [line.rstrip("\n")], [edited.rstrip("\n")]]]}))
+            record_path.write_text(json.dumps(record, indent=1) + "\n")
+            accepted = run_copy(root, "--D", "8")
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+            self.assertEqual(json.loads(accepted.stdout)["runtime_provenance"]["edits"][-1], "test")
+            # Code in a package __init__ runs with every runtime import: refused.
+            target.write_text(source, encoding="utf-8")
+            record_path.write_bytes((run.HERE / "provenance.json").read_bytes())
+            self.assertEqual(run_copy(root, "--D", "8").returncode, 0)
+            with (package / "optimizer" / "runtime" / "__init__.py").open("a", encoding="utf-8") as stream:
+                stream.write("from . import ode_backend\n")
+            self.assertIn("rcmps_gpu/optimizer/runtime/__init__.py must hold only a docstring and constants",
+                          run_copy(root, "--D", "8").stderr)
+
+    def test_provenance_check_reads_bytes_whatever_the_locale(self):
+        result = subprocess.run([sys.executable, "-X", "warn_default_encoding", "-W", "error::EncodingWarning", "-c",
+                                 "import json\nfrom rcmps_gpu.optimizer import cli\n"
+                                 "print(json.dumps(cli.verify_runtime()))"],
+                                env=dict(os.environ, PYTHONUTF8="0", LC_ALL="C", OPENBLAS_NUM_THREADS="1"),
+                                capture_output=True, text=True, timeout=90)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), run.verify_runtime())
+
+    def test_every_file_that_runs_with_the_optimizer_is_hashed(self):
+        package = run.PACKAGE
+        files = {path.relative_to(package).as_posix() for path in package.rglob("*")
+                 if path.is_file() and "__pycache__" not in path.parts
+                 and (path.parent == package or path.relative_to(package).parts[0] == "optimizer")}
+        runtime = {"optimizer/runtime/" + name for name in run.runtime_source_sha256()}
+        self.assertEqual(files, runtime | set(run.LAUNCHER_SOURCES))
+        for name in run.INERT_SOURCES:
+            self.assertTrue(provenance.inert(package / name), name)
 
     def test_generated_CUDA_compiler_options_and_geometry_equal_the_golden_hashes(self):
         sizes = sorted(map(int, GOLDEN["sizes"]))
@@ -193,6 +266,7 @@ print(json.dumps(dict(new_shapes_generated=True,CUDA_imported=False)))
         self.assertEqual((plan["package"]["version"], plan["runtime"], plan["runtime_source_sha256"]),
                          (rcmps_gpu.__version__, str(RUNTIME), hashes))
         self.assertEqual(sorted(plan["launcher_source_sha256"]), sorted(run.LAUNCHER_SOURCES))
+        self.assertEqual(plan["runtime_provenance"], run.verify_runtime())
         args = run.parser().parse_args(["--D", "160", "--max-seconds", "7200"])
         self.assertEqual(run.prepare(args, hashes)["max_seconds"], 7200.)
         for value in ("nan", "inf", "0", "-1"):
@@ -251,7 +325,9 @@ with tempfile.TemporaryDirectory() as tmp:
     refused(dict(runtime='/elsewhere/runtime'),'another launcher version or installation')
     refused(dict(schema_version=1),'another launcher version or installation')
     refused(dict(runtime_source_sha256={**plan['runtime_source_sha256'],'numerics.py':'0'*64}),'runtime changed after planning')
-    refused(dict(launcher_source_sha256={**plan['launcher_source_sha256'],'worker.py':'0'*64}),'launcher source changed')
+    refused(dict(launcher_source_sha256={**plan['launcher_source_sha256'],'optimizer/worker.py':'0'*64}),'launcher source changed after planning: optimizer/worker.py')
+    refused(dict(launcher_source_sha256={k:v for k,v in plan['launcher_source_sha256'].items() if k!='provenance.py'}),'launcher source changed after planning: provenance.py')
+    refused(dict(runtime_provenance={**plan['runtime_provenance'],'edits':[]}),'runtime provenance changed after planning')
     fake=types.ModuleType('rcmps_gpu.optimizer.runtime.triton_backend');fake.__file__='/elsewhere/triton_backend.py'
     sys.modules[fake.__name__]=fake
     refused({},'mixed numerical runtimes: triton_backend.py')

@@ -17,11 +17,23 @@ import sys
 import tomllib
 
 from .. import __version__
+from .. import provenance
 from .layout import describe
 
 HERE = Path(__file__).resolve().parent
+PACKAGE = HERE.parent
 RUNTIME = HERE / "runtime"
-LAUNCHER_SOURCES = ("cli.py", "worker.py", "layout.py", "validate_sweep.py", "validate_trajectory_sweep.py")
+# Every other file that runs with the runtime, relative to the rcmps_gpu package; plan.json
+# records their sha256 and the worker requires them unchanged.
+LAUNCHER_SOURCES = ("__init__.py", "provenance.py", "optimizer/__init__.py", "optimizer/__main__.py",
+                    "optimizer/cli.py", "optimizer/worker.py", "optimizer/layout.py",
+                    "optimizer/validate_sweep.py", "optimizer/validate_trajectory_sweep.py",
+                    "optimizer/provenance.json", "optimizer/runtime/__init__.py")
+# sha256 of runtime/manifest.json as imported, i.e. of json.dumps(manifest, indent=2,
+# sort_keys=True) + newline for the manifest held by provenance.json.
+IMPORTED_MANIFEST_SHA256 = "dda1fdbfa9f435f04958e418379f269b2381cc3e58d9b09bb81c7f42bdd6beea"
+# Modules that run on every import of a runtime module: only a docstring and constants.
+INERT_SOURCES = ("__init__.py", "optimizer/__init__.py", "optimizer/runtime/__init__.py")
 DEFAULTS = dict(window=30., quadrature=512, nodes=512, atol=1e-13, rtol=1e-12,
                 maxdim=1024, metric_reg=1e-3, krylov_tolerance=1e-12,
                 stationary_tolerance=1e-13, max_steps=1_000_000,
@@ -38,7 +50,30 @@ def runtime_source_sha256():
 
 
 def launcher_source_sha256():
-    return {name: digest(HERE / name) for name in LAUNCHER_SOURCES}
+    return {name: digest(PACKAGE / name) for name in LAUNCHER_SOURCES}
+
+
+def verify_runtime():
+    """Refuse (ValueError) a runtime that is not the imported one with the edits recorded in
+    provenance.json, as the research launcher refused one that was not the derivation of the
+    sealed H100 candidate; return what plan.json records of the check."""
+    raw = (HERE / "provenance.json").read_bytes()
+    record = json.loads(raw)
+    manifest = record["manifest"]
+    if (provenance.sha256((json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()) != IMPORTED_MANIFEST_SHA256
+            or record["imported"]["manifest_sha256"] != IMPORTED_MANIFEST_SHA256):
+        raise ValueError("provenance.json: the imported runtime manifest changed")
+    names = runtime_source_sha256()
+    try:
+        edited = provenance.verify(RUNTIME, manifest["runtime_source_sha256"], record["edits"], names)
+    except ValueError as error:
+        raise ValueError(f"runtime differs from its recorded provenance: {error}") from None
+    for name in INERT_SOURCES:
+        if not provenance.inert(PACKAGE / name):
+            raise ValueError(f"rcmps_gpu/{name} must hold only a docstring and constants")
+    return dict(imported_manifest_sha256=IMPORTED_MANIFEST_SHA256, provenance_sha256=provenance.sha256(raw),
+                edits=[entry["commit_subject"] for entry in record["edits"]], edited_files=edited,
+                imported_bytes_with_recorded_edits=True)
 
 
 def package_identity():
@@ -110,8 +145,9 @@ def prepare(args, runtime_sha256):
         coupling = float(tomllib.loads((initial / "metadata.toml").read_text())["coupling"])
         if not math.isfinite(coupling) or coupling < 0:
             raise ValueError("invalid initial coupling")
-    plan = dict(schema_version=2, D=args.D, coupling=coupling, seed=args.seed, package=package_identity(),
+    plan = dict(schema_version=3, D=args.D, coupling=coupling, seed=args.seed, package=package_identity(),
                 runtime=str(RUNTIME), runtime_source_sha256=dict(runtime_sha256),
+                runtime_provenance=verify_runtime(),
                 launcher_source_sha256=launcher_source_sha256(),
                 layout=describe(args.D, controls["quadrature"]), controls=controls,
                 max_seconds=args.max_seconds, max_iterations=args.max_iterations,

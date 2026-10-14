@@ -1,6 +1,6 @@
 {
- "schema_version": 1,
- "about": "Provenance of the optimizer runtime (runtime/*.py). The 24 modules were imported byte-identical from the research tree in the commit 'imported.commit_subject', together with runtime/manifest.json, the manifest written by the research builder generic_gpu/build_runtime.py (sha256 manifest.builder_sha256), which derived the generic runtime from the sealed H100 candidate (manifest of sha256 manifest.base_manifest_sha256). Neither the builder nor the H100 candidate is part of this package; git is the seal from the import on. 'edits' lists every later change of the runtime modules, line by line: reverting them gives back the imported bytes, manifest.runtime_source_sha256 (checked by tests/optimizer/test_generic.py).",
+ "schema_version": 2,
+ "about": "Provenance of the optimizer runtime (runtime/*.py). The 24 modules were imported byte-identical from the research tree in the commit 'imported.commit_subject', together with runtime/manifest.json, the manifest written by the research builder generic_gpu/build_runtime.py (sha256 manifest.builder_sha256), which derived the generic runtime from the sealed H100 candidate (manifest of sha256 manifest.base_manifest_sha256). Neither the builder nor the H100 candidate is part of this package; git is the seal from the import on. 'edits' lists every later change of the runtime modules, one entry per commit in commit order, in the format described in rcmps_gpu/provenance.py: reverting them gives back the imported bytes, manifest.runtime_source_sha256. The optimizer command line and its worker check this before planning, before the run and after it (cli.verify_runtime), and refuse a runtime that differs; the sha256 of the manifest is also written in cli.IMPORTED_MANIFEST_SHA256.",
  "imported": {
   "commit_subject": "Import the GPU code verbatim",
   "research_path": "research/gpu_d64/generic_gpu/runtime",
@@ -78,9 +78,8 @@
  "edits": [
   {
    "commit_subject": "Turn gpu/ into the rcmps_gpu package",
-   "imports_only": true,
    "change": "imports only: every flat sibling import 'import X' / 'from X import' becomes 'from . import X' / 'from .X import', and the two dynamic __import__('ode_backend') of persistent_trajectory_backend.integrate_trajectory_numpy get globals() and level=1",
-   "lines": {
+   "imports": {
     "cooperative_arnoldi.py": [
      [
       30,
