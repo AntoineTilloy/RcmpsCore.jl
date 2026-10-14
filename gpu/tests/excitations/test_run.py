@@ -249,6 +249,9 @@ class Defaults(unittest.TestCase):
                                                                  "thick_restart", "fresh_restarts")],
                              [None, None, None, False, False])
             self.assertEqual(settings["arguments"]["nev"], settings["nev"])
+            # Sources: the 16 modules and the package files on their import path, and their provenance.
+            self.assertEqual(sorted(settings["source_sha256"]), sorted(run.SOURCES + run.SHARED_SOURCES))
+            self.assertTrue(settings["source_provenance"]["verified"])
             self.assertIn("kinetic_nodes=256 (default for D = 4)", printed)
             self.assertIn("davidson schedule research: maxspace=8 retain=7 refresh=False", printed)
             self.assertIn("operator p=0 dimension=8 kinetic_nodes=256", printed)

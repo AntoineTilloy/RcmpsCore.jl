@@ -60,6 +60,7 @@ from pathlib import Path
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
+from .. import provenance  # noqa: E402
 from . import eigsolve  # noqa: E402
 from . import models  # noqa: E402
 from . import ode  # noqa: E402
@@ -69,7 +70,15 @@ from .davidson import check_davidson  # noqa: E402
 SOURCES = ("states.py", "models.py", "coordinates.py", "davidson.py", "scaled.py", "kinetic.py", "potential.py",
            "ode.py", "hamiltonian.py", "bilinear.py", "bilinear_fused.py", "packed.py", "packed_pair.py", "fused.py",
            "eigsolve.py", "cli.py")
-SHARED_SOURCES = ("optimizer/runtime/jax_source.py",)   # relative to the rcmps_gpu package
+# The other files that run with them, relative to the rcmps_gpu package: the kernel's
+# coefficient table, and the package modules on the import path.
+SHARED_SOURCES = ("optimizer/runtime/jax_source.py", "__init__.py", "provenance.py", "excitations/__init__.py",
+                  "excitations/__main__.py", "excitations/provenance.json", "optimizer/__init__.py",
+                  "optimizer/runtime/__init__.py")
+# sha256 of json.dumps(table, indent=2, sort_keys=True) + newline for the table
+# settings.source_sha256 of the A100 final2 result.json files (keyed run.py for cli.py),
+# held by provenance.json as qualified.source_sha256.
+QUALIFIED_SOURCES_SHA256 = "68c84931cca9aad270078af8e4a46ef7e8c4b680673a80b2fc2080429d5baa35"
 MEASURED_D = 128   # largest D at which kinetic node counts were measured (gpu/README.md)
 
 
@@ -91,6 +100,26 @@ def jsonable(value):
     if hasattr(value, "__dataclass_fields__"):
         return {k: jsonable(getattr(value, k)) for k in value.__dataclass_fields__}
     return repr(value)
+
+
+def source_provenance():
+    """Whether SOURCES are the A100-qualified bytes with the edits recorded in provenance.json
+    reverted; result.json records the answer (an unverified source is logged, not refused)."""
+    raw = (HERE / "provenance.json").read_bytes()
+    record = json.loads(raw)
+    qualified = record["qualified"]
+    result = dict(qualified_runs=qualified["runs"], provenance_sha256=hashlib.sha256(raw).hexdigest(),
+                  edits=[entry["commit_subject"] for entry in record["edits"]])
+    try:
+        table = qualified["source_sha256"]
+        if hashlib.sha256((json.dumps(table, indent=2, sort_keys=True) + "\n").encode()).hexdigest() \
+                != QUALIFIED_SOURCES_SHA256:
+            raise ValueError("provenance.json: the table of qualified sources changed")
+        imported = {qualified["renamed"].get(name, name): digest for name, digest in table.items()}
+        result.update(verified=True, edited_files=provenance.verify(HERE, imported, record["edits"], SOURCES))
+    except (ValueError, KeyError) as error:
+        result.update(verified=False, error=str(error))
+    return result
 
 
 def make_parser():
@@ -260,8 +289,12 @@ def main(argv=None):
                     sector_dimension=resolved["dimension"], default_kinetic_nodes=resolved["default_kinetic_nodes"],
                     source_sha256={**{name: hashlib.sha256((HERE / name).read_bytes()).hexdigest() for name in SOURCES},
                                    **{name: hashlib.sha256((HERE.parent / name).read_bytes()).hexdigest()
-                                      for name in SHARED_SOURCES}})
+                                      for name in SHARED_SOURCES}},
+                    source_provenance=source_provenance())
     log(f"state {path.name} D={state.D} g={state.coupling} backend={args.backend} scaling={args.scaling}")
+    if not settings["source_provenance"]["verified"]:
+        log(f"warning: the sources are not the qualified ones with their recorded edits: "
+            f"{settings['source_provenance']['error']}")
     for message in resolved["messages"]:
         log(message)
     start = "auto"

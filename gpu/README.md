@@ -107,6 +107,20 @@ check, and the sha256 of every runtime module and of every other file of the pac
 runs with it (`cli.LAUNCHER_SOURCES`); the worker requires them unchanged. Checkpoints
 hash the runtime modules by file name, and a resume requires exactly the same runtime.
 
+For the excitation solver, the import commit holds byte for byte the sources of the A100
+qualification runs (`final2` of the research results, finished 2026-10-14 between 00:45
+and 01:40 UTC: odd sector at p = 0 for D = 16, 32, 64 and 128, even sector at p = 0.5 for
+D = 16), as their `settings.source_sha256` records them, with `run.py` now `cli.py`.
+`src/rcmps_gpu/excitations/provenance.json` holds that table (pinned by
+`cli.QUALIFIED_SOURCES_SHA256`) and every edit made since in the same format; the next
+commit rewrote `eigsolve.py` and `cli.py` (defaults only, with every option of those runs
+given explicitly they compute the same), which the record ties by sha256, the diff being
+in git. `cli.source_provenance()` reverts the edits and compares; a test requires it to
+pass. A `result.json` records the sha256 of the 16 modules and of the package files on
+their import path (`settings.source_sha256`, keyed by file name, the shared ones relative
+to `rcmps_gpu`), and the outcome of that check (`settings.source_provenance`); the command
+line logs a warning, but runs, when the check fails.
+
 ## Tests
 
 CPU only (NumPy, SciPy, h5py); no test imports CuPy.
@@ -125,7 +139,7 @@ cd gpu/tests && python -m unittest test_package
 ```
 
 Without installing, put the absolute path of `gpu/src` on `PYTHONPATH`. The optimizer
-tests take about 10 s, the 17 excitation files about 24 minutes on one thread. The
+tests take about 10 s, the 18 excitation files about 24 minutes on one thread. The
 excitation tests check every module against a dense NumPy port of the Julia algorithm
 (`dense_reference.py`), the driver on a strict CPU stand-in for CuPy (`fakecupy.py`), the
 command line, and compilation of the kernel source with NVRTC when the CUDA headers are
@@ -157,6 +171,7 @@ src/rcmps_gpu/optimizer/         cli.py (command line), worker.py (GPU process),
 src/rcmps_gpu/optimizer/runtime/ numerical runtime, research file names kept
 src/rcmps_gpu/excitations/       states, models, coordinates, davidson, scaled, kinetic, potential,
                                  ode, packed, packed_pair, fused, hamiltonian, bilinear,
-                                 bilinear_fused, eigsolve, cli
-tests/optimizer/, tests/excitations/, qualification/excitations/
+                                 bilinear_fused, eigsolve, cli, provenance.json
+src/rcmps_gpu/provenance.py      provenance record format and check
+tests/optimizer/, tests/excitations/, tests/test_package.py, qualification/excitations/
 ```

@@ -1,9 +1,9 @@
 """Provenance records of the imported sources, and their check.
 
-The code was imported byte for byte from the research tree. optimizer/provenance.json
-records the sha256 of each runtime module as imported and every edit made since, one
-entry per commit in commit order. An entry has a "commit_subject", optionally a "change"
-(text), and any of:
+The code was imported byte for byte from the research tree. optimizer/provenance.json (the
+optimizer runtime) and excitations/provenance.json (the excitation solver) record the
+sha256 of each file as imported and every edit made since, one entry per commit in commit
+order. An entry has a "commit_subject", optionally a "change" (text), and any of:
 
 - "imports": {file: [[n, old, new], ...]}: line n of the file after the commit is `new`
   and was `old`, and the edit only makes a flat sibling import package-relative
@@ -50,9 +50,10 @@ def _lines(texts):
 def _revert(raw, edits, name, subject):
     """Undo the line edits of one file made by one commit (positions in the edited file)."""
     lines = raw.splitlines(keepends=True)
-    edits = sorted(edits, key=lambda edit: edit[0])
-    for (n, _, new), (m, _, _) in zip(edits, edits[1:]):
-        if n + len(new) > m:
+    # A deletion at line n (no new lines) comes before an edit of line n itself.
+    edits = sorted(edits, key=lambda edit: (edit[0], len(edit[2])))
+    for (n, _, new), (m, _, later) in zip(edits, edits[1:]):
+        if n + len(new) > m or n == m and not new and not later:
             raise ValueError(f"{subject}: overlapping edits of {name} at lines {n} and {m}")
     for n, old, new in reversed(edits):
         if n < 1 or lines[n - 1:n - 1 + len(new)] != _lines(new):

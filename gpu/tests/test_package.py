@@ -66,6 +66,16 @@ class ProvenanceRecords(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "overlapping edits of b.py"):
             self.verify({"a.py": a, "b.py": b, "new.py": "print()\n"}, edits)
 
+    def test_a_deletion_next_to_an_edited_line(self):
+        # 'import b' made relative and the line before it deleted, as when a sys.path line goes.
+        edits = [dict(commit_subject="c", imports={"a.py": [[1, "from c import d", "from .c import d"]]},
+                      hunks={"a.py": [[1, ["import b"], []]]})]
+        self.assertEqual(self.verify({**self.ORIGINAL, "a.py": "from .c import d\n\nx = 1  # é\n\x0cy = 2\n"}, edits),
+                         ["a.py"])
+        edits[0]["hunks"]["a.py"].append([1, ["gone"], []])
+        with self.assertRaisesRegex(ValueError, "overlapping edits of a.py at lines 1 and 1"):
+            self.verify({**self.ORIGINAL, "a.py": "from .c import d\n\nx = 1  # é\n\x0cy = 2\n"}, edits)
+
     def test_later_edits_of_a_rewritten_file(self):
         rewritten = "completely\nnew\n"
         edits = [dict(commit_subject="rewrite", replaced={"b.py": dict(before=self.imported["b.py"],

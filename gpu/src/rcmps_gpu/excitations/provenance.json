@@ -1,0 +1,543 @@
+{
+ "schema_version": 1,
+ "about": "Provenance of the excitation solver (the 16 modules of excitations/ hashed by cli.SOURCES). They were imported in the commit 'qualified.commit_subject' byte-identical to the sources of the A100 qualification runs 'qualified.runs': 'qualified.source_sha256' is the settings.source_sha256 that each of those result.json files records (identical in the five), keyed by research file name; 'qualified.renamed' maps research names to package names. 'edits' lists every later change of these modules, one entry per commit in commit order, in the format described in rcmps_gpu/provenance.py: reverting them gives back the qualified bytes, except that the defaults commit rewrote eigsolve.py and cli.py, whose qualified bytes are then tied by sha256 only (that diff is in git). cli.source_provenance() makes this check, and every result.json records its outcome in settings.source_provenance; tests/excitations/test_provenance.py checks it, and cli.QUALIFIED_SOURCES_SHA256 pins the table.",
+ "qualified": {
+  "runs": "research/gpu_d64/excitation_gpu/results/a100_20261013/final2: d16, d16_even_p, d32, d64, d128_k512",
+  "finished": "2026-10-14 00:45-01:40 UTC (02:45-03:40 CEST), modification times of their result.json",
+  "commit_subject": "Import the GPU code verbatim",
+  "renamed": {
+   "run.py": "cli.py"
+  },
+  "source_sha256": {
+   "states.py": "7f1a320cd30a6764bc3e8392965f22876bf091210d7320dd72ea6cec355c97c1",
+   "models.py": "83d47a3db0dfd31ba74c061197db1b143c97831d950b6d9ed6a381f86bdde0ea",
+   "coordinates.py": "d3e735a94f129ee65823e657925fb70bc44b961b86b3136282a7ab74938cd049",
+   "davidson.py": "c7854b5cadf73023d3f269c2796bb13c3dc79d089c8af28c864bad01b1d39594",
+   "scaled.py": "8addc00fa16b8c95b0858e3d96bef9eb037bac2fada336061755201fd5795866",
+   "kinetic.py": "394a7c48ca49c9b11696ff654516a004987b70ffc88cb484c068f1b388764159",
+   "potential.py": "bc1ae83505de463146b490dda720d8a7995cc96975b27760f78549caed7c255f",
+   "ode.py": "372a58f609f9670965f0aaaf780d5acab8e0ae787fd43e38f959a941cc8e9aa6",
+   "hamiltonian.py": "68c52fe94e10348e8d3ad97c0df50ebe363c808960af0a0a1d0f8d1c44692061",
+   "bilinear.py": "5d04482174d348a1226380f689394d05966378a2b59681dd3661c13a59415288",
+   "bilinear_fused.py": "5af3e0913daddc7d5590bb69f3bac70ea5f773f8142a0ea4e0b59910667183f1",
+   "packed.py": "5f698bc5079ba6aa1eacdbf7ed4ee354aa9d4af67e416f8fe55c8bb0c8e92c22",
+   "packed_pair.py": "35315e71c638ee50c3ec02c775592742ae88a6e22acc5d26343a279974894062",
+   "fused.py": "8a805a2ed75c59df42d37a391e6ba8fb746d5e7d01399dd4aca0940befc62780",
+   "eigsolve.py": "55483d3e44144a31f8e4a5e9887663aecbd1ab75f957097b606f38ea0eff333f",
+   "run.py": "70c14052be85a981eefb655762719b23ee9ad52cd9056c3e73d3db56ef627942"
+  }
+ },
+ "edits": [
+  {
+   "commit_subject": "Excitations: make the research Davidson schedule and D-dependent kinetic nodes the defaults",
+   "change": "defaults and documentation: research Davidson schedule and default_kinetic_nodes(D); made after the final2 runs, whose command lines gave every affected option explicitly",
+   "replaced": {
+    "eigsolve.py": {
+     "before": "55483d3e44144a31f8e4a5e9887663aecbd1ab75f957097b606f38ea0eff333f",
+     "after": "e1ff6b188afc62bc80faeb80b7df8387f86e9575a9593474074e5a5e47e52d5d"
+    },
+    "cli.py": {
+     "before": "70c14052be85a981eefb655762719b23ee9ad52cd9056c3e73d3db56ef627942",
+     "after": "af241da3c3fe3be51b7b04dbab4283a2e3ad45e9132469ead9b3681757e03ec3"
+    }
+   }
+  },
+  {
+   "commit_subject": "Turn gpu/ into the rcmps_gpu package",
+   "change": "flat sibling imports become package-relative ('imports'); 'hunks': the sys.path lines of cli.py go, fused.py takes the Chebyshev table from rcmps_gpu.optimizer.runtime.jax_source instead of loading it by path, cli.py also hashes that table, and docstrings name cli.py, gpu/README.md and the package instead of research paths",
+   "imports": {
+    "coordinates.py": [
+     [
+      21,
+      "from states import SolverFailure, State, adj, excitation_parity, make_state",
+      "from .states import SolverFailure, State, adj, excitation_parity, make_state"
+     ],
+     [
+      22,
+      "from states import parity_error as state_parity_error",
+      "from .states import parity_error as state_parity_error"
+     ]
+    ],
+    "davidson.py": [
+     [
+      18,
+      "from states import SolverFailure",
+      "from .states import SolverFailure"
+     ]
+    ],
+    "scaled.py": [
+     [
+      46,
+      "from states import SolverFailure, adj",
+      "from .states import SolverFailure, adj"
+     ]
+    ],
+    "kinetic.py": [
+     [
+      23,
+      "from models import is_quadratic, kinetic_grid",
+      "from .models import is_quadratic, kinetic_grid"
+     ],
+     [
+      24,
+      "from scaled import lmul, rmul, stack",
+      "from .scaled import lmul, rmul, stack"
+     ],
+     [
+      25,
+      "from states import adj",
+      "from .states import adj"
+     ]
+    ],
+    "potential.py": [
+     [
+      24,
+      "from kinetic import Boundary",
+      "from .kinetic import Boundary"
+     ],
+     [
+      25,
+      "from models import quadrature, transformed_source",
+      "from .models import quadrature, transformed_source"
+     ],
+     [
+      26,
+      "from scaled import lmul, rmul",
+      "from .scaled import lmul, rmul"
+     ],
+     [
+      27,
+      "from states import SolverFailure, adj",
+      "from .states import SolverFailure, adj"
+     ]
+    ],
+    "ode.py": [
+     [
+      20,
+      "from models import transformed_source",
+      "from .models import transformed_source"
+     ],
+     [
+      21,
+      "from states import SolverFailure",
+      "from .states import SolverFailure"
+     ]
+    ],
+    "hamiltonian.py": [
+     [
+      15,
+      "from kinetic import KineticAction, TangentFrame, finish_boundary, kinetic_terms",
+      "from .kinetic import KineticAction, TangentFrame, finish_boundary, kinetic_terms"
+     ],
+     [
+      16,
+      "from potential import PotentialAction, integrate_scipy",
+      "from .potential import PotentialAction, integrate_scipy"
+     ],
+     [
+      17,
+      "from scaled import stack",
+      "from .scaled import stack"
+     ],
+     [
+      18,
+      "from states import SolverFailure",
+      "from .states import SolverFailure"
+     ]
+    ],
+    "bilinear.py": [
+     [
+      31,
+      "from models import kinetic_grid, transformed_source",
+      "from .models import kinetic_grid, transformed_source"
+     ],
+     [
+      32,
+      "from scaled import lmul, rmul",
+      "from .scaled import lmul, rmul"
+     ],
+     [
+      33,
+      "from states import SolverFailure, adj",
+      "from .states import SolverFailure, adj"
+     ]
+    ],
+    "bilinear_fused.py": [
+     [
+      12,
+      "from bilinear import BilinearElement",
+      "from .bilinear import BilinearElement"
+     ],
+     [
+      13,
+      "from packed_pair import diagonal_observable",
+      "from .packed_pair import diagonal_observable"
+     ]
+    ],
+    "packed.py": [
+     [
+      49,
+      "from models import monomial_spec",
+      "from .models import monomial_spec"
+     ],
+     [
+      50,
+      "from potential import ActionSystem",
+      "from .potential import ActionSystem"
+     ],
+     [
+      51,
+      "from states import adj",
+      "from .states import adj"
+     ]
+    ],
+    "packed_pair.py": [
+     [
+      28,
+      "from models import monomial_spec",
+      "from .models import monomial_spec"
+     ],
+     [
+      29,
+      "from packed import DG, OFF, SECTORS, Block, Operand, Term, _Matrix, has_class",
+      "from .packed import DG, OFF, SECTORS, Block, Operand, Term, _Matrix, has_class"
+     ],
+     [
+      30,
+      "from states import SolverFailure, adj",
+      "from .states import SolverFailure, adj"
+     ]
+    ],
+    "fused.py": [
+     [
+      39,
+      "from states import SolverFailure",
+      "from .states import SolverFailure"
+     ]
+    ],
+    "eigsolve.py": [
+     [
+      56,
+      "from coordinates import make_coordinates",
+      "from .coordinates import make_coordinates"
+     ],
+     [
+      57,
+      "from davidson import DavidsonOptions, check_davidson, davidson",
+      "from .davidson import DavidsonOptions, check_davidson, davidson"
+     ],
+     [
+      58,
+      "from hamiltonian import HamiltonianAction",
+      "from .hamiltonian import HamiltonianAction"
+     ],
+     [
+      59,
+      "from kinetic import KineticAction, TangentFrame",
+      "from .kinetic import KineticAction, TangentFrame"
+     ],
+     [
+      60,
+      "from models import default_terms, quadrature",
+      "from .models import default_terms, quadrature"
+     ],
+     [
+      61,
+      "from ode import integrate_host",
+      "from .ode import integrate_host"
+     ],
+     [
+      62,
+      "from scaled import ScaledState, rmul, stack",
+      "from .scaled import ScaledState, rmul, stack"
+     ],
+     [
+      63,
+      "from states import IntegratorParameters, SolverFailure, adj",
+      "from .states import IntegratorParameters, SolverFailure, adj"
+     ],
+     [
+      521,
+      "        from bilinear import BilinearElement as bilinear_element  # independent route: validation only",
+      "        from .bilinear import BilinearElement as bilinear_element  # independent route: validation only"
+     ]
+    ],
+    "cli.py": [
+     [
+      63,
+      "import eigsolve  # noqa: E402",
+      "from . import eigsolve  # noqa: E402"
+     ],
+     [
+      64,
+      "import models  # noqa: E402",
+      "from . import models  # noqa: E402"
+     ],
+     [
+      65,
+      "import ode  # noqa: E402",
+      "from . import ode  # noqa: E402"
+     ],
+     [
+      66,
+      "import states  # noqa: E402",
+      "from . import states  # noqa: E402"
+     ],
+     [
+      67,
+      "from davidson import check_davidson  # noqa: E402",
+      "from .davidson import check_davidson  # noqa: E402"
+     ],
+     [
+      237,
+      "            import fused",
+      "            from . import fused"
+     ],
+     [
+      238,
+      "            import packed",
+      "            from . import packed"
+     ],
+     [
+      242,
+      "                import bilinear_fused",
+      "                from . import bilinear_fused"
+     ]
+    ]
+   },
+   "hunks": {
+    "states.py": [
+     [
+      221,
+      [
+       "    complex128 R.bin, K.bin, rho.bin and metadata.toml (research/gpu_d64 convention).\"\"\""
+      ],
+      [
+       "    complex128 R.bin, K.bin, rho.bin and metadata.toml (convention of rcmps_gpu.optimizer).\"\"\""
+      ]
+     ]
+    ],
+    "ode.py": [
+     [
+      7,
+      [
+       "device controller (research/gpu_d64/generic_gpu/runtime), which follow SciPy's"
+      ],
+      [
+       "device controller (rcmps_gpu.optimizer.runtime), which follow SciPy's"
+      ]
+     ]
+    ],
+    "fused.py": [
+     [
+      7,
+      [
+       "GPU optimizer's persistent trajectory kernel (research/gpu_d64/generic_gpu/runtime:"
+      ],
+      [
+       "GPU optimizer's persistent trajectory kernel (rcmps_gpu.optimizer.runtime:"
+      ]
+     ],
+     [
+      38,
+      [],
+      [
+       "from ..optimizer.runtime import jax_source"
+      ]
+     ],
+     [
+      41,
+      [
+       "RUNTIME = Path(__file__).resolve().parent.parent / \"generic_gpu\" / \"runtime\""
+      ],
+      []
+     ],
+     [
+      52,
+      [
+       "    spec = importlib.util.spec_from_file_location(\"rcmps_jax_source\", RUNTIME / \"jax_source.py\")",
+       "    module = importlib.util.module_from_spec(spec)",
+       "    spec.loader.exec_module(module)",
+       "    return module"
+      ],
+      [
+       "    return jax_source"
+      ]
+     ]
+    ],
+    "eigsolve.py": [
+     [
+      34,
+      [
+       "restarts: Julia's retain 12 wherever Julia accepts it), which run.py uses by default;"
+      ],
+      [
+       "restarts: Julia's retain 12 wherever Julia accepts it), which cli.py uses by default;"
+      ]
+     ],
+     [
+      113,
+      [
+       "    for a sector of dimension n, and the default of run.py: maxspace = min(160, n), thick"
+      ],
+      [
+       "    for a sector of dimension n, and the default of cli.py: maxspace = min(160, n), thick"
+      ]
+     ],
+     [
+      758,
+      [
+       "    nev) gives the schedule of the A100 mass and sector runs and of run.py. `solver_tol` is"
+      ],
+      [
+       "    nev) gives the schedule of the A100 mass and sector runs and of cli.py. `solver_tol` is"
+      ]
+     ]
+    ],
+    "cli.py": [
+     [
+      3,
+      [
+       "    python run.py STATE --output DIR [--momentum 0.0] [--nev 1] [--sector auto] [--backend fused]"
+      ],
+      [
+       "    python -m rcmps_gpu.excitations STATE --output DIR [--momentum 0.0] [--nev 1] [--sector auto] [--backend fused]"
+      ]
+     ],
+     [
+      47,
+      [
+       "resolvent part of the action; README, \"Kinetic nodes at large D\"). An explicit value below"
+      ],
+      [
+       "resolvent part of the action; gpu/README.md, \"Kinetic nodes at large D\"). An explicit value below"
+      ]
+     ],
+     [
+      57,
+      [
+       "import sys"
+      ],
+      []
+     ],
+     [
+      63,
+      [
+       "sys.path.insert(0, str(HERE))"
+      ],
+      []
+     ],
+     [
+      71,
+      [
+       "           \"eigsolve.py\", \"run.py\")",
+       "MEASURED_D = 128   # largest D at which kinetic node counts were measured (README)"
+      ],
+      [
+       "           \"eigsolve.py\", \"cli.py\")",
+       "SHARED_SOURCES = (\"optimizer/runtime/jax_source.py\",)   # relative to the rcmps_gpu package",
+       "MEASURED_D = 128   # largest D at which kinetic node counts were measured (gpu/README.md)"
+      ]
+     ],
+     [
+      183,
+      [
+       "                        f\"(README, 'Kinetic nodes at large D')\")"
+      ],
+      [
+       "                        f\"(gpu/README.md, 'Kinetic nodes at large D')\")"
+      ]
+     ],
+     [
+      261,
+      [
+       "                    source_sha256={name: hashlib.sha256((HERE / name).read_bytes()).hexdigest() for name in SOURCES})"
+      ],
+      [
+       "                    source_sha256={**{name: hashlib.sha256((HERE / name).read_bytes()).hexdigest() for name in SOURCES},",
+       "                                   **{name: hashlib.sha256((HERE.parent / name).read_bytes()).hexdigest()",
+       "                                      for name in SHARED_SOURCES}})"
+      ]
+     ]
+    ]
+   }
+  },
+  {
+   "commit_subject": "Record the provenance of the excitation sources",
+   "change": "cli.py hashes the package modules on the import path and records source_provenance()",
+   "hunks": {
+    "cli.py": [
+     [
+      63,
+      [],
+      [
+       "from .. import provenance  # noqa: E402"
+      ]
+     ],
+     [
+      73,
+      [
+       "SHARED_SOURCES = (\"optimizer/runtime/jax_source.py\",)   # relative to the rcmps_gpu package"
+      ],
+      [
+       "# The other files that run with them, relative to the rcmps_gpu package: the kernel's",
+       "# coefficient table, and the package modules on the import path.",
+       "SHARED_SOURCES = (\"optimizer/runtime/jax_source.py\", \"__init__.py\", \"provenance.py\", \"excitations/__init__.py\",",
+       "                  \"excitations/__main__.py\", \"excitations/provenance.json\", \"optimizer/__init__.py\",",
+       "                  \"optimizer/runtime/__init__.py\")",
+       "# sha256 of json.dumps(table, indent=2, sort_keys=True) + newline for the table",
+       "# settings.source_sha256 of the A100 final2 result.json files (keyed run.py for cli.py),",
+       "# held by provenance.json as qualified.source_sha256.",
+       "QUALIFIED_SOURCES_SHA256 = \"68c84931cca9aad270078af8e4a46ef7e8c4b680673a80b2fc2080429d5baa35\""
+      ]
+     ],
+     [
+      103,
+      [],
+      [
+       "",
+       "",
+       "def source_provenance():",
+       "    \"\"\"Whether SOURCES are the A100-qualified bytes with the edits recorded in provenance.json",
+       "    reverted; result.json records the answer (an unverified source is logged, not refused).\"\"\"",
+       "    raw = (HERE / \"provenance.json\").read_bytes()",
+       "    record = json.loads(raw)",
+       "    qualified = record[\"qualified\"]",
+       "    result = dict(qualified_runs=qualified[\"runs\"], provenance_sha256=hashlib.sha256(raw).hexdigest(),",
+       "                  edits=[entry[\"commit_subject\"] for entry in record[\"edits\"]])",
+       "    try:",
+       "        table = qualified[\"source_sha256\"]",
+       "        if hashlib.sha256((json.dumps(table, indent=2, sort_keys=True) + \"\\n\").encode()).hexdigest() \\",
+       "                != QUALIFIED_SOURCES_SHA256:",
+       "            raise ValueError(\"provenance.json: the table of qualified sources changed\")",
+       "        imported = {qualified[\"renamed\"].get(name, name): digest for name, digest in table.items()}",
+       "        result.update(verified=True, edited_files=provenance.verify(HERE, imported, record[\"edits\"], SOURCES))",
+       "    except (ValueError, KeyError) as error:",
+       "        result.update(verified=False, error=str(error))",
+       "    return result"
+      ]
+     ],
+     [
+      292,
+      [
+       "                                      for name in SHARED_SOURCES}})"
+      ],
+      [
+       "                                      for name in SHARED_SOURCES}},",
+       "                    source_provenance=source_provenance())"
+      ]
+     ],
+     [
+      295,
+      [],
+      [
+       "    if not settings[\"source_provenance\"][\"verified\"]:",
+       "        log(f\"warning: the sources are not the qualified ones with their recorded edits: \"",
+       "            f\"{settings['source_provenance']['error']}\")"
+      ]
+     ]
+    ]
+   }
+  }
+ ]
+}
