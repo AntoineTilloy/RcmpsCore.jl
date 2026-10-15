@@ -6,7 +6,9 @@ RunAll       qualification/run_all.sh: shell syntax, and every option it gives a
              interpreter, the excitation solves at D = 64 are recorded as failed in
              status.tsv, and in the exit status, unless their level is accepted.
 Optimizer    qualification/optimizer/gpu_optimizer_check.py starts every rcmps-gpu-optimize
-             run with its own model, integration, seed, device and watchdog settings.
+             run with its own model, integration, seed, device and watchdog settings; its
+             trajectory stage reports a grid the device cannot hold as refused, and fails on
+             any other error.
 Excitations  the scripts of qualification/excitations that run_all.sh calls, run as written
              on a stand-in device (qualification_on_cpu.py: NumPy arrays, a fused kernel
              whose launch is the host integrator): their exit status is 0 when every check
@@ -16,7 +18,9 @@ Excitations  the scripts of qualification/excitations that run_all.sh calls, run
 """
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -29,8 +33,11 @@ from types import SimpleNamespace
 import unittest
 from unittest import mock
 
+import numpy as np
+
 import rcmps_gpu
 from rcmps_gpu.optimizer import cli
+from rcmps_gpu.optimizer.runtime import persistent_trajectory_backend
 
 TESTS = Path(__file__).resolve().parent
 QUALIFICATION = TESTS.parent / "qualification"
@@ -118,17 +125,45 @@ class RunAll(unittest.TestCase):
                 self.assertIn(f'"accepted": {accepted}', log)
 
 
+def optimizer_check():
+    """qualification/optimizer/gpu_optimizer_check.py as a module (a fresh one: FAILED is empty)."""
+    spec = importlib.util.spec_from_file_location("gpu_optimizer_check",
+                                                  QUALIFICATION / "optimizer" / "gpu_optimizer_check.py")
+    check = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(check)
+    return check
+
+
 @unittest.skipUnless(RUN_ALL.is_file(), "qualification/ is not here")
 class Optimizer(unittest.TestCase):
+    def test_a_grid_the_device_cannot_hold_is_refused_in_the_trajectory_stage(self):
+        """stage_trajectory at D = 8 on a stand-in compute capability 7.0 (NumPy for CuPy)
+        whose PersistentTrajectoryDOP853 raises: the residency error of the backend at the
+        last register cap is "refused" with ok, a compilation error fails (ok false, in
+        FAILED)."""
+        for error, refused in (("unsafe cooperative trajectory grid 11>10", True),
+                               ("CompileException: stand-in compilation failure", False)):
+            check = optimizer_check()
+
+            def solver(*arguments, **options):
+                raise RuntimeError(error)
+
+            with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()) as out, \
+                    mock.patch.object(persistent_trajectory_backend, "PersistentTrajectoryDOP853", solver):
+                args = check.parser().parse_args(["--output", tmp])
+                (Path(tmp) / "trajectory").mkdir()      # as main() does
+                check.stage_trajectory(np, args, (7, 0), 8, ["auto"])
+            row = json.loads(out.getvalue().splitlines()[-1])
+            self.assertEqual((row["stage"], row["D"], row["tiles"], row["ok"]), ("trajectory", 8, "scalar", refused))
+            self.assertIn(error, row["refused" if refused else "error"])
+            self.assertEqual(len(check.FAILED), 0 if refused else 1)
+
     def test_runs_get_the_settings_of_the_check(self):
         """The command of a compile or run stage, as rcmps-gpu-optimize parses it, has the
         coupling, window, quadrature, tolerances, seed, device and watchdog of the check
         (the trajectory stage uses the same), with the defaults of the command line when
         none is given."""
-        spec = importlib.util.spec_from_file_location("gpu_optimizer_check",
-                                                      QUALIFICATION / "optimizer" / "gpu_optimizer_check.py")
-        check = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(check)
+        check = optimizer_check()
         given = ["--coupling", "1.25", "--window", "20.5", "--quadrature", "256", "--atol", "3e-14", "--rtol", "2e-13",
                  "--seed", "7", "--device", "1", "--max-device-seconds", "120"]
         for options in ([], given):

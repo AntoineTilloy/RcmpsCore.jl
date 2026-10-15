@@ -16,7 +16,9 @@ scalar; auto is what the device selects: mma from compute capability 8.0 on, sca
   trajectory  PersistentTrajectoryDOP853, the kernel of a run, on the random Z2 state of the
               optimizer (seed --seed) for each tile path: steps and samples of two launches
               (determinism), bitwise comparison of the paths, and at D <= 8 the host oracle
-              integrate_trajectory_numpy; device time per trajectory.
+              integrate_trajectory_numpy; device time per trajectory. A grid that is not
+              resident at any register cap of the worker is a result ("refused"), as in the
+              compile stage, not a failure.
   compile     rcmps-gpu-optimize --compile-only: the worker's tile selection, compilation,
               cooperative residency check and PTX audit. A size the device cannot hold is a
               result ("resident": false, with the worker's message), not a failure.
@@ -224,7 +226,8 @@ def stage_trajectory(cp, args, capability, D, paths):
             # Rounding differences (contraction, summation order) can move a step; a bug cannot stay below 1e-9.
             row["ok"] = row["repeat_bitwise"] and row.get("oracle_relative_difference", 0.0) < 1e-9
         except Exception as error:      # report and continue with the next path
-            row.update(error=f"{type(error).__name__}: {error}"[:2000], ok=False)
+            message = f"{type(error).__name__}: {error}"[:2000]
+            row.update(dict(refused=message, ok=True) if refused(message) else dict(error=message, ok=False))
         emit(**row)
     if len(samples) == 2:
         (a, sa), (b, sb) = samples["mma"], samples["scalar"]
@@ -260,12 +263,20 @@ def compile_summary(compiled):
                                                 "kernel_run_time_limit")} | dict(PTX=compiled.get("PTX"))
 
 
+# The errors of a size this device cannot hold or a tile path it cannot run: the worker's
+# (status.json) and those of PersistentTrajectoryDOP853 and configure_shared_memory.
+REFUSALS = ("resident blocks", "unsafe cooperative trajectory grid", "--tiles mma needs", "exceeds device limit",
+            "thread-block limit")
+
+
+def refused(message):
+    """`message` if it is a refusal (REFUSALS), else None."""
+    return message if any(text in message for text in REFUSALS) else None
+
+
 def refusal(status):
     """The worker's error if it refused the size or the tile path for this device, else None."""
-    error = (status or {}).get("error", "")
-    if "resident blocks" in error or "--tiles mma needs" in error or "exceeds device limit" in error:
-        return error
-    return None
+    return refused((status or {}).get("error", ""))
 
 
 def stage_compile(args, D, paths):
