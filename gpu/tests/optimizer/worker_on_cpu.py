@@ -4,22 +4,28 @@
 
 Child process of tests/optimizer/test_worker_cpu.py (it installs a module named cupy and
 rebinds runtime functions, so it must not run inside the test interpreter). RCMPS_GPU_INIT is
-the rcmps_gpu/__init__.py the parent imported; the child must import the same copy. The
+the rcmps_gpu/__init__.py the parent imported; the child must import the same copy.
+RCMPS_CPU_COMPUTE_CAPABILITY (default 8.0) is the compute capability the stand-in device
+reports, which selects the tile product (tensor cores from 8.0 on, scalar tiles below). The
 command line runs as written: cli.main plans the run and writes plan.json, and worker.main,
 called in this process instead of a child interpreter, compiles, qualifies the first
 evaluation against the CuPy oracle, optimizes through trajectory_sweep_driver and validates
 through validate_trajectory_sweep. Only these leaves, which need a GPU, are replaced:
   * cupy: a NumPy-backed module (streams, events and devices do nothing; the device reports
-    SM 8.0), with the four ElementwiseKernels of ode_backend emulated in NumPy;
-  * cupy.RawKernel: no compilation and no launch; persistent_trajectory_backend.
-    trajectory_ptx_report: no NVRTC;
+    the compute capability above), with the four ElementwiseKernels of ode_backend emulated
+    in NumPy;
+  * cupy.RawKernel: no compilation and no launch, but source with the FP64 tensor-core
+    instruction is refused below compute capability 8.0, as ptxas refuses it;
+    persistent_trajectory_backend.trajectory_ptx_report: no NVRTC;
   * persistent_trajectory_overlap.PersistentTrajectoryDOP853, the CUDA trajectory kernel: its
-    CPU oracle persistent_trajectory_backend.integrate_trajectory_numpy (D <= 8);
+    CPU oracle persistent_trajectory_backend.integrate_trajectory_numpy (D <= 8), which
+    refuses the tensor-core tiles below 8.0 as the kernel does and records the tiles;
   * the GPU kinetic solvers (kinetic_backend.kinetic_raw with the GPU Arnoldi and projection,
     cooperative_arnoldi.kinetic_raw_cooperative): kinetic_backend.kinetic_raw on the CPU.
 The exit status is the worker's (1, with the traceback on stderr, if it raised).
 """
 import itertools
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -84,9 +90,12 @@ class Event:
         pass
 
 
+CAPABILITY = tuple(int(part) for part in os.environ.get("RCMPS_CPU_COMPUTE_CAPABILITY", "8.0").split("."))
+
+
 class Device:
     def __init__(self, id=0):
-        self.id, self.compute_capability = id, "80"
+        self.id, self.compute_capability = id, "%d%d" % CAPABILITY
 
     def __enter__(self):
         return self
@@ -95,7 +104,8 @@ class Device:
         pass
 
 
-PROPERTIES = dict(name=b"CPU stand-in", major=8, minor=0, cooperativeLaunch=True, sharedMemPerBlockOptin=166912,
+PROPERTIES = dict(name=b"CPU stand-in", major=CAPABILITY[0], minor=CAPABILITY[1], cooperativeLaunch=True,
+                  sharedMemPerBlockOptin=166912,
                   sharedMemPerBlock=49152, maxThreadsPerBlock=1024, multiProcessorCount=108,
                   totalGlobalMem=1 << 34, clockRate=1410000)
 cp.cuda = SimpleNamespace(
@@ -111,6 +121,8 @@ class RawKernel:
     def __init__(self, code, name, options=(), enable_cooperative_groups=False):
         from rcmps_gpu.optimizer.runtime.generic_layout import dynamic_shared_bytes, packed_geometry
         d = int(re.search(r"#define PACKED_D (\d+)\n", code).group(1))
+        if "mma.sync" in code and CAPABILITY < (8, 0):
+            raise RuntimeError("worker_on_cpu.py: ptxas refuses mma.sync f64 below sm_80")
         self.code, self.name, self.options = code, name, options
         self.shared_size_bytes = 0 if dynamic_shared_bytes(d) else packed_geometry(d)["shared_bytes"]
         self.max_dynamic_shared_size_bytes, self.max_threads_per_block = 0, 1024
@@ -196,6 +208,7 @@ def kinetic_on_cpu(q, r, rho, nodes=128, *, xp=None, tolerance=1e-12, maxdim=102
 kinetic_backend.kinetic_raw = kinetic_on_cpu   # before overlap_benchmark binds it
 from rcmps_gpu.optimizer.runtime import cooperative_arnoldi  # noqa: E402
 cooperative_arnoldi.kinetic_raw_cooperative = kinetic_on_cpu
+from rcmps_gpu.optimizer.runtime import generic_layout  # noqa: E402
 from rcmps_gpu.optimizer.runtime import ode_backend  # noqa: E402
 from rcmps_gpu.optimizer.runtime import persistent_trajectory_backend  # noqa: E402
 from rcmps_gpu.optimizer.runtime import persistent_trajectory_overlap  # noqa: E402
@@ -204,21 +217,27 @@ if persistent_trajectory_overlap.ORIGINAL_KINETIC is not kinetic_on_cpu:
 
 
 class TrajectoryOnCPU:
-    def __init__(self, rhs, points, *, atol, rtol, max_steps, max_device_seconds, initial_step=None):
+    def __init__(self, rhs, points, *, atol, rtol, max_steps, max_device_seconds, initial_step=None, tiles):
+        if tiles not in ("mma", "scalar"):
+            raise ValueError(f"worker_on_cpu.py: the trajectory kernel takes resolved tiles, not {tiles!r}")
+        self.tiles = generic_layout.select_tiles(tiles, *CAPABILITY)
         self.host = ode_backend._PackedZ2QuarticRHS(rhs.q, rhs.r, rhs.rho, np)
         self.points, self.controls = points, dict(atol=atol, rtol=rtol, max_steps=max_steps)
 
     def run(self):
         samples, stats = persistent_trajectory_backend.integrate_trajectory_numpy(
             self.host, self.points, **self.controls)
-        return samples, dict(stats, cpu_stand_in=True)
+        # The kernel records its tiles and the device in the occupancy of its statistics.
+        return samples, dict(stats, cpu_stand_in=True,
+                             occupancy=dict(tiles=self.tiles, compute_capability=list(CAPABILITY)))
 
     def close(self):
         pass
 
 
 persistent_trajectory_overlap.PersistentTrajectoryDOP853 = TrajectoryOnCPU
-persistent_trajectory_backend.trajectory_ptx_report = lambda d, cp, directory=None: dict(cpu_stand_in=True)
+persistent_trajectory_backend.trajectory_ptx_report = lambda d, cp, directory=None, tiles="mma": dict(
+    cpu_stand_in=True, tiles=tiles)
 
 # ---------------------------------------------------------------- the command line
 from rcmps_gpu.optimizer import cli, worker  # noqa: E402

@@ -24,7 +24,7 @@ from .ode_backend import _PackedZ2QuarticRHS, _packed_z2_pullback, quadrature
 
 SUPPORTED_PACKED = tuple(range(1, 257))
 from .generic_layout import (packed_geometry, dynamic_shared_bytes,
-    compilation_options, configure_shared_memory)
+    compilation_options, configure_shared_memory, TILES, select_tiles)
 TIMEOUT_STATUS = 6
 
 
@@ -153,9 +153,43 @@ __device__ void save_dense(int element,const double2* y,const double2* proposed,
 '''
 
 
-def trajectory_source(d):
+# The tile product mma() of the RHS. MMA_TILE is the native FP64 tensor-core instruction of
+# the validated source (compute capability 8.0 or later). SCALAR_TILE, the '#else' branch of
+# excitations/fused.py, computes the same m8n8k4 fragments with warp shuffles: each
+# accumulator is a chain of FP64 FMAs in k order (any GPU with cooperative launch). Both
+# need all 32 lanes of a warp, which every call in the block-uniform if(!scalar) of the RHS has.
+MMA_TILE = '''__device__ __forceinline__ void mma(double a,double b,double &c0,double &c1){
+    asm volatile("mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64 "
+                 "{%0,%1}, {%2}, {%3}, {%0,%1};"
+                 : "+d"(c0),"+d"(c1):"d"(a),"d"(b));
+}
+'''
+SCALAR_TILE = r'''// Scalar tile product with the same fragment layout (any cooperative-launch GPU).
+__device__ __forceinline__ void mma(double a,double b,double &c0,double &c1){
+    const int lane=threadIdx.x&31,rl=lane>>2,cl=2*(lane&3);
+    #pragma unroll
+    for(int q=0;q<4;++q){
+        double av=__shfl_sync(0xffffffffu,a,(rl<<2)|q);
+        double b0=__shfl_sync(0xffffffffu,b,(cl<<2)|q),b1=__shfl_sync(0xffffffffu,b,((cl+1)<<2)|q);
+        c0+=av*b0;c1+=av*b1;
+    }
+}
+'''
+MATRIX_ARITHMETIC = dict(mma='mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64', scalar='scalar warp-shuffle tiles')
+
+
+def trajectory_source(d, tiles="mma"):
+    """CUDA source of the trajectory kernel for packed dimension d. tiles="mma" is the
+    validated source, unchanged (tests/optimizer/golden_cuda.json); "scalar" differs only
+    by the definition of mma()."""
+    if tiles not in TILES:
+        raise ValueError(f"tiles must be one of {', '.join(TILES)}, not {tiles!r}")
     info = geometry(d)
     header, rhs, norm = _validated_parts(d)
+    if tiles == "scalar":
+        if header.count(MMA_TILE) != 1:
+            raise RuntimeError("trajectory tile anchor changed")
+        header = header.replace(MMA_TILE, SCALAR_TILE, 1)
     definitions = (f"#define PACKED_D {d}\n#define ROW_WARPS {info['warps']}\n"
                    f"#define SOURCE_MAXIMUM {MAXIMUM:.17g}\n#define SOURCE_SEGMENTS {SEGMENTS}\n"
                    f"#define SOURCE_DEGREE {DEGREE}\n")
@@ -278,7 +312,7 @@ def _controls(points, atol, rtol, initial_step, max_steps, max_device_seconds):
 class PersistentTrajectoryDOP853:
     """Private replayable trajectory buffers; one cooperative launch per run."""
     def __init__(self, rhs, points, *, atol=1e-13, rtol=1e-12, initial_step=None,
-                 max_steps=1_000_000, max_device_seconds=30.):
+                 max_steps=1_000_000, max_device_seconds=30., tiles="mma"):
         cp = rhs.xp
         if cp.__name__ != "cupy":
             raise ValueError("persistent trajectory requires CuPy")
@@ -296,14 +330,17 @@ class PersistentTrajectoryDOP853:
         self.atol,self.rtol,self.max_steps = float(atol),float(rtol),int(max_steps)
         self.max_device_seconds = float(max_device_seconds)
         props = cp.cuda.runtime.getDeviceProperties(cp.cuda.Device().id)
-        if int(props['major'])<8 or not props.get('cooperativeLaunch',False):
-            raise ValueError("native FP64 MMA and cooperative launch require SM80+ support")
+        if tiles not in TILES:raise ValueError(f"tiles must be one of {', '.join(TILES)}, not {tiles!r}")
+        if not props.get('cooperativeLaunch',False):
+            raise ValueError("the one-kernel trajectory requires cooperative launch")
+        self.compute_capability=(int(props['major']),int(props['minor']))
+        self.tiles=select_tiles(tiles,*self.compute_capability)   # refuses mma below 8.0
         clock_rate = int(props['clockRate'])  # CUDA property is in kHz.
         self.maximum_ticks = int(math.ceil(self.max_device_seconds*1000*clock_rate))
-        self.kernel=cp.RawKernel(trajectory_source(rhs.d),'persistent_trajectory',
+        self.kernel=cp.RawKernel(trajectory_source(rhs.d,self.tiles),'persistent_trajectory',
             options=compilation_options(rhs.d),enable_cooperative_groups=True)
         self.kernel.compile()
-        self.dynamic_shared_bytes=configure_shared_memory(self.kernel,props,self.info)
+        self.dynamic_shared_bytes=configure_shared_memory(self.kernel,props,self.info,self.tiles)
         resident=int(cp.cuda.driver.occupancyMaxActiveBlocksPerMultiprocessor(
             self.kernel.kernel.ptr,self.info['threads'],self.dynamic_shared_bytes))
         sms=int(props['multiProcessorCount']);capacity=resident*sms
@@ -314,7 +351,8 @@ class PersistentTrajectoryDOP853:
             actual_shared_bytes=int(self.kernel.shared_size_bytes)+self.dynamic_shared_bytes,cooperative_capacity_verified=True,
             static_shared_bytes=int(self.kernel.shared_size_bytes),dynamic_shared_bytes=self.dynamic_shared_bytes,
             requested_register_cap=64 if rhs.d>64 else None,compiler_options=list(compilation_options(rhs.d)),
-            matrix_arithmetic='mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64',fast_math=False)
+            matrix_arithmetic=MATRIX_ARITHMETIC[self.tiles],tiles=self.tiles,
+            compute_capability=list(self.compute_capability),fast_math=False)
         if self.occupancy['actual_shared_bytes']!=self.info['shared_bytes']:
             raise RuntimeError("unexpected trajectory shared-memory layout")
         self.y,self.f,self.stage,self.proposed,self.base = [cp.empty_like(rhs.initial) for _ in range(5)]
@@ -365,7 +403,8 @@ class PersistentTrajectoryDOP853:
 
 
 def evaluate_quartic_persistent_trajectory(R,Q,rho,g=1.,*,xp,half_window=30.,n_quad=512,
-        atol=1e-13,rtol=1e-12,initial_step=None,max_steps=1_000_000,max_device_seconds=30.,return_samples=False):
+        atol=1e-13,rtol=1e-12,initial_step=None,max_steps=1_000_000,max_device_seconds=30.,return_samples=False,
+        tiles='mma'):
     start=time.perf_counter()
     if xp.__name__!='cupy':raise ValueError('persistent trajectory evaluator is GPU-only')
     if any(x.dtype!=xp.complex128 for x in (R,Q,rho)):raise TypeError('input matrices require complex128')
@@ -376,7 +415,7 @@ def evaluate_quartic_persistent_trajectory(R,Q,rho,g=1.,*,xp,half_window=30.,n_q
     rhs=_PackedZ2QuarticRHS(q,r,rho,xp)
     points,weights=quadrature(half_window,n_quad)
     with PersistentTrajectoryDOP853(rhs,np.r_[points,math.sqrt(half_window)],atol=atol,rtol=rtol,
-            initial_step=initial_step,max_steps=max_steps,max_device_seconds=max_device_seconds) as solver:
+            initial_step=initial_step,max_steps=max_steps,max_device_seconds=max_device_seconds,tiles=tiles) as solver:
         samples,stats=solver.run();begin=time.perf_counter()
         ((value,covector,environment),)=_packed_z2_pullback(q,r,rhs,samples,points,weights)
         xp.cuda.get_current_stream().synchronize()
@@ -387,8 +426,35 @@ def evaluate_quartic_persistent_trajectory(R,Q,rho,g=1.,*,xp,half_window=30.,n_q
         return result
 
 
-def trajectory_ptx_report(d,cp,directory=None):
-    """Gated CUDA NVRTC audit of native FP64 MMA and scalar instruction types."""
+def audit_trajectory_ptx(ptx,tiles):
+    """Instruction audit of the PTX of trajectory_source(d, tiles); RuntimeError if it fails.
+    Both paths: no FP32 arithmetic. mma: FP64 mma.sync instructions, for a target of compute
+    capability 8.0 or later (NVRTC emits them for earlier targets too; only ptxas refuses).
+    scalar: no mma instruction of any type, and the warp shuffles and FP64 FMAs of the tile
+    product."""
+    if tiles not in TILES:raise ValueError(f"tiles must be one of {', '.join(TILES)}, not {tiles!r}")
+    target=re.search(r'^\.target\s+sm_(\d+)',ptx,re.M)
+    mma=sorted(set(re.findall(r'mma\.sync[^\s;]*\.f64\.f64\.f64\.f64',ptx)))
+    any_mma=sorted(set(re.findall(r'\bw?mma\.[^\s;]*',ptx)))
+    fp32=sorted(set(re.findall(r'\b(?:add|sub|mul|fma|div|mad|sqrt|rcp|ex2|lg2)\.(?:[a-z0-9]+\.)*f32\b',ptx)))
+    shuffles=len(re.findall(r'\bshfl\.sync\.idx\.b32\b',ptx));fmas=len(re.findall(r'\bfma\.rn\.f64\b',ptx))
+    failures=[]
+    if fp32:failures.append(f'FP32 arithmetic {fp32}')
+    if target is None:failures.append('no .target directive')
+    if tiles=='mma':
+        if not mma:failures.append('no FP64 mma.sync instruction')
+        if target is not None and int(target.group(1))<80:
+            failures.append(f'mma.sync f64 for target sm_{target.group(1)} (needs compute capability 8.0)')
+    else:
+        if any_mma:failures.append(f'mma instructions {any_mma} in the scalar tile path')
+        if not shuffles or not fmas:failures.append('no warp shuffles or FP64 FMAs of the scalar tile product')
+    if failures:raise RuntimeError(f'trajectory FP64 PTX audit failed ({tiles} tiles): '+'; '.join(failures))
+    return dict(tiles=tiles,ptx_target=f'sm_{target.group(1)}',f64_mma_instructions=mma,
+                fp32_arithmetic_instructions=fp32,shfl_sync_idx_instructions=shuffles,fma_rn_f64_instructions=fmas)
+
+
+def trajectory_ptx_report(d,cp,directory=None,tiles='mma'):
+    """Gated CUDA NVRTC audit of the tile products and scalar instruction types."""
     import importlib.util
     from pathlib import Path
     from cupy.cuda import compiler
@@ -400,18 +466,15 @@ def trajectory_ptx_report(d,cp,directory=None):
     includes=tuple('-I'+str(path) for path in directories if path.is_dir())
     includes+=tuple(core._get_cccl_include_options())
     arch=cp.cuda.Device().compute_capability
-    program=compiler._NVRTCProgram(trajectory_source(d),'persistent_trajectory_audit.cu',method='ptx')
+    program=compiler._NVRTCProgram(trajectory_source(d,tiles),'persistent_trajectory_audit.cu',method='ptx')
     binary,_=program.compile(('--std=c++17','--device-c','--device-as-default-execution-space',
                              '-arch=compute_'+arch)+compilation_options(d)[1:]+includes)
     ptx=binary.decode()
-    mma=sorted(set(re.findall(r'mma\.sync[^\s;]*\.f64\.f64\.f64\.f64',ptx)))
-    fp32=sorted(set(re.findall(r'\b(?:add|sub|mul|fma|div|mad|sqrt|rcp|ex2|lg2)\.(?:[a-z0-9]+\.)*f32\b',ptx)))
-    if not mma or fp32:raise RuntimeError(f'trajectory FP64 PTX audit failed: mma={mma},fp32={fp32}')
+    audit=audit_trajectory_ptx(ptx,tiles)
     if directory:
         target=Path(directory);target.mkdir(parents=True,exist_ok=True)
-        (target/f'persistent_trajectory_d{d}.ptx').write_text(ptx)
-    return dict(f64_mma_instructions=mma,fp32_arithmetic_instructions=fp32,arch=arch,
-                controller_uses_explicit_round_to_nearest_intrinsics=True)
+        (target/(f'persistent_trajectory_d{d}.ptx' if tiles=='mma' else f'persistent_trajectory_d{d}_scalar.ptx')).write_text(ptx)
+    return dict(audit,arch=arch,controller_uses_explicit_round_to_nearest_intrinsics=True)
 
 
 def integrate_trajectory_numpy(rhs,points,*,atol=1e-13,rtol=1e-12,initial_step=None,max_steps=1_000_000):

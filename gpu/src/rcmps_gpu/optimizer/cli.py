@@ -19,7 +19,7 @@ import sys
 from .. import __version__
 from .. import provenance
 from ..io import read_portable
-from .layout import describe
+from .layout import TILE_CHOICES, describe
 
 HERE = Path(__file__).resolve().parent
 PACKAGE = HERE.parent
@@ -162,11 +162,12 @@ def prepare(args, runtime_sha256):
         coupling = read_portable(initial, arrays=False).coupling
         if not math.isfinite(coupling) or coupling < 0:
             raise ValueError("invalid initial coupling")
-    plan = dict(schema_version=3, D=args.D, coupling=coupling, seed=args.seed, package=package_identity(),
+    plan = dict(schema_version=4, D=args.D, coupling=coupling, seed=args.seed, tiles=args.tiles,
+                package=package_identity(),
                 runtime=str(RUNTIME), runtime_source_sha256=dict(runtime_sha256),
                 runtime_provenance=verify_runtime(),
                 launcher_source_sha256=launcher_source_sha256(),
-                layout=describe(args.D, controls["quadrature"]), controls=controls,
+                layout=describe(args.D, controls["quadrature"], args.tiles), controls=controls,
                 max_seconds=args.max_seconds, max_iterations=args.max_iterations,
                 gradient_target=args.gradient_target, max_device_seconds=args.max_device_seconds,
                 device=args.device, compile_only=args.compile_only,
@@ -198,6 +199,10 @@ def parser():
     p.add_argument("--max-seconds", type=float, help="optional invocation limit; no wall-time cap by default")
     p.add_argument("--gradient-target", type=float, default=1e-7)
     p.add_argument("--max-device-seconds", type=float, default=300., help="one trajectory's device watchdog, not run wall time")
+    p.add_argument("--tiles", choices=TILE_CHOICES, default="auto",
+                   help="tile product of the trajectory kernel: mma (FP64 tensor cores, compute capability >= 8.0), "
+                        "scalar (FP64 FMAs with warp shuffles, any GPU with cooperative launch), or auto (the "
+                        "default: mma from compute capability 8.0 on, scalar below)")
     for name in DEFAULTS:
         p.add_argument("--" + name.replace("_", "-"), type=int if isinstance(DEFAULTS[name], int) else float)
     return p
@@ -223,8 +228,10 @@ def main(argv=None):
         # The source generator imports NumPy/SciPy, but never CuPy or CUDA.
         code = ("import sys;from pathlib import Path;from rcmps_gpu.optimizer.runtime import persistent_trajectory_backend as t;"
                 "Path(t.__file__).resolve().parent==Path(sys.argv[1]) or sys.exit('--emit-cuda: rcmps_gpu imported from '+t.__file__);"
-                "print(t.trajectory_source(int(sys.argv[2])),end='')")
-        command, environment = child_process("-c", code, str(RUNTIME), str(args.D // 2))
+                "print(t.trajectory_source(int(sys.argv[2]),sys.argv[3]),end='')")
+        # Without a device, auto writes the tensor-core source (the golden source of the plan).
+        tiles = "scalar" if args.tiles == "scalar" else "mma"
+        command, environment = child_process("-c", code, str(RUNTIME), str(args.D // 2), tiles)
         result = subprocess.run(command, env=environment, capture_output=True, text=True)
         if result.returncode:
             lines = result.stderr.strip().splitlines()
@@ -234,6 +241,7 @@ def main(argv=None):
             stream.write(result.stdout)
         plan["emitted_cuda"] = str(args.emit_cuda.resolve())
         plan["emitted_cuda_sha256"] = digest(args.emit_cuda)
+        plan["emitted_cuda_tiles"] = tiles
     if not args.run_gpu:
         print(json.dumps(plan, indent=2, sort_keys=True, allow_nan=False))
         return 0

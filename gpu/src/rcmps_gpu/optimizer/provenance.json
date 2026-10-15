@@ -2659,6 +2659,390 @@
      ]
     ]
    }
+  },
+  {
+   "commit_subject": "Optimizer: run on GPUs without FP64 tensor cores, choosing the tile product by device",
+   "change": "portability: trajectory_source(d, tiles) with tiles \"mma\" (default; the validated source byte for byte, tests/optimizer/golden_cuda.json) or \"scalar\" (only the definition of mma() differs: SCALAR_TILE, the '#else' branch of excitations/fused.py, warp shuffles and a chain of FP64 FMAs in k order); generic_layout.select_tiles (auto: mma from compute capability 8.0 on, scalar below; mma below 8.0 refused) replaces the A100/H100 whitelist of configure_shared_memory and the SM80+ check of PersistentTrajectoryDOP853, which takes tiles and records them with the compute capability in its occupancy; describe records the request; audit_trajectory_ptx (mma: FP64 mma.sync for a target of 8.0 or later; scalar: no mma, shuffles and FP64 FMAs; both: no FP32 arithmetic) and trajectory_ptx_report(tiles); persistent_trajectory_overlap and trajectory_sweep_driver pass tiles (--tiles, recorded in trajectory_controls; a checkpoint without them ran mma; an in-place resume cannot change them)",
+   "hunks": {
+    "generic_layout.py": [
+     [
+      15,
+      [],
+      [
+       "TILES = (\"mma\", \"scalar\")",
+       "TILE_CHOICES = (\"auto\",) + TILES",
+       "",
+       "",
+       "def select_tiles(requested, major, minor):",
+       "    \"\"\"The tile product of a kernel on a device of compute capability major.minor: \"mma\",",
+       "    the native FP64 tensor-core instruction mma.sync m8n8k4 (compute capability 8.0 or",
+       "    later), or \"scalar\", the same fragment layout with warp shuffles and a chain of FP64",
+       "    FMAs (any GPU with cooperative launch). \"auto\" gives mma from 8.0 on and scalar below;",
+       "    mma below 8.0 is refused. excitations/fused.py applies the same rule.\"\"\"",
+       "    if requested not in TILE_CHOICES:",
+       "        raise ValueError(f\"tiles must be one of {', '.join(TILE_CHOICES)}, not {requested!r}\")",
+       "    native = (int(major), int(minor)) >= (8, 0)",
+       "    if requested == \"auto\":",
+       "        return \"mma\" if native else \"scalar\"",
+       "    if requested == \"mma\" and not native:",
+       "        raise ValueError(f\"--tiles mma needs FP64 tensor-core instructions (mma.sync m8n8k4 f64, compute \"",
+       "                         f\"capability 8.0 or later); this GPU is {int(major)}.{int(minor)}: use --tiles auto or scalar\")",
+       "    return requested"
+      ]
+     ],
+     [
+      63,
+      [
+       "def configure_shared_memory(kernel, props, info):"
+      ],
+      [
+       "def configure_shared_memory(kernel, props, info, tiles=\"mma\"):"
+      ]
+     ],
+     [
+      66,
+      [
+       "    if (int(props[\"major\"]), int(props[\"minor\"])) not in ((8, 0), (9, 0)):",
+       "        raise ValueError(\"this native FP64 MMA path supports A100 SM80 and H100 SM90\")"
+      ],
+      [
+       "    if tiles not in TILES:",
+       "        raise ValueError(f\"a compiled kernel has tiles {' or '.join(TILES)}, not {tiles!r}\")",
+       "    select_tiles(tiles, props[\"major\"], props[\"minor\"])"
+      ]
+     ],
+     [
+      88,
+      [
+       "def describe(D, quadrature=512):"
+      ],
+      [
+       "def describe(D, quadrature=512, tiles=\"auto\"):"
+      ]
+     ],
+     [
+      92,
+      [],
+      [
+       "    select_tiles(tiles, 8, 0)"
+      ]
+     ],
+     [
+      98,
+      [
+       "                arithmetic=\"float64 / complex128; native FP64 MMA\","
+      ],
+      [
+       "                arithmetic=\"float64 / complex128; tile products: native FP64 MMA (mma.sync m8n8k4) \"",
+       "                           \"or a scalar chain of FP64 FMAs with warp shuffles\",",
+       "                tiles_requested=tiles,",
+       "                tile_rule=\"auto: mma for compute capability >= 8.0, scalar below; mma below 8.0 is refused\","
+      ]
+     ]
+    ],
+    "persistent_trajectory_backend.py": [
+     [
+      27,
+      [
+       "    compilation_options, configure_shared_memory)"
+      ],
+      [
+       "    compilation_options, configure_shared_memory, TILES, select_tiles)"
+      ]
+     ],
+     [
+      156,
+      [
+       "def trajectory_source(d):"
+      ],
+      [
+       "# The tile product mma() of the RHS. MMA_TILE is the native FP64 tensor-core instruction of",
+       "# the validated source (compute capability 8.0 or later). SCALAR_TILE, the '#else' branch of",
+       "# excitations/fused.py, computes the same m8n8k4 fragments with warp shuffles: each",
+       "# accumulator is a chain of FP64 FMAs in k order (any GPU with cooperative launch). Both",
+       "# need all 32 lanes of a warp, which every call in the block-uniform if(!scalar) of the RHS has.",
+       "MMA_TILE = '''__device__ __forceinline__ void mma(double a,double b,double &c0,double &c1){",
+       "    asm volatile(\"mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64 \"",
+       "                 \"{%0,%1}, {%2}, {%3}, {%0,%1};\"",
+       "                 : \"+d\"(c0),\"+d\"(c1):\"d\"(a),\"d\"(b));",
+       "}",
+       "'''",
+       "SCALAR_TILE = r'''// Scalar tile product with the same fragment layout (any cooperative-launch GPU).",
+       "__device__ __forceinline__ void mma(double a,double b,double &c0,double &c1){",
+       "    const int lane=threadIdx.x&31,rl=lane>>2,cl=2*(lane&3);",
+       "    #pragma unroll",
+       "    for(int q=0;q<4;++q){",
+       "        double av=__shfl_sync(0xffffffffu,a,(rl<<2)|q);",
+       "        double b0=__shfl_sync(0xffffffffu,b,(cl<<2)|q),b1=__shfl_sync(0xffffffffu,b,((cl+1)<<2)|q);",
+       "        c0+=av*b0;c1+=av*b1;",
+       "    }",
+       "}",
+       "'''",
+       "MATRIX_ARITHMETIC = dict(mma='mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64', scalar='scalar warp-shuffle tiles')",
+       "",
+       "",
+       "def trajectory_source(d, tiles=\"mma\"):",
+       "    \"\"\"CUDA source of the trajectory kernel for packed dimension d. tiles=\"mma\" is the",
+       "    validated source, unchanged (tests/optimizer/golden_cuda.json); \"scalar\" differs only",
+       "    by the definition of mma().\"\"\"",
+       "    if tiles not in TILES:",
+       "        raise ValueError(f\"tiles must be one of {', '.join(TILES)}, not {tiles!r}\")"
+      ]
+     ],
+     [
+      189,
+      [],
+      [
+       "    if tiles == \"scalar\":",
+       "        if header.count(MMA_TILE) != 1:",
+       "            raise RuntimeError(\"trajectory tile anchor changed\")",
+       "        header = header.replace(MMA_TILE, SCALAR_TILE, 1)"
+      ]
+     ],
+     [
+      315,
+      [
+       "                 max_steps=1_000_000, max_device_seconds=30.):"
+      ],
+      [
+       "                 max_steps=1_000_000, max_device_seconds=30., tiles=\"mma\"):"
+      ]
+     ],
+     [
+      333,
+      [
+       "        if int(props['major'])<8 or not props.get('cooperativeLaunch',False):",
+       "            raise ValueError(\"native FP64 MMA and cooperative launch require SM80+ support\")"
+      ],
+      [
+       "        if tiles not in TILES:raise ValueError(f\"tiles must be one of {', '.join(TILES)}, not {tiles!r}\")",
+       "        if not props.get('cooperativeLaunch',False):",
+       "            raise ValueError(\"the one-kernel trajectory requires cooperative launch\")",
+       "        self.compute_capability=(int(props['major']),int(props['minor']))",
+       "        self.tiles=select_tiles(tiles,*self.compute_capability)   # refuses mma below 8.0"
+      ]
+     ],
+     [
+      340,
+      [
+       "        self.kernel=cp.RawKernel(trajectory_source(rhs.d),'persistent_trajectory',"
+      ],
+      [
+       "        self.kernel=cp.RawKernel(trajectory_source(rhs.d,self.tiles),'persistent_trajectory',"
+      ]
+     ],
+     [
+      343,
+      [
+       "        self.dynamic_shared_bytes=configure_shared_memory(self.kernel,props,self.info)"
+      ],
+      [
+       "        self.dynamic_shared_bytes=configure_shared_memory(self.kernel,props,self.info,self.tiles)"
+      ]
+     ],
+     [
+      354,
+      [
+       "            matrix_arithmetic='mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64',fast_math=False)"
+      ],
+      [
+       "            matrix_arithmetic=MATRIX_ARITHMETIC[self.tiles],tiles=self.tiles,",
+       "            compute_capability=list(self.compute_capability),fast_math=False)"
+      ]
+     ],
+     [
+      406,
+      [
+       "        atol=1e-13,rtol=1e-12,initial_step=None,max_steps=1_000_000,max_device_seconds=30.,return_samples=False):"
+      ],
+      [
+       "        atol=1e-13,rtol=1e-12,initial_step=None,max_steps=1_000_000,max_device_seconds=30.,return_samples=False,",
+       "        tiles='mma'):"
+      ]
+     ],
+     [
+      418,
+      [
+       "            initial_step=initial_step,max_steps=max_steps,max_device_seconds=max_device_seconds) as solver:"
+      ],
+      [
+       "            initial_step=initial_step,max_steps=max_steps,max_device_seconds=max_device_seconds,tiles=tiles) as solver:"
+      ]
+     ],
+     [
+      429,
+      [
+       "def trajectory_ptx_report(d,cp,directory=None):",
+       "    \"\"\"Gated CUDA NVRTC audit of native FP64 MMA and scalar instruction types.\"\"\""
+      ],
+      [
+       "def audit_trajectory_ptx(ptx,tiles):",
+       "    \"\"\"Instruction audit of the PTX of trajectory_source(d, tiles); RuntimeError if it fails.",
+       "    Both paths: no FP32 arithmetic. mma: FP64 mma.sync instructions, for a target of compute",
+       "    capability 8.0 or later (NVRTC emits them for earlier targets too; only ptxas refuses).",
+       "    scalar: no mma instruction of any type, and the warp shuffles and FP64 FMAs of the tile",
+       "    product.\"\"\"",
+       "    if tiles not in TILES:raise ValueError(f\"tiles must be one of {', '.join(TILES)}, not {tiles!r}\")",
+       "    target=re.search(r'^\\.target\\s+sm_(\\d+)',ptx,re.M)",
+       "    mma=sorted(set(re.findall(r'mma\\.sync[^\\s;]*\\.f64\\.f64\\.f64\\.f64',ptx)))",
+       "    any_mma=sorted(set(re.findall(r'\\bw?mma\\.[^\\s;]*',ptx)))",
+       "    fp32=sorted(set(re.findall(r'\\b(?:add|sub|mul|fma|div|mad|sqrt|rcp|ex2|lg2)\\.(?:[a-z0-9]+\\.)*f32\\b',ptx)))",
+       "    shuffles=len(re.findall(r'\\bshfl\\.sync\\.idx\\.b32\\b',ptx));fmas=len(re.findall(r'\\bfma\\.rn\\.f64\\b',ptx))",
+       "    failures=[]",
+       "    if fp32:failures.append(f'FP32 arithmetic {fp32}')",
+       "    if target is None:failures.append('no .target directive')",
+       "    if tiles=='mma':",
+       "        if not mma:failures.append('no FP64 mma.sync instruction')",
+       "        if target is not None and int(target.group(1))<80:",
+       "            failures.append(f'mma.sync f64 for target sm_{target.group(1)} (needs compute capability 8.0)')",
+       "    else:",
+       "        if any_mma:failures.append(f'mma instructions {any_mma} in the scalar tile path')",
+       "        if not shuffles or not fmas:failures.append('no warp shuffles or FP64 FMAs of the scalar tile product')",
+       "    if failures:raise RuntimeError(f'trajectory FP64 PTX audit failed ({tiles} tiles): '+'; '.join(failures))",
+       "    return dict(tiles=tiles,ptx_target=f'sm_{target.group(1)}',f64_mma_instructions=mma,",
+       "                fp32_arithmetic_instructions=fp32,shfl_sync_idx_instructions=shuffles,fma_rn_f64_instructions=fmas)",
+       "",
+       "",
+       "def trajectory_ptx_report(d,cp,directory=None,tiles='mma'):",
+       "    \"\"\"Gated CUDA NVRTC audit of the tile products and scalar instruction types.\"\"\""
+      ]
+     ],
+     [
+      469,
+      [
+       "    program=compiler._NVRTCProgram(trajectory_source(d),'persistent_trajectory_audit.cu',method='ptx')"
+      ],
+      [
+       "    program=compiler._NVRTCProgram(trajectory_source(d,tiles),'persistent_trajectory_audit.cu',method='ptx')"
+      ]
+     ],
+     [
+      473,
+      [
+       "    mma=sorted(set(re.findall(r'mma\\.sync[^\\s;]*\\.f64\\.f64\\.f64\\.f64',ptx)))",
+       "    fp32=sorted(set(re.findall(r'\\b(?:add|sub|mul|fma|div|mad|sqrt|rcp|ex2|lg2)\\.(?:[a-z0-9]+\\.)*f32\\b',ptx)))",
+       "    if not mma or fp32:raise RuntimeError(f'trajectory FP64 PTX audit failed: mma={mma},fp32={fp32}')"
+      ],
+      [
+       "    audit=audit_trajectory_ptx(ptx,tiles)"
+      ]
+     ],
+     [
+      476,
+      [
+       "        (target/f'persistent_trajectory_d{d}.ptx').write_text(ptx)",
+       "    return dict(f64_mma_instructions=mma,fp32_arithmetic_instructions=fp32,arch=arch,",
+       "                controller_uses_explicit_round_to_nearest_intrinsics=True)"
+      ],
+      [
+       "        (target/(f'persistent_trajectory_d{d}.ptx' if tiles=='mma' else f'persistent_trajectory_d{d}_scalar.ptx')).write_text(ptx)",
+       "    return dict(audit,arch=arch,controller_uses_explicit_round_to_nearest_intrinsics=True)"
+      ]
+     ]
+    ],
+    "persistent_trajectory_overlap.py": [
+     [
+      31,
+      [
+       "    def __init__(self,cp,inputs,coupling,args,*,max_device_seconds=30.):"
+      ],
+      [
+       "    def __init__(self,cp,inputs,coupling,args,*,max_device_seconds=30.,tiles='mma'):"
+      ]
+     ],
+     [
+      37,
+      [
+       "            atol=args.atol,rtol=args.rtol,max_steps=args.max_steps,max_device_seconds=max_device_seconds)"
+      ],
+      [
+       "            atol=args.atol,rtol=args.rtol,max_steps=args.max_steps,max_device_seconds=max_device_seconds,tiles=tiles)"
+      ]
+     ],
+     [
+      51,
+      [
+       "def candidate_bindings(mode,kinetic,max_device_seconds):",
+       "    if mode not in ('cached','trajectory') or kinetic not in ('baseline','cooperative'):"
+      ],
+      [
+       "def candidate_bindings(mode,kinetic,max_device_seconds,tiles='mma'):",
+       "    if mode not in ('cached','trajectory') or kinetic not in ('baseline','cooperative') or tiles not in ('mma','scalar'):"
+      ]
+     ],
+     [
+      55,
+      [
+       "        PreparedTrajectoryQuartic(cp,inputs,coupling,args,max_device_seconds=max_device_seconds)"
+      ],
+      [
+       "        PreparedTrajectoryQuartic(cp,inputs,coupling,args,max_device_seconds=max_device_seconds,tiles=tiles)"
+      ]
+     ],
+     [
+      60,
+      [
+       "def evaluate_complete(coordinator,r,k,rho,coupling,args,xp,*,mode,kinetic='baseline',max_device_seconds=30.):"
+      ],
+      [
+       "def evaluate_complete(coordinator,r,k,rho,coupling,args,xp,*,mode,kinetic='baseline',max_device_seconds=30.,",
+       "                      tiles='mma'):"
+      ]
+     ],
+     [
+      68,
+      [
+       "    with candidate_bindings(mode,kinetic,max_device_seconds), \\"
+      ],
+      [
+       "    with candidate_bindings(mode,kinetic,max_device_seconds,tiles), \\"
+      ]
+     ]
+    ],
+    "trajectory_sweep_driver.py": [
+     [
+      56,
+      [
+       "                not math.isfinite(controls.get('max_device_seconds',float('nan'))) or controls['max_device_seconds']<=0):"
+      ],
+      [
+       "                not math.isfinite(controls.get('max_device_seconds',float('nan'))) or controls['max_device_seconds']<=0 or",
+       "                controls.get('tiles','mma') not in ('mma','scalar')):"
+      ]
+     ],
+     [
+      76,
+      [
+       "    return implementation.candidate_bindings('trajectory',controls['kinetic'],controls['max_device_seconds'])"
+      ],
+      [
+       "    # A checkpoint written before the scalar tile path existed ran the tensor-core tiles.",
+       "    return implementation.candidate_bindings('trajectory',controls['kinetic'],controls['max_device_seconds'],",
+       "                                             controls.get('tiles','mma'))"
+      ]
+     ],
+     [
+      94,
+      [],
+      [
+       "    parser.add_argument('--tiles',choices=('mma','scalar'))"
+      ]
+     ],
+     [
+      107,
+      [
+       "    controls=dict(enabled=True,whole_trajectory_cooperative_kernel=True,kinetic=kinetic,max_device_seconds=float(maximum))"
+      ],
+      [
+       "    tiles=cli.tiles or prior.get('tiles','mma')",
+       "    if args.resume and tiles!=prior.get('tiles','mma'):",
+       "        raise ValueError('in-place resume cannot change tiles; use explicit --resume-from fork')",
+       "    controls=dict(enabled=True,whole_trajectory_cooperative_kernel=True,kinetic=kinetic,max_device_seconds=float(maximum),",
+       "                  tiles=tiles)"
+      ]
+     ]
+    ]
+   }
   }
  ]
 }

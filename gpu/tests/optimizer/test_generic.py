@@ -26,6 +26,7 @@ from rcmps_gpu.optimizer import layout
 RUNTIME = run.RUNTIME
 PROVENANCE = json.loads((run.HERE / "provenance.json").read_bytes())
 GOLDEN = json.loads(Path(__file__).with_name("golden_cuda.json").read_bytes())
+GOLDEN_SCALAR = json.loads(Path(__file__).with_name("golden_cuda_scalar.json").read_bytes())
 BASE_MANIFEST_SHA = "4b68b5fc76de4cfa3b049364ad1bc9ab7be2f61ea56a2eec0fe9cf9450efb21e"
 # sha256 of research generic_gpu/runtime/manifest.json, imported by "Import the GPU code verbatim"
 IMPORTED_MANIFEST_SHA = "dda1fdbfa9f435f04958e418379f269b2381cc3e58d9b09bb81c7f42bdd6beea"
@@ -76,7 +77,7 @@ class GenericTests(unittest.TestCase):
         self.assertEqual(sorted(run.runtime_source_sha256()), files)
         record = run.verify_runtime()   # reverts the recorded edits on the bytes of the files
         self.assertEqual(record["edits"], [entry["commit_subject"] for entry in PROVENANCE["edits"]])
-        self.assertEqual(len(record["edited_files"]), 18)
+        self.assertEqual(len(record["edited_files"]), 19)
 
     def test_planner_and_worker_refuse_a_runtime_that_differs_from_its_provenance(self):
         line = "        factor = min(10.0, 0.9 * error**(-1 / 8)) if error else 10.0\n"
@@ -163,6 +164,33 @@ print(json.dumps({str(d):dict(trajectory_sha256=hashlib.sha256(t.trajectory_sour
 assert 'cupy' not in sys.modules
 '''.replace("SIZES", repr(tuple(sizes)))
         self.assertEqual(child(code), GOLDEN["sizes"])
+
+    def test_scalar_tile_CUDA_equals_its_golden_hashes_and_differs_only_by_the_tile_product(self):
+        # The tensor-core path is the validated source byte for byte (tiles="mma" is the
+        # default); the scalar path replaces the one definition of mma().
+        sizes = sorted(map(int, GOLDEN["sizes"]))
+        self.assertEqual(sorted(map(int, GOLDEN_SCALAR["sizes"])), sizes)
+        code = '''
+import hashlib
+from rcmps_gpu.optimizer.runtime import persistent_trajectory_backend as t
+from rcmps_gpu.excitations import fused
+rows={}
+for d in SIZES:
+    mma,scalar=t.trajectory_source(d,'mma'),t.trajectory_source(d,'scalar')
+    assert mma==t.trajectory_source(d) and mma.count(t.MMA_TILE)==1 and scalar.count(t.SCALAR_TILE)==1
+    assert scalar.replace(t.SCALAR_TILE,t.MMA_TILE)==mma
+    assert 'mma.sync' not in scalar and 'asm' not in scalar and '__shfl_sync' not in mma
+    rows[str(d)]=dict(trajectory_sha256=hashlib.sha256(scalar.encode()).hexdigest())
+# The scalar tile product is the one of the excitation kernel ('#else' branch of fused.CUDA).
+assert t.SCALAR_TILE==fused.CUDA.split('#else\\n',1)[1].split('#endif\\n',1)[0]
+for tiles in ('auto','MMA',None):
+    try:t.trajectory_source(8,tiles)
+    except ValueError:pass
+    else:raise AssertionError(tiles)
+print(json.dumps(rows))
+assert 'cupy' not in sys.modules
+'''.replace("SIZES", repr(tuple(sizes)))
+        self.assertEqual(child(code), GOLDEN_SCALAR["sizes"])
 
     def test_emitted_CUDA_equals_the_golden_source(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -321,12 +349,24 @@ print(json.dumps(dict(passed=True,tests=log.getvalue().count(' ... ok'))))
         kernel = Kernel()
         self.assertEqual(layout.configure_shared_memory(kernel, props, layout.packed_geometry(128)), 65792)
         self.assertEqual(kernel.max_dynamic_shared_size_bytes, 65792)
-        for changes, message in ((dict(major=8, minor=6), "SM80"),
+        # Any compute capability from 8.0 on runs the tensor-core tiles, any one the scalar tiles.
+        for major, minor in ((8, 0), (8, 6), (8, 9), (9, 0), (10, 0), (12, 0)):
+            self.assertEqual(layout.configure_shared_memory(Kernel(), dict(props, major=major, minor=minor),
+                                                            layout.packed_geometry(128)), 65792)
+        for major, minor in ((6, 0), (7, 0), (7, 5), (8, 6)):
+            self.assertEqual(layout.configure_shared_memory(Kernel(), dict(props, major=major, minor=minor),
+                                                            layout.packed_geometry(128), "scalar"), 65792)
+        for changes, message in ((dict(major=7, minor=5), r"--tiles mma needs FP64 tensor-core instructions .*"
+                                  r"compute capability 8.0 or later\); this GPU is 7.5: use --tiles auto or scalar"),
+                                 (dict(major=6, minor=0), "this GPU is 6.0"),
                                  (dict(cooperativeLaunch=False), "cooperative"),
                                  (dict(sharedMemPerBlockOptin=49152), "exceeds"),
                                  (dict(maxThreadsPerBlock=256), "thread-block")):
             with self.subTest(changes=changes), self.assertRaisesRegex((ValueError, RuntimeError), message):
                 layout.configure_shared_memory(Kernel(), dict(props, **changes), layout.packed_geometry(128))
+        for tiles in ("auto", None, "MMA"):
+            with self.subTest(tiles=tiles), self.assertRaisesRegex(ValueError, "tiles"):
+                layout.configure_shared_memory(Kernel(), props, layout.packed_geometry(128), tiles)
 
     def test_plan_has_no_hidden_run_time_cap_and_explicit_cap_is_preserved(self):
         hashes = run.runtime_source_sha256()
@@ -459,8 +499,9 @@ cp=SimpleNamespace(RawKernel=lambda *a,**k:Kernel(),cuda=SimpleNamespace(
     driver=SimpleNamespace(occupancyMaxActiveBlocksPerMultiprocessor=lambda *v:1)))
 with patch('rcmps_gpu.optimizer.runtime.persistent_trajectory_backend.trajectory_ptx_report',return_value={'FP64':True}) as audit:
     receipt=worker.compile_dimension(160,cp,'mock_output')
-    audit.assert_called_once_with(80,cp,'mock_output')
+    audit.assert_called_once_with(80,cp,'mock_output','mma')
     assert receipt['full_grid_residency_verified'] and receipt['resident_capacity']==132
+    assert receipt['tiles']['requested']=='auto' and receipt['tiles']['resolved']=='mma'
     assert receipt['PTX']['FP64'] and not receipt['numerical_launch_performed']
     assert not receipt['actual_GPU_qualified'] and 'cupy' not in sys.modules
 print(json.dumps(dict(device_audit_forwarded=True)))

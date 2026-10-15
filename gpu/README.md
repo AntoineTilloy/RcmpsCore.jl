@@ -15,10 +15,10 @@ full relative precision where those of the stored ρ that the Julia code uses ar
 "Excitation solver: differences from the Julia code").
 
 - `rcmps_gpu.optimizer`: ground-state optimizer. One persistent cooperative CUDA kernel
-  integrates the whole adaptive DOP853 trajectory of the quartic term with native FP64
-  tensor-core products; L-BFGS on the manifold, as in the Julia code. The kernel is
-  generated for each D (every even D from 2 to 512, subject to the GPU holding the whole
-  grid resident).
+  integrates the whole adaptive DOP853 trajectory of the quartic term in FP64, its matrix
+  products on the tensor cores from compute capability 8.0 on and in scalar FMAs below;
+  L-BFGS on the manifold, as in the Julia code. The kernel is generated for each D (every
+  even D from 2 to 512, subject to the GPU holding the whole grid resident).
 - `rcmps_gpu.excitations`: tangent-space excitation solver (matrix-free Hamiltonian
   action, Davidson, validation by the bilinear route), both parity sectors, any momentum.
   The action trajectory of a Z2 sector runs in one fused cooperative kernel.
@@ -31,7 +31,9 @@ above that its two independent routes (action and bilinear) agree to 4e-10. The 
 runtime is the generic version of the H100 runtime of the research campaign: for the sizes
 that runtime supported (packed d = D/2 in {2, 3, 4, 8, 16, 32, 48, 64, 128}) it generates
 the same CUDA source and compiler options, bit for bit, but the generic runtime itself has
-not yet run on a GPU. Both kernels need FP64 tensor cores (SM80 or SM90).
+not yet run on a GPU, nor has its scalar tile path. The optimizer runs on any NVIDIA GPU
+with cooperative launch; the excitation kernel still needs FP64 tensor cores (SM80 or SM90)
+unless `--scalar-tiles` is given.
 
 ## Installation
 
@@ -42,13 +44,14 @@ for CUDA 12, from the repository root:
 pip install "./gpu[cuda12]"     # with CuPy for CUDA 12 (cupy-cuda12x[ctk] ~= 14.2)
 ```
 
-Both kernels compute their matrix products with native FP64 tensor-core instructions
-(`mma.sync` m8n8k4), which today restricts them to compute capability 8.0 and 9.0. The
-optimizer refuses other devices; the excitation kernel accepts them only with
-`--scalar-tiles`, a variant with the same layout meant for debugging (bitwise identical to
-the tensor-core kernel on the A100, not qualified on any other GPU). GPUs without FP64
-tensor cores (V100, T4, consumer cards) are therefore not supported yet. The qualification
-runs used Python 3.11, NumPy 2.4.6, SciPy 1.17.1 and CuPy 14.2.0.
+Both kernels compute their matrix products as 8 x 8 x 4 tiles, with the native FP64
+tensor-core instruction `mma.sync` m8n8k4 (compute capability 8.0 or later) or with scalar
+tiles of the same layout (warp shuffles and FP64 FMAs, any GPU). The optimizer chooses by
+device (`--tiles auto`: tensor cores from compute capability 8.0 on, scalar tiles below; see
+"Optimizer: sizes, devices and checks"); the excitation kernel uses the tensor cores and
+accepts other GPUs only with `--scalar-tiles` (bitwise identical to the tensor-core kernel on
+the A100). The qualification runs used Python 3.11, NumPy 2.4.6, SciPy 1.17.1 and CuPy
+14.2.0.
 
 For development:
 
@@ -154,10 +157,23 @@ than 48 KiB use dynamic shared memory, and resource use and spills are reported.
 no automatic slower backend, reduced precision or relaxed tolerance. Sizes above 512 need
 another row layout.
 
+The tile products of the kernel follow the device (`--tiles`, recorded in `plan.json`):
+`auto`, the default, uses the FP64 tensor cores (`mma`) on compute capability 8.0 or later
+and the scalar tiles (`scalar`) below; `--tiles mma` is refused below 8.0 before anything
+is compiled, and `--tiles scalar` runs anywhere, on an A100 or H100 too. The scalar tiles
+compute each element as a chain of FMAs in k order, which is what the tensor cores of the
+A100 compute (the excitation kernel's two paths gave bitwise identical trajectories there),
+so on one GPU both paths are expected to agree bit for bit, and across GPUs to rounding. The
+worker records the resolved tiles in `compile.json`, the checkpoint (`trajectory_controls`,
+for every run) and `final_validation.json`; a resume of a checkpoint may use other tiles,
+since it forks. The tensor-core path generates the source of `golden_cuda.json`, unchanged;
+the scalar path differs only by the tile function (`tests/optimizer/golden_cuda_scalar.json`).
+
 Before optimizing, a GPU run compares the fast energy and gradient, and their raw terms,
 with an independent CuPy propagation and the baseline kinetic solver at the initial state;
 a failure keeps the raw data and stops before the optimizer starts. Compilation audits the
-PTX for native FP64 MMA instructions and the absence of FP32 arithmetic. After stopping,
+PTX: FP64 `mma.sync` instructions for a target of compute capability 8.0 or later on the
+tensor-core path, none on the scalar path, and no FP32 arithmetic on either. After stopping,
 the five-row consistency validator re-evaluates the final state (three standard
 evaluations, two refined ones) and, if it passes, writes `optimized_state/` with the energy
 and gradient of the finest row (window 40, 1024 nodes, 1e-14/1e-13);
@@ -467,8 +483,11 @@ thread of a workstation. The optimizer tests include a run of `rcmps-gpu-optimiz
 at D = 8 and its resume, end to end on the CPU (`tests/optimizer/test_worker_cpu.py`): the
 command line, worker, qualification, optimization and validation run as written, with
 stand-ins for the GPU leaves only (`tests/optimizer/worker_on_cpu.py`: a NumPy-backed
-`cupy`, the CPU oracle of the trajectory kernel, the CPU kinetic solvers). The same
-command, from `gpu/`:
+`cupy`, the CPU oracle of the trajectory kernel, the CPU kinetic solvers), on a stand-in
+device of compute capability 8.0 and, for the resume, 7.0 (scalar tiles).
+`tests/optimizer/test_tiles.py` checks the scalar tile product bitwise against the chain of
+FMAs it implements, the selection rule, the PTX audit, and with NVRTC (no GPU) both tile
+paths of the kernel for compute capability 6.0 to 9.0. The same command, from `gpu/`:
 
 ```bash
 OPENBLAS_NUM_THREADS=1 python -m pytest tests/optimizer tests/test_io.py \
@@ -486,12 +505,13 @@ repository root):
 
 ```bash
 cd gpu/tests/excitations && for t in test_*.py; do OPENBLAS_NUM_THREADS=1 python -m unittest ${t%.py}; done
-cd gpu/tests/optimizer && OPENBLAS_NUM_THREADS=1 python -m unittest test_generic test_portable test_worker_cpu
+cd gpu/tests/optimizer && OPENBLAS_NUM_THREADS=1 python -m unittest test_generic test_portable test_worker_cpu test_tiles
 cd gpu/tests && OPENBLAS_NUM_THREADS=1 python -m unittest test_package test_io
 ```
 
 Without installing, put the absolute path of `gpu/src` on `PYTHONPATH`. The optimizer
-tests take about 40 s, the 19 excitation files about 25 minutes on one thread. The
+tests take about 40 s (70 s with the NVRTC compilations), the 19 excitation files about 25
+minutes on one thread. The
 excitation tests check every module against a dense NumPy port of the Julia algorithm
 (`dense_reference.py`), the oracle against analytic states, the solver against the Julia
 levels of `excitation_references.toml` (and, with the slow flag, against the stored Julia
@@ -516,7 +536,9 @@ The GPU qualification scripts of the excitation solver are in `qualification/exc
 `gpu_settings_check.py`, `check_references.py`; see "GPU qualification"). They run on a
 GPU against the installed package and print JSON lines; their docstrings give the
 commands. The optimizer's GPU checks are part of every run (`--compile-only` for the
-compiler and resource checks alone).
+compiler and resource checks alone); `qualification/optimizer/gpu_optimizer_check.py`
+qualifies a GPU: the tile product alone against the chain of FMAs, trajectories with each
+tile path, compilation and residency per D, and short runs through the command line.
 
 ## Provenance
 
@@ -531,8 +553,9 @@ every edit made since, commit by commit, in the format described in
 pruning commit, which deleted two modules that the generic run never imports and code
 paths it never reaches (old evaluators, the CUDA-graph integrator and the driver-library
 bindings it needed, the research benchmark command lines) and renamed the quartic backend
-label of the run to `persistent_trajectory`, and a commit that rewords comments still
-describing CUDA graph capture. The optimizer command line reverts those
+label of the run to `persistent_trajectory`, a commit that rewords comments still
+describing CUDA graph capture, and the portability commit, which adds the scalar tile path
+and the selection of the tiles by device. The optimizer command line reverts those
 edits in memory when it plans a run, and the worker again before and after the run: a
 runtime that is not the imported one with its recorded edits is refused, as the research
 launcher refused one that was not derived from the sealed H100 candidate. The sha256 of
@@ -571,5 +594,6 @@ src/rcmps_gpu/io.py              state files: JLD2 checkpoints and portable dire
 src/rcmps_gpu/provenance.py      provenance record format and check
 julia/                           Julia scripts: export, import and initial portable states
 tests/optimizer/, tests/excitations/, tests/test_package.py, tests/test_io.py
+qualification/optimizer/         GPU qualification script of the optimizer
 qualification/excitations/       GPU qualification scripts of the excitation solver
 ```

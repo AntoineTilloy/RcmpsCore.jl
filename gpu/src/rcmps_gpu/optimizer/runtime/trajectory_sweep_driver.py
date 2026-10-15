@@ -53,7 +53,8 @@ def verify_checkpoint(path,requested_args=None):
         controls=getattr(snapshot['args'],'trajectory_controls',{})
         if (controls.get('enabled') is not True or controls.get('whole_trajectory_cooperative_kernel') is not True or
                 controls.get('kinetic') not in ('baseline','cooperative') or
-                not math.isfinite(controls.get('max_device_seconds',float('nan'))) or controls['max_device_seconds']<=0):
+                not math.isfinite(controls.get('max_device_seconds',float('nan'))) or controls['max_device_seconds']<=0 or
+                controls.get('tiles','mma') not in ('mma','scalar')):
             raise ValueError('trajectory checkpoint lacks complete explicit method/watchdog controls')
         snapshot['trajectory']=True
     else:
@@ -72,7 +73,9 @@ def matching_source_hashes(snapshot,args):
 
 
 def method_bindings(controls):
-    return implementation.candidate_bindings('trajectory',controls['kinetic'],controls['max_device_seconds'])
+    # A checkpoint written before the scalar tile path existed ran the tensor-core tiles.
+    return implementation.candidate_bindings('trajectory',controls['kinetic'],controls['max_device_seconds'],
+                                             controls.get('tiles','mma'))
 
 
 def _wrapper_options(argv):
@@ -88,6 +91,7 @@ def main(argv=None):
     parser=argparse.ArgumentParser(add_help=False,allow_abbrev=False)
     parser.add_argument('--kinetic',choices=('baseline','cooperative'))
     parser.add_argument('--max-device-seconds',type=float)
+    parser.add_argument('--tiles',choices=('mma','scalar'))
     cli,forwarded=parser.parse_known_args(argv)
     legacy,base_argv=_wrapper_options(forwarded)
     args=ORIGINAL_PARSE(base_argv);overlap_driver.validate_overlap_arguments(args)
@@ -100,7 +104,11 @@ def main(argv=None):
     if not math.isfinite(maximum) or maximum<=0:raise ValueError('max-device-seconds must be positive and finite')
     if args.resume and kinetic!=prior.get('kinetic'):
         raise ValueError('in-place resume cannot change kinetic method; use explicit --resume-from fork')
-    controls=dict(enabled=True,whole_trajectory_cooperative_kernel=True,kinetic=kinetic,max_device_seconds=float(maximum))
+    tiles=cli.tiles or prior.get('tiles','mma')
+    if args.resume and tiles!=prior.get('tiles','mma'):
+        raise ValueError('in-place resume cannot change tiles; use explicit --resume-from fork')
+    controls=dict(enabled=True,whole_trajectory_cooperative_kernel=True,kinetic=kinetic,max_device_seconds=float(maximum),
+                  tiles=tiles)
     def parse(arguments=None):
         out=ORIGINAL_PARSE(arguments);overlap_driver.validate_overlap_arguments(out)
         out.trajectory_controls=dict(controls);return out
