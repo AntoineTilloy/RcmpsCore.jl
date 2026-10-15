@@ -26,8 +26,10 @@ scalar; auto is what the device selects: mma from compute capability 8.0 on, sca
               two tile paths ran at one D, their first evaluations and histories are compared.
 
 The compile and run stages start the command line of the package in a child process (its
-run directory under NEW_DIR/<stage>/D<D>_<tiles>, its output in <directory>.log); nothing
-here re-implements the numerics. Every result is one JSON line on stdout; the exit status is
+run directory under NEW_DIR/<stage>/D<D>_<tiles>, its output in <directory>.log), with the
+model and integration settings of this script (--coupling, --window, --quadrature, --atol,
+--rtol; the defaults are those of the command line) and its --seed, --device and
+--max-device-seconds; nothing here re-implements the numerics. Every result is one JSON line on stdout; the exit status is
 1 if a check failed (a refused size or a refused --tiles mma below 8.0 is not a failure).
 """
 from __future__ import annotations
@@ -237,7 +239,9 @@ def optimize(args, stage, D, tiles, *options):
     directory = Path(args.output) / stage / f"D{D}_{tiles}"
     command = [sys.executable, "-m", "rcmps_gpu.optimizer", "--D", str(D), "--run-gpu", "--output", str(directory),
                "--tiles", tiles, "--device", str(args.device), "--seed", str(args.seed),
-               "--max-device-seconds", str(args.max_device_seconds), *options]
+               "--coupling", repr(args.coupling), "--window", repr(args.window), "--quadrature", str(args.quadrature),
+               "--atol", repr(args.atol), "--rtol", repr(args.rtol),
+               "--max-device-seconds", repr(args.max_device_seconds), *options]
     started = time.perf_counter()
     with (Path(args.output) / stage / f"D{D}_{tiles}.log").open("w") as log:
         status = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT).returncode
@@ -328,7 +332,7 @@ def compare_runs(D, first, second):
     emit(**row)
 
 
-def main():
+def parser():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--output", required=True, help="new directory")
     parser.add_argument("--stages", nargs="+", choices=("unit", "trajectory", "compile", "run"),
@@ -345,7 +349,11 @@ def main():
     parser.add_argument("--quadrature", type=int, default=512)
     parser.add_argument("--atol", type=float, default=1e-13)
     parser.add_argument("--rtol", type=float, default=1e-12)
-    args = parser.parse_args()
+    return parser
+
+
+def main():
+    args = parser().parse_args()
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=False)
     for stage in ("compile", "run", "trajectory"):
