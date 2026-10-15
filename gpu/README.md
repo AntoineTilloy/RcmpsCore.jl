@@ -25,16 +25,19 @@ full relative precision where those of the stored ρ that the Julia code uses ar
 - `rcmps_gpu.io`: the state files of both: checkpoints of the Julia package and portable
   state directories.
 
-Status (details under "GPU qualification"): the excitation solver was qualified on an A100
-up to D = 128; at D = 16 and 32 its energies agree with the Julia code to about 1e-11, and
-above that its two independent routes (action and bilinear) agree to 4e-10. The optimizer's
-runtime is the generic version of the H100 runtime of the research campaign: for the sizes
-that runtime supported (packed d = D/2 in {2, 3, 4, 8, 16, 32, 48, 64, 128}) it generates
-the same CUDA source and compiler options, bit for bit, but the generic runtime itself has
-not yet run on a GPU, nor has its scalar tile path. Both kernels choose their tile product
-by device, for NVIDIA GPUs with or without FP64 tensor cores (see "GPUs"); the excitation
-kernel has run on an A100 only (both tile paths), and the optimizer's kernel only within the
-research runtimes of its family, on an A100 and an H100.
+Status (details under "GPU qualification"): the package passed its qualification batch on
+an A100, with the FP64 tensor cores and with the scalar tiles, and on a V100, with the
+scalar tiles (2026-10-15). The excitation solver was qualified on an A100 up to D = 128
+(with the sources this package imported, and earlier ones; with this package, D = 64 on
+the A100 and D = 32 on the V100); at D = 16 and 32 its energies agree with the Julia code
+to about 1e-11 on both GPUs, and above that its two independent routes (action and
+bilinear) agree to 4e-10. The optimizer's runtime is the generic version of the H100
+runtime of the research campaign: for the sizes that runtime supported (packed d = D/2 in
+{2, 3, 4, 8, 16, 32, 48, 64, 128}) it generates the same CUDA source and compiler options,
+bit for bit. The generic runtime itself ran short optimizations (3 and 30 iterations) at
+D = 8 to 128 on both GPUs, with both tile paths on the A100, but no optimization to
+convergence. Both kernels choose their tile product by device, for NVIDIA GPUs with or
+without FP64 tensor cores (see "GPUs"); no other GPU has run this package.
 
 ## Installation
 
@@ -51,8 +54,9 @@ tiles of the same layout (warp shuffles and FP64 FMAs, any GPU). Both command li
 by device with one rule, `--tiles auto` (the default): tensor cores from compute capability
 8.0 on, scalar tiles below; `--tiles mma` is refused below 8.0, `--tiles scalar` runs
 anywhere (see "GPUs"). Keep CUDA 12 for Pascal and Volta GPUs (P100, V100): CUDA 13 no
-longer supports them. The qualification runs used Python 3.11, NumPy 2.4.6, SciPy 1.17.1
-and CuPy 14.2.0.
+longer supports them (the V100 was qualified with the CUDA 12.9 libraries of the CuPy
+wheels, under a driver for CUDA 13.0). The qualification runs used Python 3.11, NumPy
+2.4.6, SciPy 1.17.1 and CuPy 14.2.0.
 
 For development:
 
@@ -89,22 +93,30 @@ kernel's PTX at every compilation; the excitation kernel's PTX is audited by the
 (NVRTC for compute_60 to 90) and on the device by the qualification (`gpu_bringup.py
 --stages compile`), not by a run. On one GPU the two paths agree bit for bit wherever the
 tensor cores compute the same chain of FMAs, which `gpu_optimizer_check.py --stages unit`
-measures; on the A100 the excitation kernel's two paths gave equal trajectories (largest
-difference 0, the same steps; a comparison of values, blind to the sign of zeros). Across
-GPUs, results agree to rounding. The resolved tiles are recorded (`compile.json`, the
-checkpoint and `final_validation.json` of the optimizer; `settings.tiles` and the kernel
-occupancies in the excitation `result.json`). The scalar path issues 24 shuffles and 8 FMAs
-per real tile where the tensor cores issue one instruction: on the A100 the excitation
-kernel took 1.2 to 1.4 times as long per right-hand side with the scalar tiles at D = 4 to
-16, and 1.5 to 2.5 times at D = 32 to 128 (with earlier sources). The optimizer's scalar
-path, and GPUs without FP64 tensor cores, have not been timed.
+measures. The A100's do: its tensor-core tiles equal the chain of FMAs and the scalar tiles
+in every case of that test (random tiles, a tie, a cancellation, a signed zero, a subnormal
+product), and with either path both kernels gave the same bytes where the bytes were
+compared (the optimizer's trajectories, first gradients and final states; the excitation
+trajectories and bilinear terms) and the same values elsewhere (the optimizer's histories,
+the excitation actions, levels and D = 64 solve; see "GPU qualification"). Across GPUs,
+results agree to rounding: the V100 and the A100 differ by at most 6.7e-12 in the energies
+along 30 optimizer iterations and 1.4e-12 in the validated excitation energies. The
+resolved tiles are recorded (`compile.json`, the checkpoint and `final_validation.json` of
+the optimizer; `settings.tiles` and the kernel occupancies in the excitation
+`result.json`). The scalar path issues 24 shuffles and 8 FMAs per real tile where the
+tensor cores issue one instruction: on the A100 the scalar tiles took 1.5 to 2.1 times as
+long per optimizer trajectory at D = 8 to 64, 1.2 to 1.4 times as long per right-hand side
+of the excitation kernel at D = 4 to 16 (1.5 to 2.5 times at D = 32 to 128, with earlier
+sources), and 1.4 times as long for a D = 64 excitation solve. The V100 took 1.1 to 1.9
+times the A100's tensor-core time per optimizer trajectory (0.8 to 1.0 times its scalar
+time), and 1.3 to 1.5 times for the reference levels at D = 16 and 32.
 
 | GPU | Compute capability | Tiles (`auto`) | Status |
 |---|---|---|---|
 | H100 | 9.0 | mma | the research runtime this one derives from ran the optimizer (D = 32 to 256); this package has not run there |
-| A100 | 8.0 | mma | excitation solver qualified up to D = 128 (scalar tiles equal to mma, largest difference 0); the optimizer's kernels of this family ran (D = 32 to 128) |
+| A100 | 8.0 | mma | qualified with both tile paths (2026-10-15), which gave identical results: optimizer runs at D = 8 to 128 (3 and 30 iterations), grids compiled and resident up to D = 256; excitation kernels resident up to D = 128, reference levels at D = 16 and 32, a solve at D = 64; earlier, the excitation solver up to D = 128 (tensor cores, imported and earlier sources) and the research optimizer runtimes (D = 32 to 128) |
 | A30, A10, RTX 30, L4, L40, RTX 40 | 8.0, 8.6, 8.9 | mma | compiled only (the tests compile for compute_80 and 86; compute_89 was checked once); FP64 at 1/64 of FP32 except the A30 |
-| V100 | 7.0 | scalar | compiled only; a rental is planned |
+| V100 | 7.0 | scalar | qualified with the scalar tiles (2026-10-15): optimizer runs at D = 8 to 128 (3 and 30 iterations), grid resident up to D = 160 and refused at 192 and 256; excitation action kernel resident up to D = 96 and pair kernel up to D = 64 (so solves with validation up to D = 64), reference levels at D = 16 and 32; `--tiles mma` refused |
 | T4, RTX 20 | 7.5 | scalar | compiled only; FP64 at 1/32 of FP32 |
 | P100 | 6.0 | scalar | compiled only |
 
@@ -152,6 +164,13 @@ optimizer column includes its register caps; the excitation columns use the caps
 | L4 | 58 | 176 | 84 | 80 | 80 |
 | RTX 4090 | 128 | 194 | 130 | 96 | 96 |
 | H100 SXM | 132 | 256 | 160 | 208 | 160 |
+
+The occupancy queries of the qualification batch agree with the V100 and A100 rows at the
+sizes it checked: on the V100 the optimizer's grid is resident at D = 160 and refused at
+192 (121 blocks, 80 resident), the action kernel resident at D = 96 (156 of 160 blocks) and
+refused at 128, the pair kernel resident at D = 64 and refused at 96 (120 blocks, 80
+resident at every cap); on the A100 every size is resident, up to D = 256 for the optimizer
+and 128 for both excitation kernels.
 
 Device memory does not limit these sizes on 16 GB cards (the largest buffers are the
 optimizer's validation samples, 3 GB at D = 190); the excitation solver bounds its own with
@@ -250,9 +269,11 @@ with NVRTC 12.8, depending on the target, the tiles and D), so a GPU with fewer 
 multiprocessors than the A100 may hold too few blocks: the worker then recompiles with the
 caps 128, 96 and 64 in turn and takes the first whose grid is resident (spills grow from
 about 50 bytes at cap 128 to 1.5 KB at cap 64), recording the cap and every attempt in
-`compile.json`; the run, its qualification and its validation use that cap. Above D = 128
-the historical cap 64 is the only one. On the A100 and H100 the first attempt is expected
-to be resident at every size, so their compiler options stay the historical ones. There is
+`compile.json`; the run, its qualification and its validation use that cap (on the V100 at
+D = 128: 168 registers hold 80 of the 81 blocks, cap 128 holds 160 with 48 bytes of
+spills). Above D = 128 the historical cap 64 is the only one. On the A100 the first attempt
+was resident at every size the qualification compiled (D = 8 to 256), and on the H100 it
+is expected to be, so their compiler options stay the historical ones. There is
 no automatic slower backend, reduced precision or relaxed tolerance. Sizes above 512 need
 another row layout.
 
@@ -261,8 +282,8 @@ The tile products of the kernel follow the device (`--tiles`, recorded in `plan.
 and the scalar tiles (`scalar`) below; `--tiles mma` is refused below 8.0 before anything
 is compiled, and `--tiles scalar` runs anywhere, on an A100 or H100 too. The scalar tiles
 compute each element as a chain of FMAs in k order. Where the tensor cores compute the same
-chain, both paths agree bit for bit on one GPU (on the A100 the excitation kernel's two
-paths gave equal trajectories, largest difference 0), and across GPUs to rounding. The
+chain, both paths agree bit for bit on one GPU (on the A100 the two paths gave the same
+trajectories, histories and final states, byte for byte), and across GPUs to rounding. The
 worker records the resolved tiles in `compile.json`, the checkpoint (`trajectory_controls`,
 for every run) and `final_validation.json`; a resume of a checkpoint may use other tiles,
 since it forks. The tensor-core path generates the source of `golden_cuda.json`, unchanged;
@@ -359,8 +380,8 @@ group and two-sided groups (`packed.py`), so one kernel serves both sectors, any
 both scalings, and the bilinear system (`packed_pair.py`, three two-sided groups). Stages
 alternate between two buffers, which removes one grid barrier per stage. The scalar tiles
 (`--tiles scalar`, or `--scalar-tiles`; `use_mma=False`) replace the tensor-core tile
-product by warp shuffles and FMAs with the same layout; on the A100 the two gave equal
-trajectories (largest difference 0, the same steps). `--tiles auto` (`use_mma=None`, the
+product by warp shuffles and FMAs with the same layout; on the A100 the two gave the same
+trajectories, byte for byte, with the same steps. `--tiles auto` (`use_mma=None`, the
 default) chooses by device as the optimizer does, and `result.json` records the tiles that
 ran (`settings.tiles`, and per kernel in `kernels`). The φ⁴ action system has 26 packed
 blocks and 190 products per right-hand side (the optimizer's ground-state system: 10
@@ -506,6 +527,137 @@ is accepted); a size or tile path the GPU cannot hold or run is reported, not fa
 step writes one log of JSON lines, and `NEW_DIR/status.tsv` lists the exit status and time
 of every step; the script's header lists the steps.
 
+**Qualification batch, A100 and V100, 2026-10-15.** `run_all.sh` at the commit "README:
+exact cubin coverage, failed solves, test times" (the device log of each machine records
+it, with no tracked file modified); every step exited with status 0. The machines: an A100
+40 GB (compute capability 8.0, 108 multiprocessors; the CUDA runtime names it
+A100-SXM4-40GB, nvidia-smi A100-PCIE-40GB), every check with the tensor cores (`auto`) and
+again with the scalar tiles forced, and the D = 64 solves; a Tesla V100-SXM2-32GB (7.0, 80
+multiprocessors), every check with the scalar tiles (`auto`), and `--tiles mma` checked to
+be refused. Python 3.11.9, NumPy 2.4.6, SciPy 1.17.1, CuPy 14.2.0 with the CUDA 12.9
+runtime libraries of the `cupy-cuda12x[ctk]` wheels, drivers for CUDA 13.2 (A100) and 13.0
+(V100). A preliminary batch the same day, with the same package sources and the earlier
+`gpu_optimizer_check.py` (the commit "Correct the register range of register_caps for every
+packed d <= 64"), also passed every step.
+
+The optimizer, with `gpu_optimizer_check.py` (the random Z2 state of seed 0, g = 2.7, the
+integration settings of the command line). The tile product alone: on the A100 the
+tensor-core tiles equal the host chain of FMAs and the scalar tiles, bit for bit, in every
+case (64 random tiles with spread exponents, a tie, a cancellation, a signed zero, a
+subnormal product); on the V100 the scalar tiles equal the chain in every case. The
+trajectories at D = 8 to 64: the same accepted and rejected steps on both GPUs and with
+every path, a repeated launch gives the same bytes, and at D = 8 the host oracle takes the
+same 271 attempts, its samples within 1.1e-15 (A100) and 1.2e-15 (V100) relative; on the
+A100 the two paths gave the same bytes. Device time per trajectory (ms):
+
+| D | Steps (accepted, rejected) | A100, tensor cores | A100, scalar tiles | Scalar / tensor cores | V100 |
+|---|---|---|---|---|---|
+| 8 | 267, 4 | 28.6 | 47.2 | 1.65 | 38.1 |
+| 16 | 344, 4 | 50.1 | 74.8 | 1.49 | 56.8 |
+| 32 | 305, 4 | 44.5 | 83.0 | 1.87 | 84.5 |
+| 64 | 313, 5 | 68.8 | 144.2 | 2.09 | 130.9 |
+
+Compilation and residency (`--compile-only`): registers per thread (with the register cap
+and the bytes spilled, where there are any) and the thread blocks resident, against the
+blocks of the grid. Every compiled kernel passed the PTX audit (FP64 `mma.sync` on the
+tensor-core path, none on the scalar path, no FP32 arithmetic on either).
+
+| D | Blocks | A100, tensor cores | A100, scalar tiles | V100 |
+|---|---|---|---|---|
+| 8, 16 | 11 | 166 registers, 1296 resident | 168, 1296 | 168, 960 |
+| 32 | 21 | 166, 648 | 168, 648 | 168, 480 |
+| 64 | 41 | 166, 324 | 168, 324 | 168, 240 |
+| 96 | 61 | 168, 216 | 168, 216 | 168, 160 |
+| 112 | 71 | 168, 108 | 168, 108 | 168, 80 |
+| 128 | 81 | 132, 108 | 168, 108 | cap 128: 128, 48 bytes spilled, 160 (uncapped: 168, 80) |
+| 160 | 101 | cap 64: 64, 136 bytes, 324 | cap 64: 64, 304 bytes, 324 | cap 64: 64, 312 bytes, 160 |
+| 192 | 121 | cap 64: 64, 304 bytes, 216 | cap 64: 64, 320 bytes, 216 | refused |
+| 256 | 161 | cap 64: 64, 256 bytes, 216 | cap 64: 64, 280 bytes, 216 | refused |
+
+The V100 refused D = 192 and 256 at compilation, before any launch ("D=192 requires 121
+resident blocks; this GPU can hold 80. The current one-kernel row layout cannot run safely
+at this size.", and 161 blocks at D = 256), and `--tiles mma` at every D before anything
+was compiled ("--tiles mma needs FP64 tensor-core instructions (mma.sync m8n8k4 f64,
+compute capability 8.0 or later); this GPU is 7.0: use --tiles auto or scalar").
+
+The runs (`rcmps-gpu-optimize --run-gpu`): 3 accepted iterations at D = 8 to 128 (96 and
+128 being resident on both GPUs) and 30 at D = 16 and 32, each passing the initial
+qualification against the CuPy oracle and the final five-row validation. At the initial
+state the fast energy differs from the oracle's by at most 7.8e-15 and the gradient by
+1.5e-14 to 6.2e-14 (metric norm), on both GPUs. On the A100 the two paths gave the same
+first gradient, the same energy at every iteration and the same final R, K and gradient,
+byte for byte, at every D and for both lengths. The seconds include compilation, initial
+qualification and validation:
+
+| D | Iterations | Initial energy | Fast - oracle: A100, V100 | Final energy (A100) | V100 - A100 | Seconds: A100 tensor cores, scalar; V100 |
+|---|---|---|---|---|---|---|
+| 8 | 3 | 0.635263 | 1.7e-15, 1.4e-15 | 0.0011012344036118774 | -1.4e-15 | 4.4, 4.5; 5.4 |
+| 16 | 3 | 0.754995 | 1.9e-15, 2.3e-15 | 0.06923331417005117 | +2.0e-15 | 5.4, 5.6; 7.0 |
+| 32 | 3 | 1.210888 | 7.8e-15, 7.1e-15 | 0.2639712900504151 | +3.3e-16 | 6.1, 6.4; 7.7 |
+| 64 | 3 | 0.970180 | 4.8e-15, 4.0e-15 | 0.1889563667046353 | -1.6e-15 | 7.0, 8.1; 9.8 |
+| 96 | 3 | 0.929534 | 3.3e-15, 3.4e-15 | 0.16661806711404634 | +5.6e-16 | 10.2, 11.8; 13.5 |
+| 128 | 3 | 0.963646 | 5.9e-15, 4.0e-15 | 0.1813095301955501 | +1.3e-15 | 15.5, 17.8; 19.5 |
+| 16 | 30 | 0.754995 | | -0.27963031615292266 | +1.1e-12 | 9.8, 10.1; 13.2 |
+| 32 | 30 | 1.210888 | | -0.27857855201722104 | -3.9e-14 | 11.4, 12.2; 14.8 |
+
+Along the 30 iterations the energies of the two GPUs differ by at most 6.7e-12 (D = 16) and
+8.0e-13 (D = 32).
+
+The excitation solver. Compilation and residency (`gpu_bringup.py --stages device
+compile`, both kernels at D = 4, 8, 16, 32, 64, 96 and 128 with every path of the device):
+on the A100 both kernels are resident with both paths at every D, at D = 128 with register
+cap 120 (uncapped and at cap 160 the device holds 108 blocks; at cap 120, 216, for the 208
+blocks of the action kernel and the 160 of the pair kernel; up to 88 bytes spilled); on the
+V100 the action kernel is resident up to D = 96 (156 of 160 blocks) and the pair kernel up
+to D = 64 (80 of 160), and the pair kernel at D = 96 and both at D = 128 are refused
+("unsafe cooperative grid: 120 blocks are not resident for any register cap (cap,
+registers, capacity): [(None, 168, 80), (160, 160, 80), (120, 120, 80), (96, 96, 80), (64,
+64, 80)]" at D = 96). Every compiled kernel passed the PTX audit. The kernel checks:
+
+| Script | Check | A100: tensor cores and scalar tiles | V100: scalar tiles |
+|---|---|---|---|
+| `gpu_fused_check.py` | fused kernel against the host-controlled NumPy integrator: random Z2 states D = 4, 6, 8 and 12 (odd sector at p = 0 with both scalings, even sector at p = 0.4) | same steps; samples to 6.1e-15, action to 1.3e-14 | same steps; samples to 6.3e-15, action to 1.4e-14 |
+| | the same on the D = 16 fixture | samples to 7.3e-11, action to 3.5e-10 (even sector: 1545 steps, the host 1541) | samples to 1.2e-11, action to 8.3e-11 (even sector: 1542 steps, the host 1530) |
+| | repeated launches; the two paths | same bytes; the two paths the same bytes and steps, the scalar tiles 1.18 to 1.29 times the tensor-core time per right-hand side at D = 4 to 12 and 1.42 at D = 16 (9.8 to 13.8 μs with the tensor cores) | same bytes; 10.5 to 16.4 μs per right-hand side |
+| `gpu_pair_check.py --reference` | bilinear φ⁴ term, D = 16, against the host packed and unpacked systems; repeated launches | 1.1e-15, 1.1e-14, the same bytes with either path; repeat the same bytes; 0.34 s (tensor cores) and 0.52 s (scalar) per launch | 7.4e-15, 1.6e-14; repeat the same bytes; 0.48 s |
+| `gpu_action_check.py --reference` | complete action, D = 16, against the unpacked equations on the CPU; repeated action | 8.7e-11, the same value with either path; repeat the same bytes; 0.52 to 0.56 s (tensor cores) and 0.67 to 0.71 s (scalar) per action | 2.3e-11; repeat the same bytes; 0.68 to 0.72 s |
+
+`check_references.py`: the six levels of `excitation_references.toml` at D = 16 and 32,
+through the command line at the settings of the A100 runs. Every level is within its
+tolerance (1e-10) and accepted, with the stored number of actions, on both GPUs; on the A100
+the two paths gave the same energies (the four validation energies and the Ritz energy), and
+the V100's validated energies differ from the A100's by at most 1.4e-12:
+
+| Level | Actions | Validated energy - Julia: A100, tensor cores | A100, scalar tiles | V100 | Wall (s): A100 tensor cores, scalar; V100 |
+|---|---|---|---|---|---|
+| D = 16, odd, p = 0 | 16 | -2.0e-12 | -2.0e-12 | -2.9e-12 | 15.3, 18.4; 20.1 |
+| D = 16, odd, p = 0.5 | 17 | -1.4e-12 | -1.4e-12 | -2.8e-12 | 15.5, 19.1; 21.0 |
+| D = 16, even, p = 0.5 | 20 | +9.5e-13 | +9.5e-13 | +8.3e-13 | 17.0, 21.1; 23.3 |
+| D = 32, odd, p = 0.05 | 27 | +4.4e-12 | +4.4e-12 | +2.9e-12 | 57.6, 76.1; 87.1 |
+| D = 32, odd, p = 0.1 | 28 | -4.0e-12 | -4.0e-12 | -4.9e-12 | 59.4, 78.2; 88.8 |
+| D = 32, even, p = 0 | 30 | -1.1e-11 | -1.1e-11 | -1.1e-11 | 61.7, 81.2; 93.1 |
+
+The D = 64 solve (`RCMPS_STATE_D64`: the CPU checkpoint of the D = 64 row of the next table;
+odd sector, p = 0, the defaults), on the A100 with the tensor cores and with the scalar
+tiles forced: 44 actions each, the same Davidson history, and the validated energy
+0.03469099907685025 in both (four-energy spread 4.3e-11, residual 8.5e-8), 1.2e-11 below
+the run of 2026-10-14 and 2.5e-10 above the stalled Julia run; wall 411 s and 577 s (the
+search 274 s and 415 s, the preconditioner 81 s and 80 s, the validation 49 s and 72 s).
+
+On the V100 machine, before the batches, the CI subset of the tests (the command under
+"Tests") ran under Python 3.11.9 at the commit "Excitation qualification: fail on errors and
+wrong numbers, compare launches bitwise": 275 passed and 10 skipped (the four NVRTC
+compilation tests, the CUDA headers being absent there, and six slow tests), in 8.5
+minutes. The three tests added since are two NVRTC tests and a CPU test of
+`gpu_optimizer_check.py`.
+
+Not qualified: any other GPU (the P100, the T4 and RTX 20 cards, the A30, the 8.6 and 8.9
+cards of the table under "GPUs", and the H100, where only the research runtime ran); the
+optimizer of this package beyond D = 128 (D = 160 to 256 were compiled and checked for
+residency, not run) and to convergence (the batch runs 3 and 30 iterations); the excitation
+solver of this package beyond D = 64 on the A100 and D = 32 on the V100 (the D = 96 and 128
+solves below used the imported and earlier sources, with the tensor cores).
+
 **Excitation solver, A100 PCIe 40 GB, 2026-10-13 and 14, up to D = 128.** The import commit
 of this package holds byte for byte the sources of the last batch of runs (see Provenance):
 the masses at D = 16, 32 and 64, the last restart of the D = 128 mass (13 actions, from a
@@ -568,13 +720,13 @@ Kernel checks, with the scripts of `qualification/excitations/` (each prints JSO
 | `gpu_bringup.py` * | batched GMRES and kinetic action, GPU against NumPy, D = 64 | 6e-14, 7e-14 |
 | `gpu_settings_check.py` * | kinetic nodes and window settings: D = 16 to 128 (the last batch only repeated D = 128 at 512 nodes against itself) | "Kinetic nodes at large D" |
 | `rcmps-gpu-excitations --start` * | restart from the checkpoint of a finished D = 16 run | converged in 1 action, same validated energy |
-| `check_references.py` | reference levels against Julia (the A100 values above) | not yet run on a GPU |
+| `check_references.py` | reference levels against Julia (and the A100 values above) | not run in these runs; first run in the batch of 2026-10-15 |
 
 The repeated launches of `gpu_fused_check.py` in these runs compared the second launch with
 itself: the kernel returns its sample buffer, which the second launch overwrote before the
-comparison. The script now copies the samples of the first launch and compares the bytes;
-the repeats above are those of `gpu_action_check.py` and `gpu_pair_check.py`, whose values
-are copied to the host.
+comparison. The script now copies the samples of the first launch and compares the bytes,
+as in the batch of 2026-10-15; the repeats above are those of `gpu_action_check.py` and
+`gpu_pair_check.py`, whose values are copied to the host.
 
 The fused kernel occupies 104 of 324 resident thread blocks of the A100 at D = 64, 156 of
 216 at D = 96 and 208 of 216 at D = 128; it has not run beyond D = 128 there (with register
@@ -596,9 +748,11 @@ took 0.43 s, 1.39 s and 9.2 s at D = 32, 64 and 128. The selected states pass th
 consistency check (at D = 128 on the A100 only with 512 kinetic nodes); the independent
 directional-derivative audit passes at D = 32 but not at D = 96 and 128, so there is no
 independent error certificate for these gradients. The generic runtime, with the command
-line, worker and validator of this package, has not yet run on a GPU, nor have the sizes
-outside the historical set; the plan of every run says so
-(`layout.generic_runtime_actual_GPU_qualified` false).
+line, worker and validator of this package, first ran in the batch of 2026-10-15 (short
+runs at D = 8 to 128, sizes of the historical set; the sizes outside it, D = 112, 160 and
+192, were only compiled). The plan of every run still records
+`layout.generic_runtime_actual_GPU_qualified` false, a constant of the imported runtime;
+this section, not that flag, says what has run.
 
 ## Tests
 
