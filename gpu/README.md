@@ -112,11 +112,12 @@ path, and GPUs without FP64 tensor cores, have not been timed.
 paths where they apply, and the PTX passes the audit (the optimizer's kernel at d = 4, 64
 and 128 in `tests/optimizer/test_tiles.py`, the excitation kernels at d = 3 and 32 in
 `tests/excitations/test_fused.py`, compute_60, 70, 75, 80, 86 and 90); and ptxas, through
-NVRTC, assembles them for the sm_XX of these GPUs (both kernels at d = 8 for sm_60, 70 and
-75 with the scalar tiles and sm_80, 86 and 90 with the tensor cores, the optimizer's also
-at d = 128 for sm_70), which PTX alone does not show: NVRTC writes FP64 `mma.sync` for any
-target, and only ptxas refuses it below sm_80. Nothing has run there. The qualification of
-a new GPU is `qualification/run_all.sh` (see "GPU qualification").
+NVRTC, assembles them to a cubin (the optimizer's kernel and the excitation action kernel
+at d = 8 for sm_60, 70 and 75 with the scalar tiles and for sm_80, 86 and 90 with the
+tensor cores, the excitation pair kernel for sm_70 and 86, the optimizer's kernel also at
+d = 128 for sm_70; sm_89 not), which PTX alone does not show: NVRTC writes FP64 `mma.sync`
+for any target, and only ptxas refuses it below sm_80. Nothing has run there. The
+qualification of a new GPU is `qualification/run_all.sh` (see "GPU qualification").
 
 On slow FP64 GPUs one trajectory of the optimizer may exceed its device watchdog
 (`--max-device-seconds`, 300 s), which stops the run cleanly at the first evaluation. A GPU
@@ -500,7 +501,8 @@ host-integrator stages of `gpu_bringup.py`. Every script exits with status 1 whe
 fails: an error, a failed compilation or PTX audit, a repeated launch whose result is not
 the same bytes (or, for the complete action, differs by more than 1e-9), a difference from
 the host integrator or the CPU equations above 1e-9 (relative), a level outside its
-tolerance; a size or tile path the GPU cannot hold or run is reported, not failed. Each
+tolerance or not accepted (`check_references.py`; the D = 64 solve fails unless its level
+is accepted); a size or tile path the GPU cannot hold or run is reported, not failed. Each
 step writes one log of JSON lines, and `NEW_DIR/status.tsv` lists the exit status and time
 of every step; the script's header lists the steps.
 
@@ -607,27 +609,28 @@ pip install -e "./gpu[test]"
 cd gpu && OPENBLAS_NUM_THREADS=1 python -m pytest        # whole default suite, about 25 minutes
 ```
 
-GitLab CI runs, on Python 3.11 and 3.12, the job `python` when `gpu/`, `test/fixtures/`
-or `.gitlab-ci.yml` change and on the default branch: the optimizer, state-file and
+GitLab CI runs, on Python 3.11 and 3.12, the job `python` when `gpu/`, `test/fixtures/` or
+`.gitlab-ci.yml` change and on the default branch: the optimizer, state-file and
 reference-level tests and the excitation files that exercise every production module (the
 driver on the strict CPU stand-in for CuPy, the command line), in about 9 minutes on one
-thread of a workstation. The optimizer tests include a run of `rcmps-gpu-optimize --run-gpu`
-at D = 8 and its resume, end to end on the CPU (`tests/optimizer/test_worker_cpu.py`): the
-command line, worker, qualification, optimization and validation run as written, with
-stand-ins for the GPU leaves only (`tests/optimizer/worker_on_cpu.py`: a NumPy-backed
-`cupy`, the CPU oracle of the trajectory kernel, the CPU kinetic solvers), on a stand-in
-device of compute capability 8.0 and, for the resume, 7.0 (scalar tiles, and a register cap
-from the ladder). `tests/optimizer/test_tiles.py` checks the scalar tile product bitwise
-against the chain of FMAs it implements, the selection rule, the PTX audit, and with NVRTC
-(no GPU) both tile paths of the kernel for compute capability 6.0 to 9.0, to PTX and, with
-ptxas, to a cubin, as `tests/excitations/test_fused.py` does for the excitation kernels.
+thread of a workstation (10 with the NVRTC compilation tests, which skip on the CI image).
+The optimizer tests include a run of `rcmps-gpu-optimize --run-gpu` at D = 8 and its
+resume, end to end on the CPU (`tests/optimizer/test_worker_cpu.py`): the command line,
+worker, qualification, optimization and validation run as written, with stand-ins for the
+GPU leaves only (`tests/optimizer/worker_on_cpu.py`: a NumPy-backed `cupy`, the CPU oracle
+of the trajectory kernel, the CPU kinetic solvers), on a stand-in device of compute
+capability 8.0 and, for the resume, 7.0 (scalar tiles, and a register cap from the ladder).
+`tests/optimizer/test_tiles.py` checks the scalar tile product bitwise against the chain of
+FMAs it implements, the selection rule, the PTX audit, and with NVRTC (no GPU) both tile
+paths of the kernel for compute capability 6.0 to 9.0, to PTX and, with ptxas, to a cubin,
+as `tests/excitations/test_fused.py` does for the excitation kernels.
 `tests/test_qualification.py` checks that every option `qualification/run_all.sh` gives a
 script exists, that `gpu_optimizer_check.py` runs the optimizer with its own settings, and
-runs the excitation scripts of the batch on a stand-in device (`tests/qualification_on_cpu.py`:
-NumPy arrays, a fused kernel whose launch is the host integrator), where a compilation
-error, an FP32 instruction in the PTX, a launch that is not repeatable bitwise and a result
-off by 1e-6 each give exit status 1, and a size the device cannot hold does not. The same
-command, from `gpu/`:
+runs the excitation scripts of the batch on a stand-in device
+(`tests/qualification_on_cpu.py`: NumPy arrays, a fused kernel whose launch is the host
+integrator), where a compilation error, an FP32 instruction in the PTX, a launch that is
+not repeatable bitwise and a result off by 1e-6 each give exit status 1, and a size the
+device cannot hold does not. The same command, from `gpu/`:
 
 ```bash
 OPENBLAS_NUM_THREADS=1 python -m pytest tests/optimizer tests/test_io.py tests/test_qualification.py \
@@ -649,18 +652,18 @@ cd gpu/tests/optimizer && OPENBLAS_NUM_THREADS=1 python -m unittest test_generic
 cd gpu/tests && OPENBLAS_NUM_THREADS=1 python -m unittest test_package test_io test_qualification
 ```
 
-Without installing, put the absolute path of `gpu/src` on `PYTHONPATH`. The optimizer
-tests take about 40 s (70 s with the NVRTC compilations), the 19 excitation files about 25
-minutes on one thread. The
-excitation tests check every module against a dense NumPy port of the Julia algorithm
-(`dense_reference.py`), the oracle against analytic states, the solver against the Julia
-levels of `excitation_references.toml` (and, with the slow flag, against the stored Julia
-results of the companion repository), invariance under the scaling S, the kernel tables
-against the packed systems, the driver on a strict CPU stand-in for CuPy (`fakecupy.py`),
-the command line and the defaults it resolves, time reversal (levels of (R, K) at p equal
-those of (conj R, -conj K) at -p), and compilation of the kernel source with NVRTC when the
-CUDA headers are available. With the slow tests the suite takes roughly an hour on one
-thread, run one file at a time. Environment variables:
+Without installing, put the absolute path of `gpu/src` on `PYTHONPATH`. The optimizer tests
+take about 40 s (85 s with the NVRTC compilations), `test_qualification` 25 s, the 19
+excitation files about 25 minutes on one thread. The excitation tests check every module
+against a dense NumPy port of the Julia algorithm (`dense_reference.py`), the oracle
+against analytic states, the solver against the Julia levels of
+`excitation_references.toml` (and, with the slow flag, against the stored Julia results of
+the companion repository), invariance under the scaling S, the kernel tables against the
+packed systems, the driver on a strict CPU stand-in for CuPy (`fakecupy.py`), the command
+line and the defaults it resolves, time reversal (levels of (R, K) at p equal those of
+(conj R, -conj K) at -p), and compilation of the kernel source with NVRTC when the CUDA
+headers are available. With the slow tests the suite takes roughly an hour on one thread,
+run one file at a time. Environment variables:
 
 | Variable | Effect |
 |---|---|
@@ -691,26 +694,25 @@ changes only what its message says. For the optimizer runtime,
 `src/rcmps_gpu/optimizer/provenance.json` records the sealed research manifest (the
 imported sha256 of the 24 runtime modules, the H100 base manifest and the builder) and
 every edit made since, commit by commit, in the format described in
-`src/rcmps_gpu/provenance.py`: the import rewrite of the packaging commit, then the
-pruning commit, which deleted two modules that the generic run never imports and code
-paths it never reaches (old evaluators, the CUDA-graph integrator and the driver-library
-bindings it needed, the research benchmark command lines) and renamed the quartic backend
-label of the run to `persistent_trajectory`, a commit that rewords comments still
-describing CUDA graph capture, and the portability commits, which add the scalar tile path
-and the selection of the tiles by device, then the register caps, and correct the register
-range in a docstring. The optimizer command line reverts those edits in memory when it
-plans a run, and the worker again before and after the run: a runtime that is not the
-imported one with its recorded edits is refused, as the research launcher refused one that
-was not derived from the sealed H100 candidate. The sha256 of
-the imported manifest is written in the code (`cli.IMPORTED_MANIFEST_SHA256`) and in the
-tests, and the package `__init__` modules, which run with every runtime import, must hold
-only a docstring and constants. A test pins the sha256 of the generated CUDA source,
-compiler options and launch geometry (`tests/optimizer/golden_cuda.json`). A run records
-in `plan.json` the package version, the git commit when run from a checkout, the result
-of the provenance check, and the sha256 of every runtime module and of every other file
-of the package that runs with it (`cli.LAUNCHER_SOURCES`); the worker requires them
-unchanged. Checkpoints hash the runtime modules by file name, and a resume requires
-exactly the same runtime.
+`src/rcmps_gpu/provenance.py`: the import rewrite of the packaging commit, then the pruning
+commit, which deleted two modules that the generic run never imports and code paths it
+never reaches (old evaluators, the CUDA-graph integrator and the driver-library bindings it
+needed, the research benchmark command lines) and renamed the quartic backend label of the
+run to `persistent_trajectory`, a commit that rewords comments still describing CUDA graph
+capture, and the portability commits, which add the scalar tile path and the selection of
+the tiles by device, then the register caps, and correct the register range in a docstring.
+The optimizer command line reverts those edits in memory when it plans a run, and the
+worker again before and after the run: a runtime that is not the imported one with its
+recorded edits is refused, as the research launcher refused one that was not derived from
+the sealed H100 candidate. The sha256 of the imported manifest is written in the code
+(`cli.IMPORTED_MANIFEST_SHA256`) and in the tests, and the package `__init__` modules,
+which run with every runtime import, must hold only a docstring and constants. A test pins
+the sha256 of the generated CUDA source, compiler options and launch geometry
+(`tests/optimizer/golden_cuda.json`). A run records in `plan.json` the package version, the
+git commit when run from a checkout, the result of the provenance check, and the sha256 of
+every runtime module and of every other file of the package that runs with it
+(`cli.LAUNCHER_SOURCES`); the worker requires them unchanged. Checkpoints hash the runtime
+modules by file name, and a resume requires exactly the same runtime.
 
 For the excitation solver, the import commit holds byte for byte the sources of the A100
 qualification runs (`final2` of the research results, finished 2026-10-14 between 00:45
