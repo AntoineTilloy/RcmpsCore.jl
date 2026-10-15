@@ -316,13 +316,17 @@ both subpackages and writes those of the optimizer:
 `read_portable` also reads the unversioned directories of the research code (the
 optimizer's former `initial/` and `optimized_state/`, the Julia exports of the research
 tree; phi4): `quadrature`/`n_quad`, `window`/`half_window`, `energy`/`saved_energy` and
-`gradient.bin`/`saved_gradient.bin` are mapped as the docstring describes. The optimizer
-writes `initial/` and `optimized_state/` in format 1; `initial/` has besides the files and
+`gradient.bin`/`saved_gradient.bin` are mapped as the docstring describes. Values read from
+the `saved_*` keys get the settings of their `[saved_integration]` table, and none (unknown)
+in the earlier exports that have no such table, whose top-level settings are those of the
+GPU run, not of the saved values. The optimizer writes `initial/` and `optimized_state/` in format 1; `initial/` has besides the files and
 keys that the runtime reads (`saved_gradient.bin`, the `saved_*` keys, `precond_reg`).
 
 On the Julia side, the scripts of `gpu/julia/` (see its README) export a checkpoint as a
 format-1 directory, import one as a checkpoint, and prepare a random initial state with
-Julia's random draws; they use only the public API of RcmpsCore. The shared fixture
+Julia's random draws; they use only the public API of RcmpsCore. A checkpoint holds an
+energy only with its gradient and integration settings, so a directory that lacks one of
+the three is imported without energy (`e0` NaN), what it has being recorded in `info`. The shared fixture
 `test/fixtures/phi4_g2_D16_z2_portable` is the export of `phi4_g2_D16_z2_state.jld2`:
 `tests/test_io.py` checks that Python reads the same state from both, and
 `gpu/julia/check_portable.jl` that the export and import reproduce the checkpoint.

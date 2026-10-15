@@ -273,6 +273,15 @@ class ResearchDialects(unittest.TestCase):
         self.assertEqual(record.integration, io.Integration(192, 20.0, 1e-13, 1e-12, 1_000_000))
         self.assertEqual(record.manifold, io.Manifold(0.001, 8.935056507103287e-14))
         self.assertEqual(record.files, ("metadata.toml", "R.bin", "K.bin", "rho.bin", "saved_gradient.bin"))
+        # The earlier exports have no [saved_integration]: the settings of the saved values are
+        # unknown, not the top-level ones (as in results/reference_D64 of the research tree).
+        text = (directory / "metadata.toml").read_text()
+        older = write_legacy(self.root / "older", text[:text.index("\n[saved_integration]")] + "\n",
+                             saved_gradient=self.gradient, **self.matrices)
+        record = io.read_portable(older)
+        self.assertEqual((record.energy, record.gradient_norm, record.integration), (-0.30190930265518967, 2.98e-6, None))
+        self.assertEqual(record.gradient.tobytes(), self.gradient.tobytes())
+        self.assertEqual(states.load_portable(older).integrator, states.IntegratorParameters())
 
     def test_julia_export_of_a_fresh_or_scalar_only_state(self):
         text = ("D = 4\ncoupling = 2.7\nsaved_energy = 0.0\nsaved_energy_available = false\n"

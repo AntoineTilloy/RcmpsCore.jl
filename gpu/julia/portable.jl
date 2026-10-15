@@ -129,8 +129,9 @@ function read_portable(directory::AbstractString)
                                    portable_available(metadata, "saved_gradient_available"))
             gnorm, saved = metadata["saved_gradient_norm"], true
         end
-        if saved && haskey(metadata, "saved_integration")
-            integration = portable_integration(metadata["saved_integration"], "[saved_integration]")
+        if saved   # the top-level keys are the GPU run's settings, not those of the saved values
+            integration = haskey(metadata, "saved_integration") ?
+                portable_integration(metadata["saved_integration"], "[saved_integration]") : nothing
         else
             n_quad = portable_first(metadata, "quadrature", "n_quad")
             max_point = portable_first(metadata, "window", "half_window", "max_point")

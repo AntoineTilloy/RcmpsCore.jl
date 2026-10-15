@@ -5,7 +5,8 @@
 # the checkpoint: R, K, rho (recomputed by rcmps_load), model, coupling, integration and
 # manifold parameters, e0, gradient and info, all exactly. Directories that rcmps_gpu.io
 # refuses (a format_version that is not an integer, an empty model name) are refused too.
-# Prints one line per check.
+# Without its gradient or [integration], the energy of the export is not imported as e0
+# (which a checkpoint holds only with both) but recorded in info. Prints one line per check.
 #
 # Usage: julia --project=PATH/TO/RcmpsCore.jl check_portable.jl [FIXTURES_DIRECTORY]
 include(joinpath(@__DIR__, "export_state.jl"))
@@ -41,15 +42,16 @@ function check_portable(fixtures::AbstractString)
                   s.info == original.info)
         end
         # Refused here as by rcmps_gpu.io (tests/test_io.py).
-        function edited(name, old, new)
-            directory = joinpath(tmp, name)
-            cp(committed, directory)
+        copied(name) = (target = joinpath(tmp, name); cp(committed, target); target)
+        function edited(name, edit::Pair)
+            directory = copied(name)
             path = joinpath(directory, "metadata.toml")
             text = read(path, String)
-            count(old, text) == 1 || error("$old is not once in the committed metadata.toml")
-            write(path, replace(text, old => new))
+            count(edit.first, text) == 1 || error("$(edit.first) is not once in the committed metadata.toml")
+            write(path, replace(text, edit))
             return directory
         end
+        edited(name, old, new) = edited(name, old => new)
         refused(f, message) = try f(); false catch e; occursin(message, sprint(showerror, e)) end
         check("format_version = 1.0 is refused", refused(() -> read_portable(edited("version",
               "format_version = 1\n", "format_version = 1.0\n")), "unsupported rcmps-portable-state format_version 1.0"))
@@ -58,6 +60,25 @@ function check_portable(fixtures::AbstractString)
         check("an empty model name is not written", refused(() -> write_portable(joinpath(tmp, "unwritten");
               R=original.R, K=original.K, model="", coupling=2.0), "the model name is empty") &&
               !ispath(joinpath(tmp, "unwritten")))
+        # An energy is imported as e0 only with its gradient and [integration]; otherwise e0
+        # stays NaN and info records what the directory had, and an export carries no energy.
+        energy, gnorm = repr(original.e0), repr(read_portable(committed).gradient_norm)
+        for (name, directory, recorded) in (
+                ("no gradient", (d = copied("nogradient"); rm(joinpath(d, "gradient.bin")); d),
+                 ["energy = $energy", "gradient_norm = $gnorm", "has no gradient;"]),
+                ("no energy", edited("noenergy", "energy = $energy\n", ""), ["gradient_norm = $gnorm", "a stored gradient", "has no energy;"]),
+                ("no [integration]", edited("nointegration", r"\n\[integration\]\n(.+\n)+?\n" => "\n"),
+                 ["energy = $energy", "settings unknown", "has no integration settings;"]))
+            path = joinpath(tmp, "$name.jld2")
+            import_state(directory, path)
+            s = rcmps_load(path)
+            check("$name: e0 NaN, zero gradient, info records the rest", isnan(s.e0) && iszero(s.grad) &&
+                  startswith(s.info, original.info * "; not stored as e0") && all(x -> occursin(x, s.info), recorded))
+            back = joinpath(tmp, "$name export")
+            export_state(path, back)
+            q = read_portable(back)
+            check("$name: its export has no energy or gradient", all(isnothing, (q.energy, q.gradient, q.gradient_norm)))
+        end
     end
     isempty(failures) || error("$(length(failures)) checks failed")
     println("All portable round-trip checks passed")

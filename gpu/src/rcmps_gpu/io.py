@@ -51,12 +51,14 @@ gpu/julia/export_state.jl, read by read_portable and by gpu/julia/import_state.j
 read_portable also reads the unversioned directories of the research code (metadata.toml
 without `format`): initial/ and optimized_state/ of the GPU optimizer before format 1, and
 the Julia exports of the research tree. They describe phi4 (mass 1) and are normalized so:
-    integration      n_quad from `quadrature` or `n_quad`; max_point from `window`,
-                     `half_window` or `max_point`; atol, rtol (and maxiters) as such; none
-                     if neither n_quad nor max_point is given. When the energy, gradient or
-                     gradient norm comes from the saved_* keys (below) and a
-                     [saved_integration] table is present, that table instead: it holds the
-                     settings of those values, the top-level keys those of the GPU run.
+    integration      when the energy, gradient or gradient norm comes from the saved_* keys
+                     (below): the [saved_integration] table, which holds the settings of
+                     those values, and none (unknown) without that table, since the
+                     top-level keys of these Julia exports are the settings of the GPU run,
+                     not those of the saved values. Otherwise n_quad from `quadrature` or
+                     `n_quad`, max_point from `window`, `half_window` or `max_point`, atol,
+                     rtol (and maxiters) as such; none if neither n_quad nor max_point is
+                     given.
     energy           `energy`, else `saved_energy` unless saved_energy_available = false
     gradient         gradient.bin, else saved_gradient.bin unless
                      saved_gradient_available = false
@@ -323,8 +325,9 @@ def _legacy(metadata, directory):
     if norm is None and "saved_gradient_norm" in metadata and available(
             "saved_gradient_norm_available", available("saved_gradient_available")):
         norm, saved = get("saved_gradient_norm"), True
-    if saved and "saved_integration" in metadata:
-        integration = _integration(get("saved_integration"), "[saved_integration]")
+    if saved:   # the top-level keys are the GPU run's settings, not those of the saved values
+        integration = (_integration(get("saved_integration"), "[saved_integration]")
+                       if "saved_integration" in metadata else None)
     else:
         n_quad = get("quadrature", get("n_quad"))
         max_point = get("window", get("half_window", get("max_point")))

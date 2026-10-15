@@ -22,7 +22,13 @@ julia --project=. gpu/julia/check_portable.jl [FIXTURES_DIRECTORY]
   directory of the research code) as a new checkpoint. A given `rho.bin` is checked as the
   stationary density of R and K. A state with `validation_passed = false` is refused; with a
   gradient and its `gradient_norm`, the metric norm is recomputed and must agree to 1e-9, and
-  must not exceed `gradient_target` when `gradient_target_reached` is set.
+  must not exceed `gradient_target` when `gradient_target_reached` is set. A checkpoint holds
+  an energy `e0` only together with its gradient `grad` and the integration settings of both
+  (readers take a finite `e0` to mean all three, and the default `grad` is zero), so the
+  energy and gradient are imported only when the directory has an energy, a gradient and its
+  integration settings. Otherwise `e0` stays NaN, and the energy, gradient norm and settings
+  that the directory has are appended to `info`, with a warning: an export of the checkpoint
+  then carries no energy.
 - `prepare_initial.jl`: a random Z2 initial state reproducible in Julia (the matrices of
   `RandomStateZ2(D; seed, scaling)`, scaling 1/sqrt(D) by default, with the stationary density
   solved at tolerance 1e-13), for phi4 at the given coupling, as a format-1 directory for
