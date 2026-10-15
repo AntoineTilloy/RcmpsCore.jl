@@ -270,10 +270,12 @@ Three settings matter for accuracy:
 
 ## Kinetic nodes at large D
 
-Measured on an A100 with `qualification/excitations/gpu_settings_check.py`: the two parts
-of the action of a converged vector, at each setting, against the finest one (1024
-kinetic nodes; 2048 window nodes, window 40, ODE tolerances 1e-14/1e-13), on the states of
-the mass runs under "GPU qualification". Each part has norm 5 (D = 16) to 21 (D = 128), and
+Measured on an A100 with `qualification/excitations/gpu_settings_check.py`, with sources
+earlier than those this package imported (see "GPU qualification"): the two parts of the
+action of a converged vector, at each setting, against the finest one (1024 kinetic nodes;
+2048 window nodes, window 40, ODE tolerances 1e-14/1e-13), on the D = 16 fixture and the
+g = 2.7 GPU-optimizer states at D = 64, 96 and 128 (at D = 64 not the CPU checkpoint of the
+mass runs). Each part has norm 5 (D = 16) to 21 (D = 128), and
 at D = 128 the two energies cancel from +1.29 and -1.26 to the mass 0.035.
 
 | D | Resolvent part, 256 nodes: action, energy | 512 nodes: action, energy | ODE part, standard settings: action, energy |
@@ -363,8 +365,9 @@ SciPy 1.17.1 and CuPy 14.2.0, φ⁴ at g = 2 (the D = 16 fixture) or g = 2.7.
 
 **Excitation solver, A100 PCIe 40 GB, 2026-10-13 and 14, up to D = 128.** The import commit
 of this package holds byte for byte the sources of the last batch of runs (see Provenance):
-the four masses at D = 16, 32, 64 and 128, the D = 16 even level, and the kernel checks
-below not marked *. The other runs used earlier sources of the same algorithms;
+the masses at D = 16, 32 and 64, the last restart of the D = 128 mass (13 actions, from a
+vector computed with earlier sources), the D = 16 even level, and the kernel checks below
+not marked *. The other runs used earlier sources of the same algorithms;
 across the three source versions the D = 16, 32 and 64 masses agree to 2e-13, 8e-13 and
 2e-11. The mass and sector runs (the defaults of the command line, with 256 kinetic nodes;
 the D = 96 and 128 rows end with restarts at 512):
@@ -380,11 +383,13 @@ the D = 96 and 128 rows end with restarts at 512):
 | | 32 | even, 0 * | 30 | 61 s | 0.31281412705278433 | 3.5e-11 | 0.3128141270643408 | -1.2e-11 |
 | g = 2.7, CPU checkpoint | 64 | odd, 0 | 44 | 376 s | 0.03469099908836591 | 5.1e-11 | 0.03469099882896343 ‡ | +2.6e-10 |
 | g = 2.7, GPU-optimizer state | 96 | odd, 0 * | 71 + 2 | 1783 s + 508 s | 0.03484655970011241 | 3.5e-10 | | |
-| g = 2.7, GPU-optimizer state | 128 | odd, 0 | 108 + 12 + 13 | 6454 s + 1983 s + 2033 s | 0.03496269270838775 | 3.2e-10 | | |
+| g = 2.7, GPU-optimizer state | 128 | odd, 0 | 108 * + 12 * + 13 | 6454 s + 1983 s + 2033 s | 0.03496269270838775 | 3.2e-10 | | |
 
 \* earlier sources. † recorded mass of the research mass scan (Julia, at its own settings).
 ‡ Julia run that stalled at residual 2.3e-7, its four energies spread over 6.8e-10. The
-Julia values are levels of `test/fixtures/excitation_references.toml`. In every case
+D = 16 and 32 Julia values are levels of `test/fixtures/excitation_references.toml`; the
+D = 64 value is the mass of that stalled run of the mass scan of the companion repository
+rcmps-phi4-z2 (`research/mass_scan/masses.csv`), whose state is not a fixture. In every case
 computed by the Julia library at the settings of the GPU run (D = 16 and the D = 32 rows
 other than p = 0) the two codes take the same number of actions and both accept the level;
 the D = 16 mass is also 3.3e-12 below the recorded one. The D = 96 and 128 rows end with
@@ -418,7 +423,7 @@ Kernel checks, with the scripts of `qualification/excitations/` (each prints JSO
 | `gpu_action_check.py --reference` | complete action, fused GPU route against the unpacked equations on the CPU, D = 16 | 3.1e-11 |
 | `gpu_pair_check.py --reference` | bilinear φ⁴ term, fused kernel against the host packed and unpacked systems, D = 16 | 4.4e-15, 6.2e-15 |
 | `gpu_bringup.py` * | batched GMRES and kinetic action, GPU against NumPy, D = 64 | 6e-14, 7e-14 |
-| `gpu_settings_check.py` | kinetic nodes and window settings: D = 128 (D = 16 to 96 with earlier sources) | "Kinetic nodes at large D" |
+| `gpu_settings_check.py` * | kinetic nodes and window settings: D = 16 to 128 (the last batch only repeated D = 128 at 512 nodes against itself) | "Kinetic nodes at large D" |
 | `rcmps-gpu-excitations --start` * | restart from the checkpoint of a finished D = 16 run | converged in 1 action, same validated energy |
 | `check_references.py` | reference levels against Julia (the A100 values above) | not yet run on a GPU |
 
