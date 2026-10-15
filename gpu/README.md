@@ -32,7 +32,7 @@ runtime is the generic version of the H100 runtime of the research campaign: for
 that runtime supported (packed d = D/2 in {2, 3, 4, 8, 16, 32, 48, 64, 128}) it generates
 the same CUDA source and compiler options, bit for bit, but the generic runtime itself has
 not yet run on a GPU, nor has its scalar tile path. Both kernels run on NVIDIA GPUs with or
-without FP64 tensor cores (see "Installation"); only the A100 and the H100 have run them.
+without FP64 tensor cores (see "GPUs"); only the A100 and the H100 have run them.
 
 ## Installation
 
@@ -48,8 +48,9 @@ tensor-core instruction `mma.sync` m8n8k4 (compute capability 8.0 or later) or w
 tiles of the same layout (warp shuffles and FP64 FMAs, any GPU). Both command lines choose
 by device with one rule, `--tiles auto` (the default): tensor cores from compute capability
 8.0 on, scalar tiles below; `--tiles mma` is refused below 8.0, `--tiles scalar` runs
-anywhere (see "Optimizer: sizes, devices and checks" and the fused kernel below). The
-qualification runs used Python 3.11, NumPy 2.4.6, SciPy 1.17.1 and CuPy 14.2.0.
+anywhere (see "GPUs"). Keep CUDA 12 for Pascal and Volta GPUs (P100, V100): CUDA 13 no
+longer supports them. The qualification runs used Python 3.11, NumPy 2.4.6, SciPy 1.17.1
+and CuPy 14.2.0.
 
 For development:
 
@@ -64,6 +65,82 @@ run records in `plan.json` the git commit and whether tracked files of the packa
 modified. A regular install copies the package into site-packages: the tests and runs then
 use that copy, edits to the checkout take effect only after a reinstall, and `plan.json`
 has no git commit (`package.git_commit` null), only the version.
+
+## GPUs
+
+Both kernels, the optimizer's trajectory kernel and the excitation solver's fused kernel,
+compute every d x d product as 8 x 8 x 4 tiles in the fragment layout of the PTX
+instruction `mma.sync.aligned.m8n8k4.row.col.f64`, in one of two ways:
+
+- `mma`: that instruction, on the FP64 tensor cores (compute capability 8.0 or later);
+- `scalar`: the same fragments moved to each lane by warp shuffles, and every element
+  accumulated as a chain of FP64 FMAs in k order, on any GPU with cooperative launch
+  (compute capability 6.0 or later).
+
+The rule is the same in both command lines (`--tiles`, default `auto`): `auto` gives `mma`
+from compute capability 8.0 on, any minor version, and `scalar` below; `--tiles mma` below
+8.0 is refused before anything is compiled, with a message; `--tiles scalar` runs anywhere.
+Everything else (layout, controller, FP64 arithmetic, tolerances) is the same, and the PTX
+of either path is audited: FP64 `mma.sync` for a target 8.0 or later on the tensor-core
+path, no `mma` at all on the scalar path, no FP32 arithmetic on either. On one GPU the two
+paths agree bit for bit wherever the tensor cores compute the same FMA chain, as the A100's
+did for the excitation kernel; across GPUs, results agree to rounding. The resolved tiles
+are recorded (`compile.json`, the checkpoint and `final_validation.json` of the optimizer;
+`settings.tiles` and the kernel occupancies in the excitation `result.json`). The scalar
+path issues 24 shuffles and 8 FMAs per real tile where the tensor cores issue one
+instruction, so it is correct but not fast; it has not been timed on a GPU yet.
+
+| GPU | Compute capability | Tiles (`auto`) | Status |
+|---|---|---|---|
+| H100 | 9.0 | mma | the research runtime this one derives from ran the optimizer (D = 32 to 256); this package has not run there |
+| A100 | 8.0 | mma | excitation solver qualified up to D = 128 (scalar tiles bitwise identical to mma); the optimizer's kernels of this family ran (D = 32 to 128) |
+| A30, A10, RTX 30, L4, L40, RTX 40 | 8.0, 8.6, 8.9 | mma | compiled only (the tests compile for compute_80 and 86; compute_89 was checked once); FP64 at 1/64 of FP32 except the A30 |
+| V100 | 7.0 | scalar | compiled only; a rental is planned |
+| T4, RTX 20 | 7.5 | scalar | compiled only; FP64 at 1/32 of FP32 |
+| P100 | 6.0 | scalar | compiled only |
+
+"Compiled only" means: both kernels compile with NVRTC 12.8 for that target, both tile
+paths where they apply, and pass the PTX audit (`tests/optimizer/test_tiles.py`,
+`tests/excitations/test_fused.py`, at d = 3 to 128); nothing has run there. The
+qualification of a new GPU is `qualification/run_all.sh` (see "GPU qualification").
+
+On slow FP64 GPUs one trajectory of the optimizer may exceed its device watchdog
+(`--max-device-seconds`, 300 s), which stops the run cleanly at the first evaluation. A GPU
+that drives a display may have a kernel run-time limit that kills the persistent kernels;
+`compile.json` and the excitation `result.json` record it (`kernel_run_time_limit`).
+
+Sizes are limited by what the GPU holds resident: both kernels are cooperative and need
+their whole grid resident, which `--compile-only` (optimizer) and the start of an
+excitation run check, refusing a size that does not fit before any numerical launch. The
+grids (w = ceil(d/8), d = D/2):
+
+| Kernel | Threads per block | Thread blocks | Shared memory per block (bytes) |
+|---|---|---|---|
+| optimizer trajectory | 32 w | 10 w + 1 | 512 d + 16 w (dynamic from D = 192) |
+| excitation, action system | 32 w | 26 w | 768 d + 16 w |
+| excitation, pair system (validation) | 32 w | 20 w | 1024 d + 16 w |
+
+Largest even D whose grid is resident, estimated with the CUDA occupancy calculator from
+the register counts of NVRTC 12.8 for each target (the occupancy query of a run decides;
+CuPy's compilation can differ by a few registers, which moves a limit by one even D). The
+optimizer column includes its register caps; the excitation columns use the caps of
+`fused.REGISTER_CAPS`, and a run with validation needs both of its kernels:
+
+| GPU | Multiprocessors | Optimizer | Excitations: action kernel | pair kernel | run with validation |
+|---|---|---|---|---|---|
+| P100 | 56 | 126 | 64 | 62 | 62 |
+| V100 | 80 | 190 | 96 | 94 | 94 (96 with `--host-bilinear`) |
+| T4 | 40 | 112 | 56 | 62 | 56 |
+| A30 | 56 | 176 | 106 | 106 | 106 |
+| A100 | 108 | 256 | about 142 (208 of 216 blocks measured at D = 128) | 160 | 128 qualified, about 142 estimated |
+| RTX 3090 | 82 | 194 | 96 | 96 | 96 |
+| L4 | 58 | 176 | 84 | 80 | 80 |
+| RTX 4090 | 128 | 194 | 130 | 96 | 96 |
+| H100 SXM | 132 | 256 | 160 | 208 | 160 |
+
+Device memory does not limit these sizes on 16 GB cards (the largest buffers are the
+optimizer's validation samples, 3 GB at D = 190); the excitation solver bounds its own with
+`--basis-bytes`.
 
 ## Command line
 
@@ -392,6 +469,16 @@ What has run on which GPU, summarized; the detailed run records (logs, result fi
 environments) are kept outside the repository. All runs used Python 3.11, NumPy 2.4.6,
 SciPy 1.17.1 and CuPy 14.2.0, φ⁴ at g = 2 (the D = 16 fixture) or g = 2.7.
 
+To qualify a GPU, `bash gpu/qualification/run_all.sh NEW_DIR` (from the repository root,
+with the package and CuPy installed) runs the scripts of `qualification/` in turn, with the
+tiles the device selects and, from compute capability 8.0 on, with the scalar tiles forced:
+the optimizer's tile product, trajectories, compilation and residency per D, short runs
+(D = 8 to 64, and 96 and 128 when resident; 30 iterations at D = 16 and 32), the excitation
+kernels' compilation and checks against the host integrator, and the reference levels of
+`excitation_references.toml` through the command line (and, with `RCMPS_STATE_D64`, a
+D = 64 solve). Each step writes one log of JSON lines, and `NEW_DIR/status.tsv` lists the
+exit status and time of every step; the script's header lists the steps.
+
 **Excitation solver, A100 PCIe 40 GB, 2026-10-13 and 14, up to D = 128.** The import commit
 of this package holds byte for byte the sources of the last batch of runs (see Provenance):
 the masses at D = 16, 32 and 64, the last restart of the D = 128 mass (13 actions, from a
@@ -457,10 +544,11 @@ Kernel checks, with the scripts of `qualification/excitations/` (each prints JSO
 | `check_references.py` | reference levels against Julia (the A100 values above) | not yet run on a GPU |
 
 The fused kernel occupies 104 of 324 resident thread blocks of the A100 at D = 64, 156 of
-216 at D = 96 and 208 of 216 at D = 128: it does not fit on that GPU beyond D = 128. The
-coarse kinetic preconditioner is a dense matrix of dimension D²/2 built from D²/2 kinetic
-actions; it scales as D⁴ and is, with the kernel layout, the first thing to replace beyond
-D = 128.
+216 at D = 96 and 208 of 216 at D = 128; it has not run beyond D = 128 there (with register
+cap 64 and heavy spills, the occupancy calculator estimates that its grid stays resident up
+to about D = 142; see "GPUs"). The coarse kinetic preconditioner is a dense matrix of
+dimension D²/2 built from D²/2 kinetic actions; it scales as D⁴ and is, with the kernel
+layout, the first thing to replace beyond D = 128.
 
 **Optimizer.** The kernels of this family ran full optimizations at g = 2.7 on an A100
 SXM4 40 GB (D = 32, 64, 96, 128) and on an H100 SXM 80 GB (D = 32, 64, 128, 256, with the
@@ -497,13 +585,16 @@ at D = 8 and its resume, end to end on the CPU (`tests/optimizer/test_worker_cpu
 command line, worker, qualification, optimization and validation run as written, with
 stand-ins for the GPU leaves only (`tests/optimizer/worker_on_cpu.py`: a NumPy-backed
 `cupy`, the CPU oracle of the trajectory kernel, the CPU kinetic solvers), on a stand-in
-device of compute capability 8.0 and, for the resume, 7.0 (scalar tiles).
-`tests/optimizer/test_tiles.py` checks the scalar tile product bitwise against the chain of
-FMAs it implements, the selection rule, the PTX audit, and with NVRTC (no GPU) both tile
-paths of the kernel for compute capability 6.0 to 9.0. The same command, from `gpu/`:
+device of compute capability 8.0 and, for the resume, 7.0 (scalar tiles, and a register cap
+from the ladder). `tests/optimizer/test_tiles.py` checks the scalar tile product bitwise
+against the chain of FMAs it implements, the selection rule, the PTX audit, and with NVRTC
+(no GPU) both tile paths of the kernel for compute capability 6.0 to 9.0, as
+`tests/excitations/test_fused.py` does for the excitation kernel. `tests/test_qualification.py`
+checks that every option `qualification/run_all.sh` gives a script exists. The same
+command, from `gpu/`:
 
 ```bash
-OPENBLAS_NUM_THREADS=1 python -m pytest tests/optimizer tests/test_io.py \
+OPENBLAS_NUM_THREADS=1 python -m pytest tests/optimizer tests/test_io.py tests/test_qualification.py \
   tests/excitations/test_references.py tests/excitations/test_{coordinates,davidson,scaled}.py \
   tests/excitations/test_{kinetic,fused,symmetry,run,potential,packed,packed_pair}.py \
   tests/excitations/test_{device_strict,hamiltonian}.py
@@ -519,7 +610,7 @@ repository root):
 ```bash
 cd gpu/tests/excitations && for t in test_*.py; do OPENBLAS_NUM_THREADS=1 python -m unittest ${t%.py}; done
 cd gpu/tests/optimizer && OPENBLAS_NUM_THREADS=1 python -m unittest test_generic test_portable test_worker_cpu test_tiles
-cd gpu/tests && OPENBLAS_NUM_THREADS=1 python -m unittest test_package test_io
+cd gpu/tests && OPENBLAS_NUM_THREADS=1 python -m unittest test_package test_io test_qualification
 ```
 
 Without installing, put the absolute path of `gpu/src` on `PYTHONPATH`. The optimizer
@@ -552,6 +643,7 @@ commands. The optimizer's GPU checks are part of every run (`--compile-only` for
 compiler and resource checks alone); `qualification/optimizer/gpu_optimizer_check.py`
 qualifies a GPU: the tile product alone against the chain of FMAs, trajectories with each
 tile path, compilation and residency per D, and short runs through the command line.
+`qualification/run_all.sh` runs all of them on one GPU (see "GPU qualification").
 
 ## Provenance
 
@@ -606,7 +698,8 @@ src/rcmps_gpu/excitations/       the modules above, provenance.json
 src/rcmps_gpu/io.py              state files: JLD2 checkpoints and portable directories
 src/rcmps_gpu/provenance.py      provenance record format and check
 julia/                           Julia scripts: export, import and initial portable states
-tests/optimizer/, tests/excitations/, tests/test_package.py, tests/test_io.py
+tests/optimizer/, tests/excitations/, tests/test_package.py, tests/test_io.py, tests/test_qualification.py
+qualification/run_all.sh         the qualification batch of one GPU
 qualification/optimizer/         GPU qualification script of the optimizer
 qualification/excitations/       GPU qualification scripts of the excitation solver
 ```

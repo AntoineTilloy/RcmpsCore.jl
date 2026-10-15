@@ -61,7 +61,7 @@ python:
     - cd gpu
     - >-
       python -m pytest -q -ra --durations=20
-      tests/optimizer tests/test_io.py tests/excitations/test_references.py
+      tests/optimizer tests/test_io.py tests/test_qualification.py tests/excitations/test_references.py
       tests/excitations/test_coordinates.py tests/excitations/test_davidson.py
       tests/excitations/test_scaled.py tests/excitations/test_kinetic.py
       tests/excitations/test_fused.py tests/excitations/test_symmetry.py
