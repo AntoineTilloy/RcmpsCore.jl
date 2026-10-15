@@ -12,18 +12,6 @@ and sine-Gordon Hamiltonians are given in [docs/excitations.tex](docs/excitation
 This is version 0.2, an independent rewrite with the same name and UUID; the
 original implementation is frozen as tag `v0.1.0`.
 
-## Implementations
-
-| Package | Language, hardware | Scope | Role |
-|---|---|---|---|
-| `RcmpsCore` (`src/`) | Julia, CPU | all models | reference |
-| `rcmps_gpu` ([`gpu/`](gpu/README.md)) | Python with CuPy, CUDA, FP64; A100 and H100 | φ⁴ on Z₂-symmetric states, even D: optimizer and excitation solver | accelerator; excitations qualified to D=128 |
-
-They share one contract: `rcmps_store` checkpoints (JLD2 schema 1), the portable state
-directories of format 1 (Julia side in `gpu/julia/`), and the excitation levels of
-`test/fixtures/excitation_references.toml`, which `benchmark/excitation_references.jl`
-and the `gpu/` tests recompute.
-
 ## Installation
 
 The package is not registered. Add it by URL, or clone the repository and run
@@ -52,6 +40,20 @@ and indexing changes.
 Troubleshooting: a directory listed in `JULIA_LOAD_PATH` ahead of the active project
 (`@`) that contains another RcmpsCore.jl checkout takes precedence over the active
 project, and `using RcmpsCore` loads that copy; `JULIA_LOAD_PATH='@:@stdlib'` avoids this.
+
+## Implementations
+
+| Package | Language, hardware | Scope | Role |
+|---|---|---|---|
+| `RcmpsCore` (`src/`) | Julia, CPU | all models | reference |
+| `rcmps_gpu` ([`gpu/`](gpu/README.md)) | Python with CuPy, CUDA, FP64; A100 and H100 | φ⁴ on Z₂-symmetric states, even D: optimizer and excitation solver | accelerator; excitations qualified to D=128 |
+
+They share one contract: `rcmps_store` checkpoints (JLD2 schema 1), the portable state
+directories of format 1 (Julia side in `gpu/julia/`), and the excitation levels of
+`test/fixtures/excitation_references.toml`, which `benchmark/excitation_references.jl`
+and the `gpu/` tests recompute. The D=4 and D=32 Z₂ states of those levels and a portable
+export of the D=16 state are in `test/fixtures/` too. GitLab CI also runs the CPU tests of
+`gpu/` on Python 3.11 and 3.12 (see [gpu/README.md](gpu/README.md#tests)).
 
 ## Quick start
 
@@ -206,8 +208,7 @@ default of `optimize_state` was 0.1). Other models are recomputed with
 | `src/optimization.jl` | Metric, retraction, released OptimKit integration, bounded Armijo search |
 | `src/storage.jl` | Versioned JLD2 schema, atomic writes, loading and selection |
 | `test/` | `runtests.jl` and the kinetic and excitation test files it includes |
-| `test/fixtures/` | Captured D=48 Davidson residual history (stall-rule test); D=16, g=2 Z₂ φ⁴ ground state (mass regression); shared with `gpu/`: D=4 and D=32 Z₂ states, a portable export of the D=16 state, `excitation_references.toml` |
-| `gpu/` | Python package `rcmps_gpu` (CUDA optimizer and excitation solver), its tests, GPU qualification scripts and the Julia scripts for portable states; see [gpu/README.md](gpu/README.md) |
+| `test/fixtures/` | Captured D=48 Davidson residual history (stall-rule test); D=16, g=2 Z₂ φ⁴ ground state (mass regression) |
 | `docs/` | Boundary-gradient derivation, benchmark report, excitation guide and derivation, numerics guide |
 | `examples/` | `phi4.jl`, `excitations.jl` (free dispersion or a saved state), `migrate_legacy.jl` |
 | `benchmark/` | Validation, comparison and scaling scripts, the dense Python derivation check `boundary_reference.py`, recorded tables and reports, the 0.1 adapter `legacy.jl`, its own `Project.toml` |
@@ -230,8 +231,7 @@ python benchmark/plot_boundary.py                             # numpy, matplotli
 ```
 
 GitLab CI (`.gitlab-ci.yml`) runs `Pkg.test()` on every push with Julia 1.12, and
-with Julia 1.10, the lowest supported version, as a non-blocking job; the CPU tests
-of `gpu/` run on Python 3.11 and 3.12 (see [gpu/README.md](gpu/README.md#tests)).
+with Julia 1.10, the lowest supported version, as a non-blocking job.
 
 The D=16 regression (8 minutes with two threads on a loaded 12-core workstation)
 recomputes the odd-sector p=0 mass of the g=2 Z₂ state in `test/fixtures/` with the
