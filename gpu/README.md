@@ -109,6 +109,30 @@ Julia's random draws; they use only the public API of RcmpsCore. The shared fixt
 `tests/test_io.py` checks that Python reads the same state from both, and
 `gpu/julia/check_portable.jl` that the export and import reproduce the checkpoint.
 
+## Reference levels
+
+`test/fixtures/excitation_references.toml` holds excitation levels shared with the Julia
+package. Each `[[levels]]` entry is one level of one solve: a state of `test/fixtures`
+(checked by sha256), a `[settings]` table, sector, momentum and number of levels, the Julia
+validated energy, four validation energies and Ritz energy, and the tolerances a
+recomputation must meet; the D = 16 and D = 32 entries also hold the values of the A100 runs
+(`gpu_*`). The file's `about` and `[fields]` describe every key.
+`benchmark/excitation_references.jl` recomputes the regenerable Julia levels (D = 4 and
+D = 16) with RcmpsCore and checks them, or with `--update` rewrites them. Here:
+
+- `tests/excitations/test_references.py` runs the four D = 4 solves (a random Z2 state,
+  `nev = 2`, both sectors, p = 0 and 0.4) with the NumPy backend in about a minute; they
+  agree with Julia within 1e-12, and the tolerance is 1e-11. With `RCMPS_EXCITATION_SLOW=1`
+  it also runs the three D = 16 solves at the settings of the A100 runs (about 9 minutes
+  each on one thread; validated energies within 2.4e-12 of Julia's, tolerance 1e-10).
+- `qualification/excitations/check_references.py` runs the D = 16 and D = 32 levels through
+  the command line on a GPU and prints, as JSON lines, their differences from the Julia
+  values (with the tolerances) and from the A100 values.
+
+The recorded mass of the research mass scan at D = 16 (level `mass_scan_D16_g2`), which
+`tests/excitations/test_eigsolve.py` and `test_stored_references.py` compare with, is read
+from the same file.
+
 ## Kinetic nodes at large D
 
 Measured on an A100 with `qualification/excitations/gpu_settings_check.py`: the two parts
@@ -188,7 +212,7 @@ cd gpu/tests && OPENBLAS_NUM_THREADS=1 python -m unittest test_package test_io
 ```
 
 Without installing, put the absolute path of `gpu/src` on `PYTHONPATH`. The optimizer
-tests take about 10 s, the 18 excitation files about 24 minutes on one thread. The
+tests take about 10 s, the 19 excitation files about 25 minutes on one thread. The
 excitation tests check every module against a dense NumPy port of the Julia algorithm
 (`dense_reference.py`), the driver on a strict CPU stand-in for CuPy (`fakecupy.py`), the
 command line, and compilation of the kernel source with NVRTC when the CUDA headers are
@@ -206,8 +230,9 @@ Environment variables:
 
 The GPU qualification scripts of the excitation solver are in
 `qualification/excitations/` (`gpu_bringup.py`, `gpu_fused_check.py`,
-`gpu_action_check.py`, `gpu_pair_check.py`, `gpu_settings_check.py`). They run on a GPU
-against the installed package and print JSON lines.
+`gpu_action_check.py`, `gpu_pair_check.py`, `gpu_settings_check.py`,
+`check_references.py`). They run on a GPU against the installed package and print JSON
+lines.
 
 ## Layout
 

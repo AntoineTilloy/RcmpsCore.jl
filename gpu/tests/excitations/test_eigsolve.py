@@ -44,6 +44,7 @@ from rcmps_gpu.excitations.potential import ActionSystem, integrate_scipy
 from rcmps_gpu.excitations.scaled import ScaledState
 from rcmps_gpu.excitations.states import IntegratorParameters, SolverFailure, adj, make_state, random_state
 from _paths import FIXTURES
+import _references
 
 slow = unittest.skipUnless(os.environ.get("RCMPS_EXCITATION_SLOW") == "1",
                            "set RCMPS_EXCITATION_SLOW=1 (more than about a minute)")
@@ -52,7 +53,9 @@ FREE, PHI4 = models.phi4_terms(0.0), models.phi4_terms(1.0)
 NODES = 32
 WINDOW = dict(max_point=14, n_quad=32, atol=1e-13, rtol=1e-12)
 FIXTURE = str(FIXTURES / "phi4_g2_D16_z2_state.jld2")
-RECORDED_MASS = 0.3523798021192911   # benchmark/excitation_mass_d16.jl
+# The recorded mass of the research mass scan, which benchmark/excitation_mass_d16.jl also checks.
+MASS_SCAN = _references.level("mass_scan_D16_g2")
+RECORDED_MASS = None if MASS_SCAN is None else MASS_SCAN["validated_energy"]
 
 
 def tuned(state, **controls):
@@ -1065,7 +1068,8 @@ class DefaultsTest(Case):
             es.sector_dimension(PLAIN, sector="odd")
 
 
-@unittest.skipUnless(os.path.exists(FIXTURE), "the D = 16 Julia fixture is not available (RCMPS_TEST_FIXTURES)")
+@unittest.skipUnless(os.path.exists(FIXTURE) and RECORDED_MASS is not None,
+                     "the D = 16 Julia fixture or the reference file is not available (RCMPS_TEST_FIXTURES)")
 class AcceptanceTest(Case):
     """The whole production pipeline on the stored Julia state."""
 
@@ -1075,7 +1079,8 @@ class AcceptanceTest(Case):
         n_quad 512, atol 1e-13, rtol 1e-12, library defaults (odd sector, density gauge, 256
         kinetic nodes, 8 preconditioner nodes), refined = (n_quad 768, window 40, atol 1e-15,
         rtol 1e-14) with 512 kinetic nodes. The validated mass must equal the recorded Julia
-        value 0.3523798021192911 within 1e-9 (the benchmark's gate) with S = sqrt(rho).
+        mass (level mass_scan_D16_g2 of test/fixtures/excitation_references.toml) within that
+        level's tolerance, 1e-9 (the benchmark's gate), with S = sqrt(rho).
         Measured: difference 1.95e-11, 23 Davidson operations (21 expansions and the two
         refresh evaluations of the default maxspace = 8; the research run's 16 used a space
         that never restarts, see test_d16_research_schedule)."""
@@ -1100,7 +1105,7 @@ class AcceptanceTest(Case):
                          (16, "odd", 128, "density", "density", "field"))
         self.assertEqual((r["kinetic_nodes"], r["refined_kinetic_nodes"], r["preconditioner"]["nodes"]), (256, 512, 8))
         self.assertTrue(r["converged"] and r["accepted"])
-        self.assertLessEqual(abs(mass - RECORDED_MASS), 1e-9)
+        self.assertLessEqual(abs(mass - RECORDED_MASS), MASS_SCAN["tolerance"])
         self.assertLessEqual(r["numops"], 25)
         self.assertLess(v["energy_spread"], 1e-7)
         self.assertLess(max(v["standard_residual"], v["refined_residual"]), 1e-5)

@@ -18,7 +18,8 @@ test/fixtures/phi4_g2_D16_z2_state.jld2 here. Momentum 0, odd sector, ORIGINAL g
   energy        real(dot(c, action)) = 0.3523798021196878; residual |action - energy c| = 3.80e-8
   checks        bilinear energies <W|H|W> (:124-129): 0.35237980211934294 at the STANDARD
                 settings (window 30, n_quad 512, atol 1e-13, rtol 1e-12, 256 kinetic nodes) and
-                0.3523798021192911 at the tight ones, the recorded mass.
+                the recorded mass at the tight ones (level mass_scan_D16_g2 of
+                test/fixtures/excitation_references.toml; the test checks that they are equal).
 Through h5py a JLD2 complex array is compound (re, im), a matrix comes back transposed and
 a CartesianIndex is the compound I = ('1', '2'), one based.
 
@@ -69,19 +70,22 @@ from rcmps_gpu.excitations import states
 from rcmps_gpu.excitations.davidson import DavidsonOptions
 from rcmps_gpu.excitations.states import IntegratorParameters, SolverFailure, adj
 from _paths import FIXTURES, PHI4_Z2
+import _references
 
 FIXTURE = str(FIXTURES / "phi4_g2_D16_z2_state.jld2")
 RESULTS = str(PHI4_Z2 / "research" / "mass_scan" / "results" / "D16" / "g2.0000")
 ENERGY = 0.3523798021196878          # stored real(dot(c, action)), tight action
-MASS = 0.3523798021192911            # recorded validated mass: tight bilinear energy
+MASS_SCAN = _references.level("mass_scan_D16_g2")
+MASS = None if MASS_SCAN is None else MASS_SCAN["validated_energy"]   # recorded mass: tight bilinear energy
 STANDARD_BILINEAR = 0.35237980211934294
 STANDARD = IntegratorParameters(n_quad=512, max_point=30.0, atol=1e-13, rtol=1e-12)
 TIGHT = IntegratorParameters(n_quad=768, max_point=40.0, atol=1e-15, rtol=1e-14)
 norm = np.linalg.norm
 
-available = os.path.exists(FIXTURE) and os.path.exists(os.path.join(RESULTS, "result.jld2"))
+available = os.path.exists(FIXTURE) and os.path.exists(os.path.join(RESULTS, "result.jld2")) and MASS is not None
 slow = unittest.skipUnless(os.environ.get("RCMPS_EXCITATION_SLOW") == "1" and available,
-                           "set RCMPS_EXCITATION_SLOW=1 (D = 16; needs the rcmps-phi4-z2 results)")
+                           "set RCMPS_EXCITATION_SLOW=1 (D = 16; needs the rcmps-phi4-z2 results and the "
+                           "reference file)")
 solve = unittest.skipUnless(os.environ.get("RCMPS_EXCITATION_D16_SOLVE") == "1",
                             "set RCMPS_EXCITATION_D16_SOLVE=1 as well (about eight minutes)")
 history = unittest.skipUnless(os.environ.get("RCMPS_EXCITATION_D16_HISTORY") == "1",

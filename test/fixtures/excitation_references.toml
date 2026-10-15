@@ -1,0 +1,752 @@
+about = "Reference tangent-space excitation levels of Z2 phi^4 states, shared by the Julia package RcmpsCore and the Python/CUDA package rcmps_gpu (gpu/). Each [[levels]] entry is the level `level` (1 is the lowest) of one excitation_eigsolve solve of [states.<state>] with [settings.<settings>], `sector`, `momentum` and `nev`. benchmark/excitation_references.jl recomputes the entries with regenerate = true with RcmpsCore and checks them (--update rewrites their computed fields); gpu/tests/excitations/test_references.py recomputes the D = 4 levels with the NumPy backend, and the D = 16 ones with RCMPS_EXCITATION_SLOW=1; gpu/qualification/excitations/check_references.py recomputes the D = 16 and D = 32 levels on a GPU. A recomputation agrees when its validated energy and its four validation energies are within `tolerance` of the stored ones and its Ritz energy within `ritz_tolerance`. The gpu_* fields hold the values of the A100 runs of rcmps_gpu at the same settings. The [fields] table describes every level field."
+convention = "H = H_free(m=1) + g ∫ dx :φ⁴: (no 1/4!), normal ordered at mass one, as in RcmpsCore 0.2; energies are excitation energies above the ground state in units of that mass"
+format = "rcmps-excitation-references"
+format_version = 1
+
+[fields]
+accepted = "the level passed the validation (energies agree within validation_tol, fresh residuals within acceptance_residual)"
+action_calls = "Hamiltonian actions of the solve, preconditioner excluded"
+check_spread = "mass-scan entries: largest difference between the tight action energy and the two bilinear energies"
+computed = "when the values were computed (UTC)"
+converged = "the Davidson search reached its residual target"
+dimension = "dimension of the sector coordinates"
+energy_spread = "largest difference among the four validation energies"
+four_energies = "validation energies [standard action, refined action, bilinear, refined bilinear] (r.validation: standard_energy, refined_energy, bilinear_energy, refined_bilinear_energy)"
+gpu_computed = "date of that run (UTC)"
+gpu_four_energies = "four validation energies of that run"
+gpu_numops = "Davidson operator applications of that run"
+gpu_ritz_energy = "Ritz energy of that run"
+gpu_run = "A100 run of rcmps_gpu at the same state, settings, sector and momentum (results directory of the research record)"
+gpu_sources_sha256 = "sha256 of the run's settings.source_sha256 table as in rcmps_gpu.excitations.cli.QUALIFIED_SOURCES_SHA256 (68c84931... is the qualified final2 table that the package sources derive from)"
+gpu_validated_energy = "validated energy of that run"
+julia_threads = "Julia threads of the computation (BLAS one thread)"
+julia_version = "Julia version of the computation"
+level = "index of this level in the solve, 1 for the lowest"
+momentum = "momentum p"
+name = "unique name of the entry"
+nev = "number of levels of the solve"
+numops = "Davidson operator applications of the solve"
+rcmpscore_source = "the RcmpsCore sources of the computation"
+rcmpscore_version = "RcmpsCore version of the computation"
+regenerate = "true: benchmark/excitation_references.jl recomputes it (and --update rewrites its computed fields)"
+residual = "Davidson residual of the level at the end of the search (r.residuals)"
+ritz_energy = "Davidson Ritz energy at the standard settings (r.energies)"
+ritz_tolerance = "largest admissible difference of ritz_energy for such a recomputation"
+sector = "parity sector: odd or even"
+settings = "key of [settings]"
+source = "where a value not computed by benchmark/excitation_references.jl was recorded"
+start = "start vectors used: field (field insertion) or kinetic (lowest coarse kinetic modes)"
+state = "key of [states]"
+stop_reason = "why the Davidson search stopped"
+tolerance = "largest admissible difference of validated_energy and of each four_energies entry for a recomputation at these settings, by either implementation"
+tolerance_basis = "what the tolerances rest on"
+validated_energy = "validated energy: the bilinear energy at the refined settings (r.validated_energies)"
+wall_seconds = "wall time of the solve (the excitation_eigsolve call; for the mass-scan entries the whole research run)"
+window_change = "mass-scan entries: difference between the bilinear energies at the standard and tight settings"
+
+[[levels]]
+accepted = true
+action_calls = 10
+computed = "2026-10-14T23:50:12Z"
+converged = true
+dimension = 8
+energy_spread = 1.518615344586749e-8
+four_energies = [-1.806820729345279, -1.8068207141591315, -1.8068207293452667, -1.8068207141591255]
+julia_threads = 2
+julia_version = "1.12.7"
+level = 1
+momentum = 0.0
+name = "D4_odd_p0_1"
+nev = 2
+numops = 8
+rcmpscore_source = "commit 2c451fbb47d2, src tree 77d64910b347"
+rcmpscore_version = "0.2.0"
+regenerate = true
+residual = 8.27993225553047e-14
+ritz_energy = -1.8068207293452776
+ritz_tolerance = 1.0e-11
+sector = "odd"
+settings = "small"
+start = "field"
+state = "phi4_g1_D4"
+stop_reason = "converged"
+tolerance = 1.0e-11
+tolerance_basis = "ten times the largest difference measured between Julia and the NumPy backend of rcmps_gpu over the D = 4 levels on 2026-10-15: 9.7e-13 (validated energies within 5.5e-14)"
+validated_energy = -1.8068207141591255
+wall_seconds = 25.1165189743042
+[[levels]]
+accepted = true
+action_calls = 10
+computed = "2026-10-14T23:50:12Z"
+converged = true
+dimension = 8
+energy_spread = 1.3305169299648867e-8
+four_energies = [0.09412741730300933, 0.0941274306081262, 0.09412741730296548, 0.09412743060813478]
+julia_threads = 2
+julia_version = "1.12.7"
+level = 2
+momentum = 0.0
+name = "D4_odd_p0_2"
+nev = 2
+numops = 8
+rcmpscore_source = "commit 2c451fbb47d2, src tree 77d64910b347"
+rcmpscore_version = "0.2.0"
+regenerate = true
+residual = 6.944074675138395e-14
+ritz_energy = 0.09412741730300499
+ritz_tolerance = 1.0e-11
+sector = "odd"
+settings = "small"
+start = "field"
+state = "phi4_g1_D4"
+stop_reason = "converged"
+tolerance = 1.0e-11
+tolerance_basis = "ten times the largest difference measured between Julia and the NumPy backend of rcmps_gpu over the D = 4 levels on 2026-10-15: 9.7e-13 (validated energies within 5.5e-14)"
+validated_energy = 0.09412743060813478
+wall_seconds = 25.1165189743042
+[[levels]]
+accepted = true
+action_calls = 10
+computed = "2026-10-14T23:50:17Z"
+converged = true
+dimension = 8
+energy_spread = 2.30351711039134e-8
+four_energies = [-1.6929142306452378, -1.6929142076100758, -1.6929142306452316, -1.6929142076100667]
+julia_threads = 2
+julia_version = "1.12.7"
+level = 1
+momentum = 0.4
+name = "D4_odd_p0.4_1"
+nev = 2
+numops = 8
+rcmpscore_source = "commit 2c451fbb47d2, src tree 77d64910b347"
+rcmpscore_version = "0.2.0"
+regenerate = true
+residual = 1.0306353159798179e-13
+ritz_energy = -1.6929142306452354
+ritz_tolerance = 1.0e-11
+sector = "odd"
+settings = "small"
+start = "field"
+state = "phi4_g1_D4"
+stop_reason = "converged"
+tolerance = 1.0e-11
+tolerance_basis = "ten times the largest difference measured between Julia and the NumPy backend of rcmps_gpu over the D = 4 levels on 2026-10-15: 9.7e-13 (validated energies within 5.5e-14)"
+validated_energy = -1.6929142076100667
+wall_seconds = 4.322865962982178
+[[levels]]
+accepted = true
+action_calls = 10
+computed = "2026-10-14T23:50:17Z"
+converged = true
+dimension = 8
+energy_spread = 1.4196901987340027e-8
+four_energies = [-0.190268085330807, -0.19026807113394498, -0.19026808533084433, -0.19026807113394234]
+julia_threads = 2
+julia_version = "1.12.7"
+level = 2
+momentum = 0.4
+name = "D4_odd_p0.4_2"
+nev = 2
+numops = 8
+rcmpscore_source = "commit 2c451fbb47d2, src tree 77d64910b347"
+rcmpscore_version = "0.2.0"
+regenerate = true
+residual = 7.55212155511864e-14
+ritz_energy = -0.19026808533080883
+ritz_tolerance = 1.0e-11
+sector = "odd"
+settings = "small"
+start = "field"
+state = "phi4_g1_D4"
+stop_reason = "converged"
+tolerance = 1.0e-11
+tolerance_basis = "ten times the largest difference measured between Julia and the NumPy backend of rcmps_gpu over the D = 4 levels on 2026-10-15: 9.7e-13 (validated energies within 5.5e-14)"
+validated_energy = -0.19026807113394234
+wall_seconds = 4.322865962982178
+[[levels]]
+accepted = true
+action_calls = 10
+computed = "2026-10-14T23:50:21Z"
+converged = true
+dimension = 8
+energy_spread = 2.4293544953479795e-10
+four_energies = [-5.032806566351142, -5.032806566108219, -5.032806566351124, -5.032806566108206]
+julia_threads = 2
+julia_version = "1.12.7"
+level = 1
+momentum = 0.0
+name = "D4_even_p0_1"
+nev = 2
+numops = 8
+rcmpscore_source = "commit 2c451fbb47d2, src tree 77d64910b347"
+rcmpscore_version = "0.2.0"
+regenerate = true
+residual = 5.435756334310237e-13
+ritz_energy = -5.032806566351149
+ritz_tolerance = 1.0e-11
+sector = "even"
+settings = "small"
+start = "kinetic"
+state = "phi4_g1_D4"
+stop_reason = "converged"
+tolerance = 1.0e-11
+tolerance_basis = "ten times the largest difference measured between Julia and the NumPy backend of rcmps_gpu over the D = 4 levels on 2026-10-15: 9.7e-13 (validated energies within 5.5e-14)"
+validated_energy = -5.032806566108206
+wall_seconds = 4.6276350021362305
+[[levels]]
+accepted = true
+action_calls = 10
+computed = "2026-10-14T23:50:21Z"
+converged = true
+dimension = 8
+energy_spread = 2.0350436891192203e-9
+four_energies = [-2.5476160770104848, -2.5476160749761747, -2.5476160770112113, -2.5476160749761676]
+julia_threads = 2
+julia_version = "1.12.7"
+level = 2
+momentum = 0.0
+name = "D4_even_p0_2"
+nev = 2
+numops = 8
+rcmpscore_source = "commit 2c451fbb47d2, src tree 77d64910b347"
+rcmpscore_version = "0.2.0"
+regenerate = true
+residual = 1.4675251882208202e-12
+ritz_energy = -2.547616077010485
+ritz_tolerance = 1.0e-11
+sector = "even"
+settings = "small"
+start = "kinetic"
+state = "phi4_g1_D4"
+stop_reason = "converged"
+tolerance = 1.0e-11
+tolerance_basis = "ten times the largest difference measured between Julia and the NumPy backend of rcmps_gpu over the D = 4 levels on 2026-10-15: 9.7e-13 (validated energies within 5.5e-14)"
+validated_energy = -2.5476160749761676
+wall_seconds = 4.6276350021362305
+[[levels]]
+accepted = true
+action_calls = 10
+computed = "2026-10-14T23:50:26Z"
+converged = true
+dimension = 8
+energy_spread = 2.4017499100636996e-10
+four_energies = [-3.8368272926601024, -3.8368272929002774, -3.836827292661177, -3.8368272929002734]
+julia_threads = 2
+julia_version = "1.12.7"
+level = 1
+momentum = 0.4
+name = "D4_even_p0.4_1"
+nev = 2
+numops = 8
+rcmpscore_source = "commit 2c451fbb47d2, src tree 77d64910b347"
+rcmpscore_version = "0.2.0"
+regenerate = true
+residual = 1.269450791121106e-11
+ritz_energy = -3.836827292660103
+ritz_tolerance = 1.0e-11
+sector = "even"
+settings = "small"
+start = "kinetic"
+state = "phi4_g1_D4"
+stop_reason = "converged"
+tolerance = 1.0e-11
+tolerance_basis = "ten times the largest difference measured between Julia and the NumPy backend of rcmps_gpu over the D = 4 levels on 2026-10-15: 9.7e-13 (validated energies within 5.5e-14)"
+validated_energy = -3.8368272929002734
+wall_seconds = 4.557783842086792
+[[levels]]
+accepted = true
+action_calls = 10
+computed = "2026-10-14T23:50:26Z"
+converged = true
+dimension = 8
+energy_spread = 3.054767105936662e-9
+four_energies = [-1.0221339385306016, -1.0221339415853687, -1.022133938532637, -1.0221339415853687]
+julia_threads = 2
+julia_version = "1.12.7"
+level = 2
+momentum = 0.4
+name = "D4_even_p0.4_2"
+nev = 2
+numops = 8
+rcmpscore_source = "commit 2c451fbb47d2, src tree 77d64910b347"
+rcmpscore_version = "0.2.0"
+regenerate = true
+residual = 8.892130978747937e-12
+ritz_energy = -1.0221339385306072
+ritz_tolerance = 1.0e-11
+sector = "even"
+settings = "small"
+start = "kinetic"
+state = "phi4_g1_D4"
+stop_reason = "converged"
+tolerance = 1.0e-11
+tolerance_basis = "ten times the largest difference measured between Julia and the NumPy backend of rcmps_gpu over the D = 4 levels on 2026-10-15: 9.7e-13 (validated energies within 5.5e-14)"
+validated_energy = -1.0221339415853687
+wall_seconds = 4.557783842086792
+[[levels]]
+accepted = true
+action_calls = 17
+computed = "2026-10-14T06:12:13Z"
+converged = true
+dimension = 128
+energy_spread = 1.2339185229137684e-11
+four_energies = [0.3523798021058705, 0.3523798021174584, 0.35237980211817593, 0.3523798021182097]
+gpu_computed = "2026-10-13"
+gpu_four_energies = [0.3523798021195078, 0.3523798021158662, 0.3523798021160198, 0.3523798021159852]
+gpu_numops = 16
+gpu_ritz_energy = 0.3523798021357717
+gpu_run = "a100_20261013/t14_d16"
+gpu_sources_sha256 = "07860a4ab9508662f27cb9e49f0b4a8525c5c03cccb4ca89371e9976f1af79b9"
+gpu_validated_energy = 0.3523798021159852
+julia_threads = 2
+julia_version = "1.12.7"
+level = 1
+momentum = 0.0
+name = "D16_odd_p0"
+nev = 1
+numops = 16
+rcmpscore_source = "commit f556ace with the author's uncommitted Schwinger-model changes in src/ (RcmpsCore.jl, excitations.jl, observables.jl, optimization.jl, state.jl, storage.jl); the phi4 code paths are unaffected"
+rcmpscore_version = "0.2.0"
+regenerate = true
+residual = 3.767108898104599e-8
+ritz_energy = 0.3523798021072186
+ritz_tolerance = 1.0e-9
+sector = "odd"
+settings = "gpu_comparison"
+start = "field"
+state = "phi4_g2_D16"
+stop_reason = "converged"
+tolerance = 1.0e-10
+tolerance_basis = "agreement of the Julia and Python implementations: the A100 values of the six D = 16 and D = 32 levels differ from Julia's by at most 1.2e-11 (validated energies), 5.5e-11 (validation energies) and 2.6e-10 (Ritz energies, which carry each implementation's action errors); the NumPy backend (2026-10-15) by at most 2.4e-12, 2.8e-11 and 8.4e-11 at D = 16"
+validated_energy = 0.3523798021182097
+wall_seconds = 142.294340133667
+[[levels]]
+accepted = true
+action_calls = 18
+computed = "2026-10-14T06:15:14Z"
+converged = true
+dimension = 128
+energy_spread = 1.0716094678286936e-11
+four_energies = [0.6115040261813206, 0.6115040261912169, 0.6115040261920159, 0.6115040261920367]
+gpu_computed = "2026-10-13"
+gpu_four_energies = [0.6115040261919725, 0.6115040261869341, 0.6115040261903387, 0.6115040261903056]
+gpu_numops = 17
+gpu_ritz_energy = 0.6115040262017027
+gpu_run = "a100_20261013/t14_d16_p05"
+gpu_sources_sha256 = "a79337d24f07d201c25d923f2071f506e2dd04ef24891bd789fb321a71fdd725"
+gpu_validated_energy = 0.6115040261903056
+julia_threads = 2
+julia_version = "1.12.7"
+level = 1
+momentum = 0.5
+name = "D16_odd_p0.5"
+nev = 1
+numops = 17
+rcmpscore_source = "commit f556ace with the author's uncommitted Schwinger-model changes in src/ (RcmpsCore.jl, excitations.jl, observables.jl, optimization.jl, state.jl, storage.jl); the phi4 code paths are unaffected"
+rcmpscore_version = "0.2.0"
+regenerate = true
+residual = 9.727328623069299e-8
+ritz_energy = 0.611504026184148
+ritz_tolerance = 1.0e-9
+sector = "odd"
+settings = "gpu_comparison"
+start = "field"
+state = "phi4_g2_D16"
+stop_reason = "converged"
+tolerance = 1.0e-10
+tolerance_basis = "agreement of the Julia and Python implementations: the A100 values of the six D = 16 and D = 32 levels differ from Julia's by at most 1.2e-11 (validated energies), 5.5e-11 (validation energies) and 2.6e-10 (Ritz energies, which carry each implementation's action errors); the NumPy backend (2026-10-15) by at most 2.4e-12, 2.8e-11 and 8.4e-11 at D = 16"
+validated_energy = 0.6115040261920367
+wall_seconds = 145.11063313484192
+[[levels]]
+accepted = true
+action_calls = 21
+computed = "2026-10-14T06:18:24Z"
+converged = true
+dimension = 128
+energy_spread = 1.106004177131581e-12
+four_energies = [1.289632014925449, 1.2896320149258107, 1.289632014926555, 1.2896320149261895]
+gpu_computed = "2026-10-14"
+gpu_four_energies = [1.2896320149614056, 1.2896320149194178, 1.2896320149270954, 1.2896320149270475]
+gpu_numops = 20
+gpu_ritz_energy = 1.2896320146688167
+gpu_run = "a100_20261013/final2/d16_even_p"
+gpu_sources_sha256 = "68c84931cca9aad270078af8e4a46ef7e8c4b680673a80b2fc2080429d5baa35"
+gpu_validated_energy = 1.2896320149270475
+julia_threads = 2
+julia_version = "1.12.7"
+level = 1
+momentum = 0.5
+name = "D16_even_p0.5"
+nev = 1
+numops = 20
+rcmpscore_source = "commit f556ace with the author's uncommitted Schwinger-model changes in src/ (RcmpsCore.jl, excitations.jl, observables.jl, optimization.jl, state.jl, storage.jl); the phi4 code paths are unaffected"
+rcmpscore_version = "0.2.0"
+regenerate = true
+residual = 5.493732034889663e-8
+ritz_energy = 1.2896320149254081
+ritz_tolerance = 1.0e-9
+sector = "even"
+settings = "gpu_comparison"
+start = "kinetic"
+state = "phi4_g2_D16"
+stop_reason = "converged"
+tolerance = 1.0e-10
+tolerance_basis = "agreement of the Julia and Python implementations: the A100 values of the six D = 16 and D = 32 levels differ from Julia's by at most 1.2e-11 (validated energies), 5.5e-11 (validation energies) and 2.6e-10 (Ritz energies, which carry each implementation's action errors); the NumPy backend (2026-10-15) by at most 2.4e-12, 2.8e-11 and 8.4e-11 at D = 16"
+validated_energy = 1.2896320149261895
+wall_seconds = 168.92863607406616
+[[levels]]
+accepted = true
+action_calls = 28
+computed = "2026-10-14T07:01:53Z"
+converged = true
+dimension = 512
+energy_spread = 8.357474434728118e-11
+four_energies = [0.05575314800866153, 0.055753147926670396, 0.055753147925089896, 0.05575314792508679]
+gpu_computed = "2026-10-13"
+gpu_four_energies = [0.055753147966237745, 0.055753147968270224, 0.055753147928581104, 0.05575314792848829]
+gpu_numops = 27
+gpu_ritz_energy = 0.05575314796639609
+gpu_run = "a100_20261013/t14_d32_p005"
+gpu_sources_sha256 = "07860a4ab9508662f27cb9e49f0b4a8525c5c03cccb4ca89371e9976f1af79b9"
+gpu_validated_energy = 0.05575314792848829
+julia_threads = 2
+julia_version = "1.12.7"
+level = 1
+momentum = 0.05
+name = "D32_odd_p0.05"
+nev = 1
+numops = 27
+rcmpscore_source = "commit f556ace with the author's uncommitted Schwinger-model changes in src/ (RcmpsCore.jl, excitations.jl, observables.jl, optimization.jl, state.jl, storage.jl); the phi4 code paths are unaffected"
+rcmpscore_version = "0.2.0"
+regenerate = false
+residual = 8.544725801808547e-8
+ritz_energy = 0.05575314801710815
+ritz_tolerance = 1.0e-9
+sector = "odd"
+settings = "gpu_comparison"
+start = "field"
+state = "phi4_g2p7_D32"
+stop_reason = "converged"
+tolerance = 1.0e-10
+tolerance_basis = "agreement of the Julia and Python implementations: the A100 values of the six D = 16 and D = 32 levels differ from Julia's by at most 1.2e-11 (validated energies), 5.5e-11 (validation energies) and 2.6e-10 (Ritz energies, which carry each implementation's action errors); the NumPy backend (2026-10-15) by at most 2.4e-12, 2.8e-11 and 8.4e-11 at D = 16"
+validated_energy = 0.05575314792508679
+wall_seconds = 2401.345673084259
+[[levels]]
+accepted = true
+action_calls = 29
+computed = "2026-10-14T07:43:05Z"
+converged = true
+dimension = 512
+energy_spread = 8.607896340162569e-11
+four_energies = [0.10235418175359683, 0.10235418166863208, 0.10235418166751786, 0.10235418166753874]
+gpu_computed = "2026-10-13"
+gpu_four_energies = [0.10235418169870425, 0.10235418169960134, 0.10235418166421792, 0.10235418166420304]
+gpu_numops = 28
+gpu_ritz_energy = 0.10235418169888336
+gpu_run = "a100_20261013/t14_d32_p010"
+gpu_sources_sha256 = "a79337d24f07d201c25d923f2071f506e2dd04ef24891bd789fb321a71fdd725"
+gpu_validated_energy = 0.10235418166420304
+julia_threads = 2
+julia_version = "1.12.7"
+level = 1
+momentum = 0.1
+name = "D32_odd_p0.1"
+nev = 1
+numops = 28
+rcmpscore_source = "commit f556ace with the author's uncommitted Schwinger-model changes in src/ (RcmpsCore.jl, excitations.jl, observables.jl, optimization.jl, state.jl, storage.jl); the phi4 code paths are unaffected"
+rcmpscore_version = "0.2.0"
+regenerate = false
+residual = 3.743655223334395e-8
+ritz_energy = 0.10235418175305247
+ritz_tolerance = 1.0e-9
+sector = "odd"
+settings = "gpu_comparison"
+start = "field"
+state = "phi4_g2p7_D32"
+stop_reason = "converged"
+tolerance = 1.0e-10
+tolerance_basis = "agreement of the Julia and Python implementations: the A100 values of the six D = 16 and D = 32 levels differ from Julia's by at most 1.2e-11 (validated energies), 5.5e-11 (validation energies) and 2.6e-10 (Ritz energies, which carry each implementation's action errors); the NumPy backend (2026-10-15) by at most 2.4e-12, 2.8e-11 and 8.4e-11 at D = 16"
+validated_energy = 0.10235418166753874
+wall_seconds = 2451.116579055786
+[[levels]]
+accepted = true
+action_calls = 31
+computed = "2026-10-14T08:25:17Z"
+converged = true
+dimension = 512
+energy_spread = 2.8805458018865693e-11
+four_energies = [0.3128141270925613, 0.31281412706431944, 0.31281412706375583, 0.3128141270643408]
+gpu_computed = "2026-10-13"
+gpu_four_energies = [0.312814127086213, 0.3128141270873798, 0.31281412705284073, 0.31281412705278433]
+gpu_numops = 30
+gpu_ritz_energy = 0.3128141270824534
+gpu_run = "a100_20261013/t14_d32_even"
+gpu_sources_sha256 = "07860a4ab9508662f27cb9e49f0b4a8525c5c03cccb4ca89371e9976f1af79b9"
+gpu_validated_energy = 0.31281412705278433
+julia_threads = 2
+julia_version = "1.12.7"
+level = 1
+momentum = 0.0
+name = "D32_even_p0"
+nev = 1
+numops = 30
+rcmpscore_source = "commit f556ace with the author's uncommitted Schwinger-model changes in src/ (RcmpsCore.jl, excitations.jl, observables.jl, optimization.jl, state.jl, storage.jl); the phi4 code paths are unaffected"
+rcmpscore_version = "0.2.0"
+regenerate = false
+residual = 8.389028774909367e-8
+ritz_energy = 0.3128141270681044
+ritz_tolerance = 1.0e-9
+sector = "even"
+settings = "gpu_comparison"
+start = "kinetic"
+state = "phi4_g2p7_D32"
+stop_reason = "converged"
+tolerance = 1.0e-10
+tolerance_basis = "agreement of the Julia and Python implementations: the A100 values of the six D = 16 and D = 32 levels differ from Julia's by at most 1.2e-11 (validated energies), 5.5e-11 (validation energies) and 2.6e-10 (Ritz energies, which carry each implementation's action errors); the NumPy backend (2026-10-15) by at most 2.4e-12, 2.8e-11 and 8.4e-11 at D = 16"
+validated_energy = 0.3128141270643408
+wall_seconds = 2512.4558629989624
+[[levels]]
+accepted = true
+action_calls = 17
+check_spread = 3.9668268669856843e-13
+computed = "2026-09-06"
+converged = true
+julia_threads = 3
+level = 1
+momentum = 0.0
+name = "mass_scan_D16_g2"
+nev = 1
+numops = 16
+rcmpscore_source = "the RcmpsCore tree of the September 2026 mass scan (file hashes in research/mass_scan/code_sha256.json of rcmps-phi4-z2)"
+regenerate = false
+residual = 3.8008250285582583e-8
+sector = "odd"
+settings = "mass_scan"
+source = "rcmps-phi4-z2 (commit df37dd1) research/mass_scan/results/D16/g2.0000/status.toml, the mass of research/mass_scan/masses.csv at D=16, g=2.0"
+start = "field"
+state = "phi4_g2_D16"
+tolerance = 1.0e-9
+tolerance_basis = "gate of benchmark/excitation_mass_d16.jl and of the rcmps_gpu tests for library solves at other settings (density gauge, the library or the A100 Davidson schedule)"
+validated_energy = 0.3523798021192911
+wall_seconds = 117.05662894248962
+window_change = 5.184741524999481e-14
+[[levels]]
+accepted = true
+action_calls = 28
+check_spread = 6.101452676432473e-11
+computed = "2026-09-06"
+converged = true
+julia_threads = 2
+level = 1
+momentum = 0.0
+name = "mass_scan_D32_g2.7"
+nev = 1
+numops = 25
+rcmpscore_source = "the RcmpsCore tree of the September 2026 mass scan (file hashes in research/mass_scan/code_sha256.json of rcmps-phi4-z2)"
+regenerate = false
+residual = 3.057032706068657e-8
+sector = "odd"
+settings = "mass_scan"
+source = "rcmps-phi4-z2 (commit df37dd1) research/mass_scan/results/D32/g2.7000/status.toml, the mass of research/mass_scan/masses.csv at D=32, g=2.7"
+start = "field"
+state = "phi4_g2p7_D32"
+tolerance = 1.0e-9
+tolerance_basis = "gate of benchmark/excitation_mass_d16.jl and of the rcmps_gpu tests for library solves at other settings (density gauge, the library or the A100 Davidson schedule)"
+validated_energy = 0.03377574626049129
+wall_seconds = 2100.5488510131836
+window_change = 1.5187850976872141e-13
+
+[settings.gpu_comparison]
+acceptance_residual = 1.0e-5
+description = "Settings of the A100 excitation runs of rcmps_gpu (its cli.py defaults, given there as --maxspace 160 --retain 12 --thick-restart) and of the Julia references computed with them: window 30, n_quad 512, tolerances 1e-13/1e-12, 256 kinetic nodes; validation at the library refined settings (window 40, n_quad 1024, 1e-14/1e-13, 512 nodes); a search space of min(160, n) vectors with thick restarts keeping 12 (no search reached a restart)"
+gauge = "density"
+kinetic_nodes = 256
+metric_tol = 0.0
+parity = "auto"
+preconditioner = "kinetic"
+preconditioner_nodes = 8
+refine_steps = 0
+refined_kinetic_nodes = 512
+start = "auto"
+validate = true
+validation_tol = 1.0e-7
+
+    [settings.gpu_comparison.davidson]
+    description = "maxspace = min(maxspace_cap, n), n the sector dimension; stall_residual_limit 1e-5 is the default max(1e-5, 10 tol) the runs used"
+    hermitian_tol = 1.0e-7
+    maxops = 200
+    maxspace_cap = 160
+    refresh = false
+    retain = 12
+    stall_energy_atol = 1.0e-9
+    stall_minops = 40
+    stall_residual_limit = 1.0e-5
+    stall_rtol = 0.1
+    stall_window = 20
+    tol = 1.0e-7
+
+    [settings.gpu_comparison.gpu]
+    backend = "fused"
+    bilinear = "fused"
+    max_basis_bytes = 6.0e9
+    tensor_cores = true
+
+    [settings.gpu_comparison.integration]
+    atol = 1.0e-13
+    max_point = 30.0
+    maxiters = 1000000
+    n_quad = 512
+    rtol = 1.0e-12
+
+    [settings.gpu_comparison.julia]
+    environment_tol = 1.0e-10
+    kinetic_backend = "resolvent"
+    max_bond = 64
+    ode_method = "Vern7"
+    parallel = "both"
+
+    [settings.gpu_comparison.python]
+    backend = "numpy"
+    chunk = 64
+    preconditioner_tol = 1.0e-10
+    scaling = "density"
+    solver_tol = 1.0e-14
+
+    [settings.gpu_comparison.refined_integration]
+    atol = 1.0e-14
+    max_point = 40.0
+    maxiters = 1000000
+    n_quad = 1024
+    rtol = 1.0e-13
+
+[settings.mass_scan]
+description = "The research mass scan of rcmps-phi4-z2 (research/mass_scan/run_mass.jl, commit df37dd1), not the library entry point: odd sector at p = 0 in the original gauge (block eigen-whitening of rho), field seed, kinetic preconditioner on 8 nodes, the Davidson search of research/excitations_d16/davidson.jl at the standard settings, then up to five preconditioned corrections under the action at the tight (refined) settings; the mass is the bilinear energy at the tight settings. Not regenerable here: benchmark/excitation_mass_d16.jl and the rcmps_gpu tests compare library solves at other settings with it, at their own gates"
+gauge = "original"
+kinetic_nodes = 256
+preconditioner = "kinetic"
+preconditioner_nodes = 8
+refine_steps = 5
+refined_kinetic_nodes = 512
+start = "field"
+
+    [settings.mass_scan.davidson]
+    description = "lowest_davidson of research/excitations_d16/davidson.jl in rcmps-phi4-z2"
+    maxops = 200
+    maxspace_cap = 160
+    retain = 12
+    stall_energy_atol = 1.0e-10
+    stall_minops = 40
+    stall_residual_limit = 1.0e-6
+    stall_rtol = 0.1
+    stall_window = 20
+    tol = 1.0e-7
+
+    [settings.mass_scan.integration]
+    atol = 1.0e-13
+    max_point = 30.0
+    maxiters = 1000000
+    n_quad = 512
+    rtol = 1.0e-12
+
+    [settings.mass_scan.refined_integration]
+    atol = 1.0e-15
+    max_point = 40.0
+    maxiters = 1000000
+    n_quad = 768
+    rtol = 1.0e-14
+
+[settings.small]
+acceptance_residual = 1.0e-5
+description = "Fast cross-language check (D = 4): window 14, n_quad 32, tolerances 1e-13/1e-12 and 32 kinetic nodes, as in the Python unit tests of the iterative solver; refined settings are the library default (window + 10, twice n_quad, tolerances / 10, twice the nodes); a search space of the whole sector (n = 8) with fresh restarts"
+gauge = "density"
+kinetic_nodes = 32
+metric_tol = 0.0
+parity = "auto"
+preconditioner = "kinetic"
+preconditioner_nodes = 8
+refine_steps = 0
+refined_kinetic_nodes = 64
+start = "auto"
+validate = true
+validation_tol = 1.0e-7
+
+    [settings.small.davidson]
+    description = "maxspace = min(maxspace_cap, n), n the sector dimension"
+    hermitian_tol = 1.0e-7
+    maxops = 60
+    maxspace_cap = 8
+    refresh = true
+    retain = 2
+    stall_energy_atol = 1.0e-9
+    stall_minops = 40
+    stall_residual_limit = 1.0e-5
+    stall_rtol = 0.1
+    stall_window = 20
+    tol = 1.0e-8
+
+    [settings.small.integration]
+    atol = 1.0e-13
+    max_point = 14.0
+    maxiters = 1000000
+    n_quad = 32
+    rtol = 1.0e-12
+
+    [settings.small.julia]
+    environment_tol = 1.0e-10
+    kinetic_backend = "resolvent"
+    max_bond = 64
+    ode_method = "Vern7"
+    parallel = "both"
+
+    [settings.small.python]
+    backend = "numpy"
+    chunk = 64
+    preconditioner_tol = 1.0e-10
+    scaling = "density"
+    solver_tol = 1.0e-14
+
+    [settings.small.refined_integration]
+    atol = 1.0e-14
+    max_point = 24.0
+    maxiters = 1000000
+    n_quad = 64
+    rtol = 1.0e-13
+
+[states.phi4_g1_D4]
+D = 4
+coupling = 1.0
+file = "phi4_g1_D4_z2_state.jld2"
+model = "phi4"
+provenance = "Random, not optimized, Z2 state, so its levels (some negative) test the implementations and are not physical excitation energies: the matrices of z2_test_state() of test/excitation_eigsolve.jl, RandomStateZ2(4; seed=11, scaling=0.5) of RcmpsCore 0.2, for phi4 at g = 1; written with rcmps_store by benchmark/excitation_references.jl --write-state phi4_g1_D4 (Julia 1.12.7, 2026-10-15)"
+sha256 = "befa53d2821292c5155450ed76cb292969b2060e5811dde8c7032b5de529f10c"
+
+    [states.phi4_g1_D4.recipe]
+    D = 4
+    constructor = "RandomStateZ2"
+    info = "RandomStateZ2(4; seed=11, scaling=0.5), phi4 g=1: test/fixtures/excitation_references.toml"
+    scaling = 0.5
+    seed = 11
+
+        [states.phi4_g1_D4.recipe.integration]
+        atol = 1.0e-13
+        max_point = 14.0
+        maxiters = 1000000
+        n_quad = 32
+        rtol = 1.0e-12
+
+[states.phi4_g2_D16]
+D = 16
+coupling = 2.0
+file = "phi4_g2_D16_z2_state.jld2"
+model = "phi4"
+provenance = "Optimized Z2 ground state (e0 = -0.15648780475169466): the mass-scan input research/mass_scan/inputs/D16/g2.0000/state.jld2 of the companion repository rcmps-phi4-z2 (commit df37dd1)"
+sha256 = "a7b0434771cc64477047e460058adbaf4d4d4644a71d6a88634cd7596f654f53"
+
+[states.phi4_g2p7_D32]
+D = 32
+coupling = 2.7
+file = "phi4_g2.7_D32_z2_state.jld2"
+model = "phi4"
+provenance = "Optimized Z2 ground state (e0 = -0.30190930265518967): the mass-scan input research/mass_scan/inputs/D32/g2.7000/state.jld2 of the companion repository rcmps-phi4-z2 (commit df37dd1)"
+sha256 = "1139ffb2bc7c1b417245b77e034eca01b10fd37ff80464daec4c9284ae728960"
