@@ -3043,6 +3043,234 @@
      ]
     ]
    }
+  },
+  {
+   "commit_subject": "Optimizer: try register caps until the cooperative grid is resident",
+   "change": "resources: generic_layout.register_caps(d) is (None, 128, 96, 64) for packed d <= 64 and (None,) above, and compilation_options(d, register_cap) gives the historical options for None (golden_cuda.json unchanged) and --maxrregcount=cap otherwise; the worker compiles with the first cap whose whole grid is resident and passes it on: PersistentTrajectoryDOP853, PreparedTrajectoryQuartic, candidate_bindings and evaluate_complete take register_cap, the backend compiles once with it and refuses a grid that is not resident (never re-selecting), records it in requested_register_cap and compiler_options, and trajectory_ptx_report takes it; trajectory_sweep_driver --register-cap stores it in trajectory_controls (a checkpoint without it used None; an in-place resume cannot change it, a fork records its own)",
+   "hunks": {
+    "generic_layout.py": [
+     [
+      56,
+      [
+       "def compilation_options(d):"
+      ],
+      [
+       "def compilation_options(d, register_cap=None):"
+      ]
+     ],
+     [
+      58,
+      [],
+      [
+       "    if register_cap is not None:",
+       "        if register_cap not in register_caps(d)[1:]:",
+       "            raise ValueError(f\"register cap {register_cap!r} is not one of {register_caps(d)[1:]} for packed d={d}\")",
+       "        return (\"--std=c++17\", f\"--maxrregcount={register_cap}\")"
+      ]
+     ],
+     [
+      67,
+      [],
+      [
+       "def register_caps(d):",
+       "    \"\"\"Register caps to try, in order, until the whole cooperative grid is resident: None",
+       "    (the historical options of compilation_options) first, then, for d <= 64, which compiles",
+       "    without a cap (136 to 244 registers, so few blocks per multiprocessor on GPUs with fewer",
+       "    or smaller multiprocessors than the A100 and H100), 128, 96 and 64 (more spills).\"\"\"",
+       "    packed_geometry(d)",
+       "    return (None, 128, 96, 64) if d <= 64 else (None,)",
+       "",
+       ""
+      ]
+     ]
+    ],
+    "persistent_trajectory_backend.py": [
+     [
+      315,
+      [
+       "                 max_steps=1_000_000, max_device_seconds=30., tiles=\"mma\"):"
+      ],
+      [
+       "                 max_steps=1_000_000, max_device_seconds=30., tiles=\"mma\", register_cap=None):"
+      ]
+     ],
+     [
+      340,
+      [],
+      [
+       "        # register_cap: the cap the worker selected (generic_layout.register_caps); this",
+       "        # solver compiles with it once and refuses a grid that is not resident.",
+       "        self.register_cap=register_cap"
+      ]
+     ],
+     [
+      344,
+      [
+       "            options=compilation_options(rhs.d),enable_cooperative_groups=True)"
+      ],
+      [
+       "            options=compilation_options(rhs.d,register_cap),enable_cooperative_groups=True)"
+      ]
+     ],
+     [
+      356,
+      [
+       "            requested_register_cap=64 if rhs.d>64 else None,compiler_options=list(compilation_options(rhs.d)),"
+      ],
+      [
+       "            requested_register_cap=register_cap if register_cap is not None else 64 if rhs.d>64 else None,",
+       "            compiler_options=list(compilation_options(rhs.d,register_cap)),"
+      ]
+     ],
+     [
+      411,
+      [
+       "        tiles='mma'):"
+      ],
+      [
+       "        tiles='mma',register_cap=None):"
+      ]
+     ],
+     [
+      422,
+      [
+       "            initial_step=initial_step,max_steps=max_steps,max_device_seconds=max_device_seconds,tiles=tiles) as solver:"
+      ],
+      [
+       "            initial_step=initial_step,max_steps=max_steps,max_device_seconds=max_device_seconds,tiles=tiles,",
+       "            register_cap=register_cap) as solver:"
+      ]
+     ],
+     [
+      461,
+      [
+       "def trajectory_ptx_report(d,cp,directory=None,tiles='mma'):"
+      ],
+      [
+       "def trajectory_ptx_report(d,cp,directory=None,tiles='mma',register_cap=None):"
+      ]
+     ],
+     [
+      476,
+      [
+       "                             '-arch=compute_'+arch)+compilation_options(d)[1:]+includes)"
+      ],
+      [
+       "                             '-arch=compute_'+arch)+compilation_options(d,register_cap)[1:]+includes)"
+      ]
+     ]
+    ],
+    "persistent_trajectory_overlap.py": [
+     [
+      31,
+      [
+       "    def __init__(self,cp,inputs,coupling,args,*,max_device_seconds=30.,tiles='mma'):"
+      ],
+      [
+       "    def __init__(self,cp,inputs,coupling,args,*,max_device_seconds=30.,tiles='mma',register_cap=None):"
+      ]
+     ],
+     [
+      37,
+      [
+       "            atol=args.atol,rtol=args.rtol,max_steps=args.max_steps,max_device_seconds=max_device_seconds,tiles=tiles)"
+      ],
+      [
+       "            atol=args.atol,rtol=args.rtol,max_steps=args.max_steps,max_device_seconds=max_device_seconds,tiles=tiles,",
+       "            register_cap=register_cap)"
+      ]
+     ],
+     [
+      52,
+      [
+       "def candidate_bindings(mode,kinetic,max_device_seconds,tiles='mma'):"
+      ],
+      [
+       "def candidate_bindings(mode,kinetic,max_device_seconds,tiles='mma',register_cap=None):"
+      ]
+     ],
+     [
+      56,
+      [
+       "        PreparedTrajectoryQuartic(cp,inputs,coupling,args,max_device_seconds=max_device_seconds,tiles=tiles)"
+      ],
+      [
+       "        PreparedTrajectoryQuartic(cp,inputs,coupling,args,max_device_seconds=max_device_seconds,tiles=tiles,",
+       "                                  register_cap=register_cap)"
+      ]
+     ],
+     [
+      63,
+      [
+       "                      tiles='mma'):"
+      ],
+      [
+       "                      tiles='mma',register_cap=None):"
+      ]
+     ],
+     [
+      70,
+      [
+       "    with candidate_bindings(mode,kinetic,max_device_seconds,tiles), \\"
+      ],
+      [
+       "    with candidate_bindings(mode,kinetic,max_device_seconds,tiles,register_cap), \\"
+      ]
+     ]
+    ],
+    "trajectory_sweep_driver.py": [
+     [
+      29,
+      [],
+      [
+       "REGISTER_CAPS=(None,128,96,64)   # generic_layout.register_caps; a checkpoint without one used None"
+      ]
+     ],
+     [
+      58,
+      [
+       "                controls.get('tiles','mma') not in ('mma','scalar')):"
+      ],
+      [
+       "                controls.get('tiles','mma') not in ('mma','scalar') or controls.get('register_cap') not in REGISTER_CAPS):"
+      ]
+     ],
+     [
+      79,
+      [
+       "                                             controls.get('tiles','mma'))"
+      ],
+      [
+       "                                             controls.get('tiles','mma'),controls.get('register_cap'))"
+      ]
+     ],
+     [
+      96,
+      [],
+      [
+       "    parser.add_argument('--register-cap',type=int,choices=REGISTER_CAPS[1:])"
+      ]
+     ],
+     [
+      112,
+      [],
+      [
+       "    cap=cli.register_cap if cli.register_cap is not None or not args.resume else prior.get('register_cap')",
+       "    if args.resume and cap!=prior.get('register_cap'):",
+       "        raise ValueError('in-place resume cannot change the register cap; use explicit --resume-from fork')"
+      ]
+     ],
+     [
+      116,
+      [
+       "                  tiles=tiles)"
+      ],
+      [
+       "                  tiles=tiles,register_cap=cap)"
+      ]
+     ]
+    ]
+   }
   }
  ]
 }

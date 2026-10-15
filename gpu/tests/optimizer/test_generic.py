@@ -421,6 +421,63 @@ print(json.dumps(dict(unsafe_residency_rejected=True)))
 ''')
         self.assertTrue(result["unsafe_residency_rejected"])
 
+    def test_register_caps_ladder(self):
+        # The first entry of the ladder is the historical options (golden_cuda.json) for every
+        # d; packed d <= 64, which compiles without a cap, also tries 128, 96 and 64.
+        for d in range(1, 257):
+            caps = layout.register_caps(d)
+            self.assertEqual(caps, (None, 128, 96, 64) if d <= 64 else (None,))
+            self.assertEqual(layout.compilation_options(d, caps[0]), layout.compilation_options(d))
+            for cap in caps[1:]:
+                self.assertEqual(layout.compilation_options(d, cap), ("--std=c++17", f"--maxrregcount={cap}"))
+            for cap in (32, 100, 255) + (() if d <= 64 else (128, 64)):
+                with self.assertRaisesRegex(ValueError, "register cap"):
+                    layout.compilation_options(d, cap)
+        for d, entry in GOLDEN["sizes"].items():
+            self.assertEqual(list(layout.compilation_options(int(d), None)), entry["options"])
+        result = child('''
+from types import SimpleNamespace
+from unittest.mock import patch
+from rcmps_gpu.optimizer import worker
+from rcmps_gpu.optimizer.runtime.persistent_trajectory_backend import geometry
+compiled=[]
+class Kernel:
+    def __init__(self,code,name,options=(),enable_cooperative_groups=False):
+        caps=[int(o.split('=')[1]) for o in options if o.startswith('--maxrregcount=')]
+        self.options=options;self.num_regs=min([170,*caps]);self.local_size_bytes=0 if not caps else 52
+        self.kernel=SimpleNamespace(ptr=len(compiled));compiled.append(self)
+        self.max_threads_per_block=1024;self.shared_size_bytes=geometry(int(code.split('#define PACKED_D ')[1].split()[0]))['shared_bytes']
+    def compile(self):pass
+    def __call__(self,*args):raise AssertionError('numerical launch forbidden')
+def device(sms,limit):
+    props=dict(major=7,minor=0,cooperativeLaunch=True,sharedMemPerBlock=49152,sharedMemPerBlockOptin=98304,
+        maxThreadsPerBlock=1024,multiProcessorCount=sms,name='mock V100')
+    # 65536 registers per multiprocessor and at most `limit` blocks
+    occupancy=lambda pointer,threads,shared:min(limit,65536//(compiled[pointer].num_regs*threads))
+    return SimpleNamespace(RawKernel=Kernel,cuda=SimpleNamespace(Device=lambda:SimpleNamespace(id=0),
+        runtime=SimpleNamespace(getDeviceProperties=lambda d:props),
+        driver=SimpleNamespace(occupancyMaxActiveBlocksPerMultiprocessor=occupancy)))
+rows={}
+with patch('rcmps_gpu.optimizer.runtime.persistent_trajectory_backend.trajectory_ptx_report',return_value={}) as audit:
+    # D = 128: 81 blocks of 256 threads; 170 registers hold 1 block per multiprocessor (80), cap 128 holds 2.
+    compiled.clear();receipt=worker.compile_dimension(128,device(80,32))
+    rows['V100']=[receipt['register_cap'],receipt['compiler_options'],[r['register_cap'] for r in receipt['register_caps_tried']],
+                  receipt['resident_capacity'],receipt['tiles']['resolved'],audit.call_args.args[3:]]
+    # A device that holds the grid at once never moves: the historical options.
+    compiled.clear();receipt=worker.compile_dimension(128,device(108,32))
+    rows['wide']=[receipt['register_cap'],receipt['compiler_options'],len(receipt['register_caps_tried'])]
+    compiled.clear()
+    try:worker.compile_dimension(128,device(40,2))
+    except RuntimeError as error:rows['refused']=str(error)
+print(json.dumps(rows))
+''')
+        self.assertEqual(result["V100"], [128, ["--std=c++17", "--maxrregcount=128"], [None, 128], 160, "scalar",
+                                          ["scalar", 128]])
+        self.assertEqual(result["wide"], [None, ["--std=c++17"], 1])
+        self.assertEqual(result["refused"], "D=128 requires 81 resident blocks; this GPU can hold 80 at most (register "
+                                            "caps [None, 128, 96, 64] tried). The current one-kernel row layout cannot "
+                                            "run safely at this size.")
+
     def test_worker_refuses_changed_runtime_other_installation_and_mixed_modules(self):
         result = child('''
 import tempfile,types
@@ -499,9 +556,10 @@ cp=SimpleNamespace(RawKernel=lambda *a,**k:Kernel(),cuda=SimpleNamespace(
     driver=SimpleNamespace(occupancyMaxActiveBlocksPerMultiprocessor=lambda *v:1)))
 with patch('rcmps_gpu.optimizer.runtime.persistent_trajectory_backend.trajectory_ptx_report',return_value={'FP64':True}) as audit:
     receipt=worker.compile_dimension(160,cp,'mock_output')
-    audit.assert_called_once_with(80,cp,'mock_output','mma')
+    audit.assert_called_once_with(80,cp,'mock_output','mma',None)
     assert receipt['full_grid_residency_verified'] and receipt['resident_capacity']==132
     assert receipt['tiles']['requested']=='auto' and receipt['tiles']['resolved']=='mma'
+    assert receipt['register_cap'] is None and receipt['compiler_options']==['--std=c++17','--maxrregcount=64']
     assert receipt['PTX']['FP64'] and not receipt['numerical_launch_performed']
     assert not receipt['actual_GPU_qualified'] and 'cupy' not in sys.modules
 print(json.dumps(dict(device_audit_forwarded=True)))

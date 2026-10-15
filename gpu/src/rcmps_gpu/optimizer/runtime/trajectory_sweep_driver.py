@@ -26,6 +26,7 @@ ORIGINAL_VERIFY=overlap_driver.verify_checkpoint
 ORIGINAL_SOURCES=tuple(overlap_driver.OVERLAP_SOURCES)
 TRAJECTORY_SOURCES=(*ORIGINAL_SOURCES,'persistent_trajectory_backend.py',
                     'persistent_trajectory_overlap.py','trajectory_sweep_driver.py','generic_layout.py')
+REGISTER_CAPS=(None,128,96,64)   # generic_layout.register_caps; a checkpoint without one used None
 
 
 def runtime_sources(args):
@@ -54,7 +55,7 @@ def verify_checkpoint(path,requested_args=None):
         if (controls.get('enabled') is not True or controls.get('whole_trajectory_cooperative_kernel') is not True or
                 controls.get('kinetic') not in ('baseline','cooperative') or
                 not math.isfinite(controls.get('max_device_seconds',float('nan'))) or controls['max_device_seconds']<=0 or
-                controls.get('tiles','mma') not in ('mma','scalar')):
+                controls.get('tiles','mma') not in ('mma','scalar') or controls.get('register_cap') not in REGISTER_CAPS):
             raise ValueError('trajectory checkpoint lacks complete explicit method/watchdog controls')
         snapshot['trajectory']=True
     else:
@@ -75,7 +76,7 @@ def matching_source_hashes(snapshot,args):
 def method_bindings(controls):
     # A checkpoint written before the scalar tile path existed ran the tensor-core tiles.
     return implementation.candidate_bindings('trajectory',controls['kinetic'],controls['max_device_seconds'],
-                                             controls.get('tiles','mma'))
+                                             controls.get('tiles','mma'),controls.get('register_cap'))
 
 
 def _wrapper_options(argv):
@@ -92,6 +93,7 @@ def main(argv=None):
     parser.add_argument('--kinetic',choices=('baseline','cooperative'))
     parser.add_argument('--max-device-seconds',type=float)
     parser.add_argument('--tiles',choices=('mma','scalar'))
+    parser.add_argument('--register-cap',type=int,choices=REGISTER_CAPS[1:])
     cli,forwarded=parser.parse_known_args(argv)
     legacy,base_argv=_wrapper_options(forwarded)
     args=ORIGINAL_PARSE(base_argv);overlap_driver.validate_overlap_arguments(args)
@@ -107,8 +109,11 @@ def main(argv=None):
     tiles=cli.tiles or prior.get('tiles','mma')
     if args.resume and tiles!=prior.get('tiles','mma'):
         raise ValueError('in-place resume cannot change tiles; use explicit --resume-from fork')
+    cap=cli.register_cap if cli.register_cap is not None or not args.resume else prior.get('register_cap')
+    if args.resume and cap!=prior.get('register_cap'):
+        raise ValueError('in-place resume cannot change the register cap; use explicit --resume-from fork')
     controls=dict(enabled=True,whole_trajectory_cooperative_kernel=True,kinetic=kinetic,max_device_seconds=float(maximum),
-                  tiles=tiles)
+                  tiles=tiles,register_cap=cap)
     def parse(arguments=None):
         out=ORIGINAL_PARSE(arguments);overlap_driver.validate_overlap_arguments(out)
         out.trajectory_controls=dict(controls);return out

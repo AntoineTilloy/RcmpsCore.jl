@@ -312,7 +312,7 @@ def _controls(points, atol, rtol, initial_step, max_steps, max_device_seconds):
 class PersistentTrajectoryDOP853:
     """Private replayable trajectory buffers; one cooperative launch per run."""
     def __init__(self, rhs, points, *, atol=1e-13, rtol=1e-12, initial_step=None,
-                 max_steps=1_000_000, max_device_seconds=30., tiles="mma"):
+                 max_steps=1_000_000, max_device_seconds=30., tiles="mma", register_cap=None):
         cp = rhs.xp
         if cp.__name__ != "cupy":
             raise ValueError("persistent trajectory requires CuPy")
@@ -337,8 +337,11 @@ class PersistentTrajectoryDOP853:
         self.tiles=select_tiles(tiles,*self.compute_capability)   # refuses mma below 8.0
         clock_rate = int(props['clockRate'])  # CUDA property is in kHz.
         self.maximum_ticks = int(math.ceil(self.max_device_seconds*1000*clock_rate))
+        # register_cap: the cap the worker selected (generic_layout.register_caps); this
+        # solver compiles with it once and refuses a grid that is not resident.
+        self.register_cap=register_cap
         self.kernel=cp.RawKernel(trajectory_source(rhs.d,self.tiles),'persistent_trajectory',
-            options=compilation_options(rhs.d),enable_cooperative_groups=True)
+            options=compilation_options(rhs.d,register_cap),enable_cooperative_groups=True)
         self.kernel.compile()
         self.dynamic_shared_bytes=configure_shared_memory(self.kernel,props,self.info,self.tiles)
         resident=int(cp.cuda.driver.occupancyMaxActiveBlocksPerMultiprocessor(
@@ -350,7 +353,8 @@ class PersistentTrajectoryDOP853:
             registers=int(self.kernel.num_regs),local_bytes=int(self.kernel.local_size_bytes),
             actual_shared_bytes=int(self.kernel.shared_size_bytes)+self.dynamic_shared_bytes,cooperative_capacity_verified=True,
             static_shared_bytes=int(self.kernel.shared_size_bytes),dynamic_shared_bytes=self.dynamic_shared_bytes,
-            requested_register_cap=64 if rhs.d>64 else None,compiler_options=list(compilation_options(rhs.d)),
+            requested_register_cap=register_cap if register_cap is not None else 64 if rhs.d>64 else None,
+            compiler_options=list(compilation_options(rhs.d,register_cap)),
             matrix_arithmetic=MATRIX_ARITHMETIC[self.tiles],tiles=self.tiles,
             compute_capability=list(self.compute_capability),fast_math=False)
         if self.occupancy['actual_shared_bytes']!=self.info['shared_bytes']:
@@ -404,7 +408,7 @@ class PersistentTrajectoryDOP853:
 
 def evaluate_quartic_persistent_trajectory(R,Q,rho,g=1.,*,xp,half_window=30.,n_quad=512,
         atol=1e-13,rtol=1e-12,initial_step=None,max_steps=1_000_000,max_device_seconds=30.,return_samples=False,
-        tiles='mma'):
+        tiles='mma',register_cap=None):
     start=time.perf_counter()
     if xp.__name__!='cupy':raise ValueError('persistent trajectory evaluator is GPU-only')
     if any(x.dtype!=xp.complex128 for x in (R,Q,rho)):raise TypeError('input matrices require complex128')
@@ -415,7 +419,8 @@ def evaluate_quartic_persistent_trajectory(R,Q,rho,g=1.,*,xp,half_window=30.,n_q
     rhs=_PackedZ2QuarticRHS(q,r,rho,xp)
     points,weights=quadrature(half_window,n_quad)
     with PersistentTrajectoryDOP853(rhs,np.r_[points,math.sqrt(half_window)],atol=atol,rtol=rtol,
-            initial_step=initial_step,max_steps=max_steps,max_device_seconds=max_device_seconds,tiles=tiles) as solver:
+            initial_step=initial_step,max_steps=max_steps,max_device_seconds=max_device_seconds,tiles=tiles,
+            register_cap=register_cap) as solver:
         samples,stats=solver.run();begin=time.perf_counter()
         ((value,covector,environment),)=_packed_z2_pullback(q,r,rhs,samples,points,weights)
         xp.cuda.get_current_stream().synchronize()
@@ -453,7 +458,7 @@ def audit_trajectory_ptx(ptx,tiles):
                 fp32_arithmetic_instructions=fp32,shfl_sync_idx_instructions=shuffles,fma_rn_f64_instructions=fmas)
 
 
-def trajectory_ptx_report(d,cp,directory=None,tiles='mma'):
+def trajectory_ptx_report(d,cp,directory=None,tiles='mma',register_cap=None):
     """Gated CUDA NVRTC audit of the tile products and scalar instruction types."""
     import importlib.util
     from pathlib import Path
@@ -468,7 +473,7 @@ def trajectory_ptx_report(d,cp,directory=None,tiles='mma'):
     arch=cp.cuda.Device().compute_capability
     program=compiler._NVRTCProgram(trajectory_source(d,tiles),'persistent_trajectory_audit.cu',method='ptx')
     binary,_=program.compile(('--std=c++17','--device-c','--device-as-default-execution-space',
-                             '-arch=compute_'+arch)+compilation_options(d)[1:]+includes)
+                             '-arch=compute_'+arch)+compilation_options(d,register_cap)[1:]+includes)
     ptx=binary.decode()
     audit=audit_trajectory_ptx(ptx,tiles)
     if directory:

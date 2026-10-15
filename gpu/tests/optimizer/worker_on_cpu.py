@@ -6,7 +6,9 @@ Child process of tests/optimizer/test_worker_cpu.py (it installs a module named 
 rebinds runtime functions, so it must not run inside the test interpreter). RCMPS_GPU_INIT is
 the rcmps_gpu/__init__.py the parent imported; the child must import the same copy.
 RCMPS_CPU_COMPUTE_CAPABILITY (default 8.0) is the compute capability the stand-in device
-reports, which selects the tile product (tensor cores from 8.0 on, scalar tiles below). The
+reports, which selects the tile product (tensor cores from 8.0 on, scalar tiles below);
+with RCMPS_CPU_MAX_REGISTERS (default: no limit), a kernel that uses more registers (168
+without a cap) is not resident, which makes the worker try its register caps. The
 command line runs as written: cli.main plans the run and writes plan.json, and worker.main,
 called in this process instead of a child interpreter, compiles, qualifies the first
 evaluation against the CuPy oracle, optimizes through trajectory_sweep_driver and validates
@@ -15,7 +17,9 @@ through validate_trajectory_sweep. Only these leaves, which need a GPU, are repl
     the compute capability above), with the four ElementwiseKernels of ode_backend emulated
     in NumPy;
   * cupy.RawKernel: no compilation and no launch, but source with the FP64 tensor-core
-    instruction is refused below compute capability 8.0, as ptxas refuses it;
+    instruction is refused below compute capability 8.0, as ptxas refuses it; 168 registers,
+    or the --maxrregcount cap; the occupancy query gives 1 block per multiprocessor, or 0 for
+    a kernel above RCMPS_CPU_MAX_REGISTERS;
     persistent_trajectory_backend.trajectory_ptx_report: no NVRTC;
   * persistent_trajectory_overlap.PersistentTrajectoryDOP853, the CUDA trajectory kernel: its
     CPU oracle persistent_trajectory_backend.integrate_trajectory_numpy (D <= 8), which
@@ -91,6 +95,8 @@ class Event:
 
 
 CAPABILITY = tuple(int(part) for part in os.environ.get("RCMPS_CPU_COMPUTE_CAPABILITY", "8.0").split("."))
+MAX_REGISTERS = int(os.environ.get("RCMPS_CPU_MAX_REGISTERS", "255"))
+KERNELS = {}
 
 
 class Device:
@@ -114,7 +120,8 @@ cp.cuda = SimpleNamespace(
     get_elapsed_time=lambda start, end: 1000. * (end.t - start.t),
     runtime=SimpleNamespace(getDeviceProperties=lambda device: dict(PROPERTIES),
                             runtimeGetVersion=lambda: 12090, driverGetVersion=lambda: 12090),
-    driver=SimpleNamespace(occupancyMaxActiveBlocksPerMultiprocessor=lambda *arguments: 1))
+    driver=SimpleNamespace(occupancyMaxActiveBlocksPerMultiprocessor=lambda pointer, threads, shared:
+                           int(KERNELS[pointer].num_regs <= MAX_REGISTERS)))
 
 
 class RawKernel:
@@ -126,7 +133,9 @@ class RawKernel:
         self.code, self.name, self.options = code, name, options
         self.shared_size_bytes = 0 if dynamic_shared_bytes(d) else packed_geometry(d)["shared_bytes"]
         self.max_dynamic_shared_size_bytes, self.max_threads_per_block = 0, 1024
-        self.kernel, self.num_regs, self.local_size_bytes = SimpleNamespace(ptr=1), 64, 0
+        caps = [int(option.split("=")[1]) for option in options if option.startswith("--maxrregcount=")]
+        self.kernel, self.num_regs, self.local_size_bytes = SimpleNamespace(ptr=len(KERNELS) + 1), min([168, *caps]), 0
+        KERNELS[self.kernel.ptr] = self
 
     def compile(self):
         pass
@@ -217,10 +226,14 @@ if persistent_trajectory_overlap.ORIGINAL_KINETIC is not kinetic_on_cpu:
 
 
 class TrajectoryOnCPU:
-    def __init__(self, rhs, points, *, atol, rtol, max_steps, max_device_seconds, initial_step=None, tiles):
+    def __init__(self, rhs, points, *, atol, rtol, max_steps, max_device_seconds, initial_step=None, tiles,
+                 register_cap):
         if tiles not in ("mma", "scalar"):
             raise ValueError(f"worker_on_cpu.py: the trajectory kernel takes resolved tiles, not {tiles!r}")
         self.tiles = generic_layout.select_tiles(tiles, *CAPABILITY)
+        self.options = generic_layout.compilation_options(rhs.d, register_cap)
+        if min([168, *(int(o.split("=")[1]) for o in self.options if o.startswith("--maxrregcount="))]) > MAX_REGISTERS:
+            raise RuntimeError("worker_on_cpu.py: unsafe cooperative trajectory grid (register cap)")
         self.host = ode_backend._PackedZ2QuarticRHS(rhs.q, rhs.r, rhs.rho, np)
         self.points, self.controls = points, dict(atol=atol, rtol=rtol, max_steps=max_steps)
 
@@ -228,16 +241,16 @@ class TrajectoryOnCPU:
         samples, stats = persistent_trajectory_backend.integrate_trajectory_numpy(
             self.host, self.points, **self.controls)
         # The kernel records its tiles and the device in the occupancy of its statistics.
-        return samples, dict(stats, cpu_stand_in=True,
-                             occupancy=dict(tiles=self.tiles, compute_capability=list(CAPABILITY)))
+        return samples, dict(stats, cpu_stand_in=True, occupancy=dict(
+            tiles=self.tiles, compute_capability=list(CAPABILITY), compiler_options=list(self.options)))
 
     def close(self):
         pass
 
 
 persistent_trajectory_overlap.PersistentTrajectoryDOP853 = TrajectoryOnCPU
-persistent_trajectory_backend.trajectory_ptx_report = lambda d, cp, directory=None, tiles="mma": dict(
-    cpu_stand_in=True, tiles=tiles)
+persistent_trajectory_backend.trajectory_ptx_report = lambda d, cp, directory=None, tiles="mma", register_cap=None: \
+    dict(cpu_stand_in=True, tiles=tiles, register_cap=register_cap)
 
 # ---------------------------------------------------------------- the command line
 from rcmps_gpu.optimizer import cli, worker  # noqa: E402

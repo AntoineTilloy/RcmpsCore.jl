@@ -53,11 +53,24 @@ def dynamic_shared_bytes(d):
     return size if size > STATIC_SHARED_LIMIT else 0
 
 
-def compilation_options(d):
+def compilation_options(d, register_cap=None):
     packed_geometry(d)
+    if register_cap is not None:
+        if register_cap not in register_caps(d)[1:]:
+            raise ValueError(f"register cap {register_cap!r} is not one of {register_caps(d)[1:]} for packed d={d}")
+        return ("--std=c++17", f"--maxrregcount={register_cap}")
     # Preserve every historical compiler option, including packed128's cap.
     # Larger new row blocks use the same cap; actual occupancy remains decisive.
     return ("--std=c++17", "--maxrregcount=64") if d > 64 else ("--std=c++17",)
+
+
+def register_caps(d):
+    """Register caps to try, in order, until the whole cooperative grid is resident: None
+    (the historical options of compilation_options) first, then, for d <= 64, which compiles
+    without a cap (136 to 244 registers, so few blocks per multiprocessor on GPUs with fewer
+    or smaller multiprocessors than the A100 and H100), 128, 96 and 64 (more spills)."""
+    packed_geometry(d)
+    return (None, 128, 96, 64) if d <= 64 else (None,)
 
 
 def configure_shared_memory(kernel, props, info, tiles="mma"):

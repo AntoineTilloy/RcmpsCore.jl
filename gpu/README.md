@@ -152,9 +152,16 @@ The whole cooperative grid must be resident: shared memory, registers and the de
 thread-block limits can impose a smaller maximum, and compilation refuses an unsafe grid
 before the trajectory sample buffers are allocated (`--compile-only` checks a size on the
 target GPU; without `--run-gpu` the plan gives the size of those buffers). Panels larger
-than 48 KiB use dynamic shared memory, and resource use and spills are reported. There is
-no automatic slower backend, reduced precision or relaxed tolerance. Sizes above 512 need
-another row layout.
+than 48 KiB use dynamic shared memory, and resource use and spills are reported. Up to
+D = 128 the kernel compiles without a register cap (106 to 244 registers per thread,
+depending on the target and the tiles), so a GPU with fewer or smaller multiprocessors
+than the A100 may hold too few blocks: the worker then recompiles with the caps 128, 96 and
+64 in turn and takes the first whose grid is resident (spills grow from about 50 bytes at
+cap 128 to 1.5 KB at cap 64), recording the cap and every attempt in `compile.json`; the
+run, its qualification and its validation use that cap. Above D = 128 the historical cap 64
+is the only one. On the A100 and H100 the first attempt is expected to be resident at every
+size, so their compiler options stay the historical ones. There is no automatic slower
+backend, reduced precision or relaxed tolerance. Sizes above 512 need another row layout.
 
 The tile products of the kernel follow the device (`--tiles`, recorded in `plan.json`):
 `auto`, the default, uses the FP64 tensor cores (`mma`) on compute capability 8.0 or later

@@ -17,33 +17,43 @@ PRODUCER = f"rcmps_gpu {__version__}, optimizer worker"
 def compile_dimension(D, cp, directory=None, tiles="auto"):
     """Compile the trajectory kernel of D with the tile product `tiles` resolved for this
     device (generic_layout.select_tiles: auto is mma from compute capability 8.0 on, scalar
-    below; mma below 8.0 is refused before anything is compiled), check that the whole
-    cooperative grid is resident and audit the PTX."""
+    below; mma below 8.0 is refused before anything is compiled), with the first register
+    cap of generic_layout.register_caps (None: the historical options) for which the whole
+    cooperative grid is resident, refuse the size if there is none, and audit the PTX."""
     from .runtime.persistent_trajectory_backend import (MATRIX_ARITHMETIC, trajectory_source, geometry,
                                                         trajectory_ptx_report)
-    from .runtime.generic_layout import compilation_options, configure_shared_memory, select_tiles
+    from .runtime.generic_layout import compilation_options, configure_shared_memory, register_caps, select_tiles
     info = geometry(D // 2)
     props = cp.cuda.runtime.getDeviceProperties(cp.cuda.Device().id)
     if not props.get("cooperativeLaunch", False):
         raise ValueError("the one-kernel trajectory requires a GPU with cooperative launch")
     resolved = select_tiles(tiles, props["major"], props["minor"])
-    kernel = cp.RawKernel(trajectory_source(D // 2, resolved), "persistent_trajectory",
-                          options=compilation_options(D // 2), enable_cooperative_groups=True)
-    kernel.compile()
-    dynamic = configure_shared_memory(kernel, props, info, resolved)
-    resident = int(cp.cuda.driver.occupancyMaxActiveBlocksPerMultiprocessor(
-        kernel.kernel.ptr, info["threads"], dynamic))
-    capacity = resident * int(props["multiProcessorCount"])
-    if info["blocks"] > capacity:
-        raise RuntimeError(f"D={D} requires {info['blocks']} resident blocks; this GPU can hold {capacity}. "
-                           "The current one-kernel row layout cannot run safely at this size.")
+    source, tried = trajectory_source(D // 2, resolved), []
+    for cap in register_caps(D // 2):
+        kernel = cp.RawKernel(source, "persistent_trajectory",
+                              options=compilation_options(D // 2, cap), enable_cooperative_groups=True)
+        kernel.compile()
+        dynamic = configure_shared_memory(kernel, props, info, resolved)
+        resident = int(cp.cuda.driver.occupancyMaxActiveBlocksPerMultiprocessor(
+            kernel.kernel.ptr, info["threads"], dynamic))
+        capacity = resident * int(props["multiProcessorCount"])
+        tried.append(dict(register_cap=cap, registers=int(kernel.num_regs), local_bytes=int(kernel.local_size_bytes),
+                          active_blocks_per_SM=resident, resident_capacity=capacity))
+        if info["blocks"] <= capacity:
+            break
+    else:
+        raise RuntimeError(f"D={D} requires {info['blocks']} resident blocks; this GPU can hold {capacity}"
+                           + (f" at most (register caps {[row['register_cap'] for row in tried]} tried)"
+                              if len(tried) > 1 else "")
+                           + ". The current one-kernel row layout cannot run safely at this size.")
     name = props["name"]
-    ptx = trajectory_ptx_report(D // 2, cp, directory, resolved)
+    ptx = trajectory_ptx_report(D // 2, cp, directory, resolved, cap)
     return dict(**info, GPU=name.decode() if isinstance(name, bytes) else name,
                 SM=[int(props["major"]), int(props["minor"])],
                 tiles=dict(requested=tiles, resolved=resolved,
                            rule="auto: mma for compute capability >= 8.0, scalar below; mma below 8.0 is refused"),
-                matrix_arithmetic=MATRIX_ARITHMETIC[resolved], compiler_options=list(compilation_options(D // 2)),
+                matrix_arithmetic=MATRIX_ARITHMETIC[resolved], compiler_options=list(compilation_options(D // 2, cap)),
+                register_cap=cap, register_caps_tried=tried,
                 kernel_run_time_limit=bool(props.get("kernelExecTimeoutEnabled", False)),
                 registers=int(kernel.num_regs), local_bytes=int(kernel.local_size_bytes),
                 dynamic_shared_bytes=dynamic, active_blocks_per_SM=resident,
@@ -114,9 +124,9 @@ def initial_reference(plan, directory):
     return stats
 
 
-def qualify(r, k, rho, coupling, args, cp, timeout, directory, tiles="mma"):
-    """Compare complete fast E/g, with the trajectory kernel's tile product `tiles`, with
-    independent CuPy propagation and kinetic."""
+def qualify(r, k, rho, coupling, args, cp, timeout, directory, tiles="mma", register_cap=None):
+    """Compare complete fast E/g, with the trajectory kernel's tile product `tiles` and
+    register cap, with independent CuPy propagation and kinetic."""
     import numpy as np
     from .runtime import overlap_sweep_driver as driver
     from .runtime import persistent_trajectory_overlap as fast
@@ -135,12 +145,13 @@ def qualify(r, k, rho, coupling, args, cp, timeout, directory, tiles="mma"):
                 max_steps=s.max_steps, packed_z2=True, use_graph=False)
         def close(self):
             pass
-    receipt = dict(D=len(r), tiles=tiles, passed=False, numerical_GPU_launch_performed=True)
+    receipt = dict(D=len(r), tiles=tiles, register_cap=register_cap, passed=False, numerical_GPU_launch_performed=True)
     arrays = {}
     try:
         with driver.OverlapObjective() as coordinator:
             actual = fast.evaluate_complete(coordinator, r, k, rho, coupling, args, cp,
-                mode="trajectory", kinetic="cooperative", max_device_seconds=timeout, tiles=tiles)
+                mode="trajectory", kinetic="cooperative", max_device_seconds=timeout, tiles=tiles,
+                register_cap=register_cap)
             receipt.update(fast_energy=actual["value"], fast_stats=actual["stats"])
             for name in ("gradient", "covector", "environment"):
                 arrays["fast_" + name] = actual[name]
@@ -209,7 +220,7 @@ def main(argv=None):
         import cupy as cp
         with cp.cuda.Device(plan["device"]):
             status["compile"] = compile_dimension(plan["D"], cp, output / "ptx", plan["tiles"])
-            tiles = status["compile"]["tiles"]["resolved"]
+            tiles, cap = status["compile"]["tiles"]["resolved"], status["compile"]["register_cap"]
             (output / "compile.json").write_text(json.dumps(status["compile"], indent=2) + "\n")
             if plan["compile_only"]:
                 status["state"] = "compiled_without_numerical_launch"
@@ -232,7 +243,7 @@ def main(argv=None):
                 "--quartic-backend", "persistent_trajectory", "--arnoldi", "gpu", "--projection", "hessenberg_gpu",
                 "--kinetic", "cooperative", "--controller", "robust", "--warm-start-line-search",
                 "--gradient-tolerance", str(plan["gradient_target"]), "--max-device-seconds", str(plan["max_device_seconds"]),
-                "--tiles", tiles,
+                "--tiles", tiles, *(("--register-cap", str(cap)) if cap is not None else ()),
                 "--iterations", str(plan["max_iterations"] + (int(snapshot["state"]["iteration"]) if snapshot else 0)),
                 "--output", str(output / "optimization.json")]
             for name, value in plan["controls"].items():
@@ -250,7 +261,7 @@ def main(argv=None):
                 setattr(base, name, value)
             status["state"] = "initial_qualification"
             save()
-            qualify(r, k, rho, metadata["coupling"], base, cp, plan["max_device_seconds"], output, tiles)
+            qualify(r, k, rho, metadata["coupling"], base, cp, plan["max_device_seconds"], output, tiles, cap)
             status["state"] = "optimizing"
             save()
             with binding(trajectory, "ORIGINAL_PARSE", parse):

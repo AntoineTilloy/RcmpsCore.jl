@@ -28,13 +28,14 @@ ORIGINAL_KINETIC=overlap.kinetic_raw
 
 class PreparedTrajectoryQuartic(overlap.PreparedQuartic):
     """Same run/pullback/scaling as PreparedQuartic; new one-kernel solver."""
-    def __init__(self,cp,inputs,coupling,args,*,max_device_seconds=30.,tiles='mma'):
+    def __init__(self,cp,inputs,coupling,args,*,max_device_seconds=30.,tiles='mma',register_cap=None):
         q,r,rho=inputs;self.cp,self.q,self.r,self.coupling=cp,q,r,float(coupling)
         self.pullback=_packed_z2_pullback;started=time.perf_counter()
         self.points,self.weights=quadrature(args.window,args.quadrature)
         self.rhs=_PackedZ2QuarticRHS(q,r,rho,cp)
         self.solver=PersistentTrajectoryDOP853(self.rhs,np.r_[self.points,math.sqrt(args.window)],
-            atol=args.atol,rtol=args.rtol,max_steps=args.max_steps,max_device_seconds=max_device_seconds,tiles=tiles)
+            atol=args.atol,rtol=args.rtol,max_steps=args.max_steps,max_device_seconds=max_device_seconds,tiles=tiles,
+            register_cap=register_cap)
         self.setup_seconds=time.perf_counter()-started
 
 
@@ -48,24 +49,25 @@ def cooperative_kinetic(q,r,rho,nodes=128,*,xp,tolerance,maxdim,arnoldi_backend,
 
 
 @contextmanager
-def candidate_bindings(mode,kinetic,max_device_seconds,tiles='mma'):
+def candidate_bindings(mode,kinetic,max_device_seconds,tiles='mma',register_cap=None):
     if mode not in ('cached','trajectory') or kinetic not in ('baseline','cooperative') or tiles not in ('mma','scalar'):
         raise ValueError('unknown explicit candidate selection')
     factory=ORIGINAL_PREPARED if mode=='cached' else lambda cp,inputs,coupling,args: \
-        PreparedTrajectoryQuartic(cp,inputs,coupling,args,max_device_seconds=max_device_seconds,tiles=tiles)
+        PreparedTrajectoryQuartic(cp,inputs,coupling,args,max_device_seconds=max_device_seconds,tiles=tiles,
+                                  register_cap=register_cap)
     selected=ORIGINAL_KINETIC if kinetic=='baseline' else cooperative_kinetic
     with binding(overlap,'PreparedQuartic',factory),binding(overlap,'kinetic_raw',selected):yield
 
 
 def evaluate_complete(coordinator,r,k,rho,coupling,args,xp,*,mode,kinetic='baseline',max_device_seconds=30.,
-                      tiles='mma'):
+                      tiles='mma',register_cap=None):
     """Return complete result; capture already-summed raw terms without rerun."""
     raw={};original_finish=overlap_driver.driver.finish_gradient
     def capture_finish(q,r,rho,covector,environment,**options):
         raw['covector']=covector.copy();raw['environment']=environment.copy()
         return original_finish(q,r,rho,covector,environment,**options)
     started=time.perf_counter()
-    with candidate_bindings(mode,kinetic,max_device_seconds,tiles), \
+    with candidate_bindings(mode,kinetic,max_device_seconds,tiles,register_cap), \
             binding(overlap_driver.driver,'finish_gradient',capture_finish):
         energy,gradient,stats=coordinator(r,k,rho,coupling,args,xp)
     if set(raw)!= {'covector','environment'}:
