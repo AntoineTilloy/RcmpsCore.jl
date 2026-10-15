@@ -223,8 +223,15 @@ def _complex(dataset):
     return out
 
 
-def _string(dataset):
-    value = dataset[()]
+def _string(f, name):
+    """A string dataset. JLD2 writes "" with a datatype of size zero, which HDF5 cannot open:
+    an existing dataset that cannot be opened reads as ""."""
+    try:
+        value = f[name][()]
+    except (KeyError, OSError):
+        if name not in f:
+            raise
+        return ""
     return value.decode() if isinstance(value, (bytes, np.bytes_)) else str(value)
 
 
@@ -238,14 +245,11 @@ def read_jld2(path):
             raise ValueError("unsupported schema; migrate old JLD with examples/migrate_legacy.jl")
         R, K = _complex(f["R"]).T, _complex(f["K"]).T
         coupling = _complex(f["coupling"])
-        model = _string(f["model"])
+        model = _string(f, "model")   # "" is refused below, with a clear message
         mass = float(f["mass"][()]) if "mass" in f else 1.0
         e0 = float(f["e0"][()])
         grad = _complex(f["grad"]).T if "grad" in f else None
-        try:
-            info = _string(f["info"]) if "info" in f else None
-        except (KeyError, OSError):   # JLD2 writes "" with a datatype of size zero, which HDF5 refuses
-            info = ""
+        info = _string(f, "info") if "info" in f else None
         row = f["integration"][()]
         integration = Integration(int(row["n_quad"]), float(row["max_point"]), float(row["atol"]),
                                   float(row["rtol"]),
@@ -274,7 +278,7 @@ def _format1(metadata):
     if metadata["format"] != FORMAT:
         raise ValueError(f"metadata.toml: format {metadata['format']!r} is not {FORMAT!r}")
     version = metadata.get("format_version")
-    if isinstance(version, bool) or version != FORMAT_VERSION:
+    if type(version) is not int or version != FORMAT_VERSION:   # an integer: not 1.0, not true
         raise ValueError(f"metadata.toml: unsupported {FORMAT} format_version {version!r} "
                          f"(this reader knows {FORMAT_VERSION})")
     for key in ("D", "model", "coupling"):

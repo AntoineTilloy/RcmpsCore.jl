@@ -13,10 +13,17 @@ const PORTABLE_KEYS = ["format","format_version","D","model","coupling","mass","
 
 Base.ENDIAN_BOM == 0x04030201 || error("portable state files are little-endian; this machine is big-endian")
 
-"""The ModelParameters of a state; a mass other than 1.0 needs an RcmpsCore that has one."""
-function portable_model(name::AbstractString, coupling::Real, mass::Real)
+"""Refuse what rcmps_gpu.io refuses too: an empty model name, and a phi4 mass other than 1."""
+function portable_check_model(name, mass)
+    isempty(string(name)) && error("the model name is empty")
     name == "phi4" && mass != 1.0 &&
         error("model phi4 has no mass parameter (its normal-ordering mass is 1): this state has mass = $mass, refused")
+    return nothing
+end
+
+"""The ModelParameters of a state; a mass other than 1.0 needs an RcmpsCore that has one."""
+function portable_model(name::AbstractString, coupling::Real, mass::Real)
+    portable_check_model(name, mass)
     hasfield(ModelParameters, :mass) && return ModelParameters(name=name, coupling=coupling, mass=mass)
     mass == 1.0 || error("this RcmpsCore has no model mass; the state has mass = $mass")
     return ModelParameters(name=name, coupling=coupling)
@@ -135,8 +142,7 @@ function read_portable(directory::AbstractString)
         manifold = haskey(metadata, "metric_reg") && haskey(metadata, "precond_reg") ?
             portable_manifold(metadata, "metadata.toml (metric_reg, precond_reg)") : nothing
     end
-    model == "phi4" && mass != 1.0 &&
-        error("model phi4 has no mass parameter (its normal-ordering mass is 1): this state has mass = $mass, refused")
+    portable_check_model(model, mass)
     d = portable_integer(metadata["D"], "D")
     matrix(name) = read_portable_matrix(joinpath(directory, name), d)
     return (D=d, model=model, coupling=portable_real(metadata["coupling"], "coupling"), mass=mass,
@@ -158,8 +164,7 @@ function write_portable(directory::AbstractString; R, K, model, coupling, mass=1
                         source=nothing, info=nothing, integration=nothing, manifold=nothing, extra=Dict{String,Any}())
     ispath(directory) && error("Refusing to overwrite $directory: choose a new directory")
     d = size(R, 1)
-    model == "phi4" && mass != 1.0 &&
-        error("model phi4 has no mass parameter (its normal-ordering mass is 1): this state has mass = $mass, refused")
+    portable_check_model(model, mass)
     imag(coupling) == 0 || error("model coupling must be real")
     metadata = Dict{String,Any}("format"=>PORTABLE_FORMAT, "format_version"=>PORTABLE_FORMAT_VERSION, "D"=>d,
         "model"=>String(model), "coupling"=>portable_real(real(coupling), "coupling"), "mass"=>portable_real(mass, "mass"))

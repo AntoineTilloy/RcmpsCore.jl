@@ -3,7 +3,9 @@
 # test/fixtures/phi4_g2_D16_z2_portable (R, K, gradient and metadata exactly, rho to 1e-12,
 # since its last bits depend on the BLAS), and import_state.jl of either export gives back
 # the checkpoint: R, K, rho (recomputed by rcmps_load), model, coupling, integration and
-# manifold parameters, e0, gradient and info, all exactly. Prints one line per check.
+# manifold parameters, e0, gradient and info, all exactly. Directories that rcmps_gpu.io
+# refuses (a format_version that is not an integer, an empty model name) are refused too.
+# Prints one line per check.
 #
 # Usage: julia --project=PATH/TO/RcmpsCore.jl check_portable.jl [FIXTURES_DIRECTORY]
 include(joinpath(@__DIR__, "export_state.jl"))
@@ -38,6 +40,24 @@ function check_portable(fixtures::AbstractString)
             check("$label: e0, gradient, info exact", s.e0 === original.e0 && s.grad == original.grad &&
                   s.info == original.info)
         end
+        # Refused here as by rcmps_gpu.io (tests/test_io.py).
+        function edited(name, old, new)
+            directory = joinpath(tmp, name)
+            cp(committed, directory)
+            path = joinpath(directory, "metadata.toml")
+            text = read(path, String)
+            count(old, text) == 1 || error("$old is not once in the committed metadata.toml")
+            write(path, replace(text, old => new))
+            return directory
+        end
+        refused(f, message) = try f(); false catch e; occursin(message, sprint(showerror, e)) end
+        check("format_version = 1.0 is refused", refused(() -> read_portable(edited("version",
+              "format_version = 1\n", "format_version = 1.0\n")), "unsupported rcmps-portable-state format_version 1.0"))
+        check("an empty model name is refused", refused(() -> read_portable(edited("model",
+              "model = \"phi4\"", "model = \"\"")), "the model name is empty"))
+        check("an empty model name is not written", refused(() -> write_portable(joinpath(tmp, "unwritten");
+              R=original.R, K=original.K, model="", coupling=2.0), "the model name is empty") &&
+              !ispath(joinpath(tmp, "unwritten")))
     end
     isempty(failures) || error("$(length(failures)) checks failed")
     println("All portable round-trip checks passed")

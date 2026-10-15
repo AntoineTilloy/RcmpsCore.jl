@@ -172,10 +172,12 @@ class Format1(unittest.TestCase):
             ('format = "rcmps-portable-state"', 'format = "something-else"', "is not 'rcmps-portable-state'"),
             ("format_version = 1", "format_version = 2", "unsupported rcmps-portable-state format_version 2"),
             ("format_version = 1", "format_version = true", "format_version True"),
+            ("format_version = 1", "format_version = 1.0", "format_version 1.0"),   # an integer, as Julia reads it
             ("D = 6", "D = 0", "D must be an integer >= 1"),
             ("D = 6", "D = 6.0", "D must be an integer"),
             ("D = 6", "D = 5", "R.bin has 576 bytes, not the 400 of a 5x5"),
             ('model = "phi4"\n', "", "required key model is missing"),
+            ('model = "phi4"', 'model = ""', "the model name is empty"),
             ("coupling = 2.7", 'coupling = "2.7"', "coupling must be a real number"),
             ("energy = -0.30228143199435653", "energy = nan", "energy must be finite"),
             ("gradient_norm = 2.900325420717565e-05", "gradient_norm = -1.0", "gradient_norm must be finite and nonnegative"),
@@ -369,6 +371,17 @@ class JLD2(unittest.TestCase):
         self.assertEqual((record.model, record.mass), ("schwinger", 0.5))
         directory = io.write_portable(self.root / "c", record)
         self.assertEqual(io.read_portable(directory).mass, 0.5)
+
+    def test_an_empty_model_name_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "the model name is empty"):
+            io.read_jld2(write_jld2(self.root / "a.jld2", self.state.R, self.state.K, model=""))
+
+        class Unopenable(dict):   # JLD2 writes "" with a datatype of size zero, which HDF5 cannot open
+            def __getitem__(self, name):
+                raise KeyError("Unable to synchronously open object (invalid datatype size)")
+        self.assertEqual(io._string(Unopenable(model=None), "model"), "")
+        with self.assertRaises(KeyError):   # a missing dataset is not an empty string
+            io._string(Unopenable(), "model")
 
     def test_complex_coupling_and_other_schemas_are_refused(self):
         with self.assertRaisesRegex(ValueError, "model coupling must be real"):
