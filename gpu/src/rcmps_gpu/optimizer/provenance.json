@@ -3271,6 +3271,26 @@
      ]
     ]
    }
+  },
+  {
+   "commit_subject": "Correct the register range of register_caps; cap the qualification trajectories as the worker does",
+   "change": "docstring only: register_caps gave 136 to 244 registers for the uncapped kernels of d <= 64; the NVRTC 12.8 scan from sm_60 to sm_90 gives 106 (sm_86 and sm_89, tensor-core tiles) to 244 (sm_60, scalar tiles), as gpu/README.md says",
+   "hunks": {
+    "generic_layout.py": [
+     [
+      70,
+      [
+       "    without a cap (136 to 244 registers, so few blocks per multiprocessor on GPUs with fewer",
+       "    or smaller multiprocessors than the A100 and H100), 128, 96 and 64 (more spills).\"\"\""
+      ],
+      [
+       "    without a cap (106 to 244 registers from sm_60 to sm_90, so few blocks per multiprocessor",
+       "    on GPUs with fewer or smaller multiprocessors than the A100 and H100), 128, 96 and 64",
+       "    (more spills).\"\"\""
+      ]
+     ]
+    ]
+   }
   }
  ]
 }

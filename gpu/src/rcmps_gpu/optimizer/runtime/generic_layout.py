@@ -67,8 +67,9 @@ def compilation_options(d, register_cap=None):
 def register_caps(d):
     """Register caps to try, in order, until the whole cooperative grid is resident: None
     (the historical options of compilation_options) first, then, for d <= 64, which compiles
-    without a cap (136 to 244 registers, so few blocks per multiprocessor on GPUs with fewer
-    or smaller multiprocessors than the A100 and H100), 128, 96 and 64 (more spills)."""
+    without a cap (106 to 244 registers from sm_60 to sm_90, so few blocks per multiprocessor
+    on GPUs with fewer or smaller multiprocessors than the A100 and H100), 128, 96 and 64
+    (more spills)."""
     packed_geometry(d)
     return (None, 128, 96, 64) if d <= 64 else (None,)
 

@@ -174,7 +174,7 @@ def random_state(args, D, directory):
 def stage_trajectory(cp, args, capability, D, paths):
     from rcmps_gpu.optimizer.runtime.ode_backend import _PackedZ2QuarticRHS, quadrature
     from rcmps_gpu.optimizer.runtime import persistent_trajectory_backend as backend
-    from rcmps_gpu.optimizer.runtime.generic_layout import select_tiles
+    from rcmps_gpu.optimizer.runtime.generic_layout import register_caps, select_tiles
     q, r, rho = random_state(args, D, Path(args.output) / "trajectory" / f"D{D}_initial")
     points, _ = quadrature(args.window, args.quadrature)
     nodes = np.r_[points, math.sqrt(args.window)]
@@ -192,8 +192,18 @@ def stage_trajectory(cp, args, capability, D, paths):
             continue
         try:
             rhs = _PackedZ2QuarticRHS(cp.asarray(q), cp.asarray(r), cp.asarray(rho), cp)
-            with backend.PersistentTrajectoryDOP853(rhs, nodes, atol=args.atol, rtol=args.rtol,
-                                                    max_device_seconds=args.max_device_seconds, tiles=tiles) as solver:
+            # The register caps of the worker, in its order: the first whose grid is resident.
+            for cap in register_caps(D // 2):
+                try:
+                    solver = backend.PersistentTrajectoryDOP853(rhs, nodes, atol=args.atol, rtol=args.rtol,
+                                                                max_device_seconds=args.max_device_seconds,
+                                                                tiles=tiles, register_cap=cap)
+                    break
+                except RuntimeError as error:
+                    if "unsafe cooperative trajectory grid" not in str(error) or cap == register_caps(D // 2)[-1]:
+                        raise
+            row["register_cap"] = cap
+            with solver:
                 first, stats = solver.run()
                 first = cp.asnumpy(first)
                 again, stats_again = solver.run()
