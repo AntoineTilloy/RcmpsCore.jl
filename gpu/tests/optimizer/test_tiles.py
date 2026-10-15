@@ -22,6 +22,8 @@ Audit    (3) audit_trajectory_ptx on hand-written PTX.
 Compile  (4) NVRTC alone (no GPU, no CuPy): trajectory_source(d, tiles) for d = 4, 64 and 128
          with the options of trajectory_ptx_report, the scalar tiles for compute_60, 70, 75,
          80, 86 and 90 and the tensor-core tiles for compute_80, 86 and 90, pass the audit;
+         ptxas (through NVRTC) assembles the kernel to a cubin at d = 8 for sm_60, 70 and 75
+         (scalar tiles) and sm_80, 86 and 90 (tensor-core tiles), and at d = 128 for sm_70;
          the tensor-core source for compute_70 compiles to PTX but fails the audit, and ptxas
          refuses it for sm_70; the scalar tile function alone is a chain of 8 FMAs fed by 24
          warp shuffles on every target. Skipped without the nvidia-cuda-nvrtc and
@@ -321,6 +323,22 @@ class Compile(unittest.TestCase):
                         if tiles == "scalar":
                             self.assertEqual(audit["f64_mma_instructions"], [])
                             self.assertGreaterEqual(audit["shfl_sync_idx_instructions"], 24 * 72)
+
+    def test_trajectory_kernel_assembles_for_each_target(self):
+        """(4) PTX alone does not show an instruction that only later targets assemble (NVRTC
+        writes mma.sync f64 for compute_70, below). ptxas, run by NVRTC for sm_XX, assembles
+        the kernel with the options of a run (cooperative: --device-c) to a cubin: at d = 8
+        with the scalar tiles for sm_60, 70 and 75 and the tensor-core tiles for sm_80, 86 and
+        90, and at d = 128 (dynamic shared memory, register cap 64) with the scalar tiles for
+        sm_70."""
+        cases = [(8, "scalar", arch) for arch in ("sm_60", "sm_70", "sm_75")]
+        cases += [(8, "mma", arch) for arch in ("sm_80", "sm_86", "sm_90")] + [(128, "scalar", "sm_70")]
+        for d, tiles, arch in cases:
+            with self.subTest(d=d, tiles=tiles, arch=arch):
+                options = ("--std=c++17", "--device-c") + backend.compilation_options(d)[1:]
+                status, cubin, log = compile_cuda(backend.trajectory_source(d, tiles), arch, options, cubin=True)
+                self.assertEqual(status, 0, log)
+                self.assertEqual(cubin[:4], b"\x7fELF")
 
     def test_tensor_core_source_below_compute_capability_8(self):
         """(4) NVRTC writes PTX with mma.sync f64 for compute_70 (only ptxas refuses it), which

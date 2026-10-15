@@ -102,10 +102,15 @@ instruction, so it is correct but not fast; it has not been timed on a GPU yet.
 | T4, RTX 20 | 7.5 | scalar | compiled only; FP64 at 1/32 of FP32 |
 | P100 | 6.0 | scalar | compiled only |
 
-"Compiled only" means: both kernels compile with NVRTC 12.8 for that target, both tile
-paths where they apply, and pass the PTX audit (`tests/optimizer/test_tiles.py`,
-`tests/excitations/test_fused.py`, at d = 3 to 128); nothing has run there. The
-qualification of a new GPU is `qualification/run_all.sh` (see "GPU qualification").
+"Compiled only" means: NVRTC 12.8 compiles both kernels to PTX for that target, both tile
+paths where they apply, and the PTX passes the audit (the optimizer's kernel at d = 4, 64
+and 128 in `tests/optimizer/test_tiles.py`, the excitation kernels at d = 3 and 32 in
+`tests/excitations/test_fused.py`, compute_60, 70, 75, 80, 86 and 90); and ptxas, through
+NVRTC, assembles them for the sm_XX of these GPUs (both kernels at d = 8 for sm_60, 70 and
+75 with the scalar tiles and sm_80, 86 and 90 with the tensor cores, the optimizer's also
+at d = 128 for sm_70), which PTX alone does not show: NVRTC writes FP64 `mma.sync` for any
+target, and only ptxas refuses it below sm_80. Nothing has run there. The qualification of
+a new GPU is `qualification/run_all.sh` (see "GPU qualification").
 
 On slow FP64 GPUs one trajectory of the optimizer may exceed its device watchdog
 (`--max-device-seconds`, 300 s), which stops the run cleanly at the first evaluation. A GPU
@@ -607,14 +612,14 @@ stand-ins for the GPU leaves only (`tests/optimizer/worker_on_cpu.py`: a NumPy-b
 device of compute capability 8.0 and, for the resume, 7.0 (scalar tiles, and a register cap
 from the ladder). `tests/optimizer/test_tiles.py` checks the scalar tile product bitwise
 against the chain of FMAs it implements, the selection rule, the PTX audit, and with NVRTC
-(no GPU) both tile paths of the kernel for compute capability 6.0 to 9.0, as
-`tests/excitations/test_fused.py` does for the excitation kernel. `tests/test_qualification.py`
-checks that every option `qualification/run_all.sh` gives a script exists, that
-`gpu_optimizer_check.py` runs the optimizer with its own settings, and runs the excitation
-scripts of the batch on a stand-in device (`tests/qualification_on_cpu.py`: NumPy arrays, a
-fused kernel whose launch is the host integrator), where a compilation error, an FP32
-instruction in the PTX, a launch that is not repeatable bitwise and a result off by 1e-6
-each give exit status 1, and a size the device cannot hold does not. The same
+(no GPU) both tile paths of the kernel for compute capability 6.0 to 9.0, to PTX and, with
+ptxas, to a cubin, as `tests/excitations/test_fused.py` does for the excitation kernels.
+`tests/test_qualification.py` checks that every option `qualification/run_all.sh` gives a
+script exists, that `gpu_optimizer_check.py` runs the optimizer with its own settings, and
+runs the excitation scripts of the batch on a stand-in device (`tests/qualification_on_cpu.py`:
+NumPy arrays, a fused kernel whose launch is the host integrator), where a compilation
+error, an FP32 instruction in the PTX, a launch that is not repeatable bitwise and a result
+off by 1e-6 each give exit status 1, and a size the device cannot hold does not. The same
 command, from `gpu/`:
 
 ```bash

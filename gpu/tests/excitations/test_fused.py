@@ -9,9 +9,10 @@ Source    (5) kernel_source: #define values, the tensor-core branch, FP64 only; 
           Chebyshev source table against models.transformed_source.
 Compile   (7) compile_ptx and audit_ptx with NVRTC alone (no GPU, no CuPy), the scalar tiles
           for compute_60, 70, 75, 80, 86 and 90 and the tensor-core tiles for compute_80, 86
-          and 90; skipped without the nvidia-cuda-nvrtc / nvidia-cuda-runtime wheels and a
-          directory holding the header nv/target (RCMPS_CUDA_INCLUDE, then
-          ~/.julia/artifacts/*/include).
+          and 90; ptxas through NVRTC (cubin) for sm_60 to sm_90, and its refusal of the
+          tensor-core tiles for sm_75; skipped without the nvidia-cuda-nvrtc /
+          nvidia-cuda-runtime wheels and a directory holding the header nv/target
+          (RCMPS_CUDA_INCLUDE, then ~/.julia/artifacts/*/include).
 Device    (9) the tile selection of FusedTrajectory (tensor cores from compute capability
           8.0 on, scalar tiles below, the same rule as the optimizer), PHI4_KERNELS against
           the systems, and preflight, with the CPU stand-in of fakedevice.py.
@@ -21,12 +22,14 @@ RCMPS_EXCITATION_REPORT=1 prints the largest measured errors.
 """
 from __future__ import annotations
 
+import ctypes
 import functools
 import glob
 import importlib.util
 import itertools
 import math
 import os
+from pathlib import Path
 import re
 import sys
 import unittest
@@ -241,6 +244,33 @@ def nvrtc_include():
             return path, ""
     return None, ("no directory with the header nv/target: set RCMPS_CUDA_INCLUDE "
                   "(searched it and ~/.julia/artifacts/*/include)")
+
+
+def compile_cubin(source, arch, include):
+    """(status, cubin or None, log) of NVRTC with ptxas for -arch=arch (sm_XX), with the
+    options of FusedTrajectory (compile_options()) and of a cooperative kernel (--device-c),
+    and the include directories of compile_ptx."""
+    roots = [Path(list(importlib.util.find_spec(name).submodule_search_locations)[0])
+             for name in ("nvidia.cuda_nvrtc", "nvidia.cuda_runtime")]
+    nvrtc = ctypes.CDLL(str(sorted((roots[0] / "lib").glob("libnvrtc.so*"))[0]), mode=ctypes.RTLD_GLOBAL)
+    program = ctypes.c_void_p()
+    if nvrtc.nvrtcCreateProgram(ctypes.byref(program), source.encode(), b"excitation_trajectory.cu", 0, None, None):
+        raise RuntimeError("nvrtcCreateProgram failed")
+    options = [o.encode() for o in fused.compile_options() + (
+        "--device-c", "--device-as-default-execution-space", f"-arch={arch}", f"-I{roots[1] / 'include'}", f"-I{include}")]
+    status = nvrtc.nvrtcCompileProgram(program, len(options), (ctypes.c_char_p * len(options))(*options))
+    size = ctypes.c_size_t()
+    nvrtc.nvrtcGetProgramLogSize(program, ctypes.byref(size))
+    log = ctypes.create_string_buffer(size.value)
+    nvrtc.nvrtcGetProgramLog(program, log)
+    cubin = None
+    if status == 0:
+        nvrtc.nvrtcGetCUBINSize(program, ctypes.byref(size))
+        buffer = ctypes.create_string_buffer(size.value)
+        nvrtc.nvrtcGetCUBIN(program, buffer)
+        cubin = buffer.raw
+    nvrtc.nvrtcDestroyProgram(ctypes.byref(program))
+    return status, cubin, log.value.decode()
 
 
 class Case(unittest.TestCase):
@@ -545,6 +575,33 @@ class Compile(Case):
             self.assertFalse(re.search(r"\bmma\.sync\S*\.f(?:16|32)\b", ptx), msg)
             self.assertIn(".entry excitation_trajectory", ptx, msg)
             self.assertIn(".target " + arch.replace("compute", "sm"), ptx, msg)
+
+    def test_kernels_assemble_for_each_target(self):
+        """(7) PTX alone does not show an instruction that only later targets assemble (NVRTC
+        writes mma.sync f64 for any target; ptxas refuses it below sm_80). ptxas, run by NVRTC
+        for sm_XX, assembles the kernel at d = 8 to a cubin: the action kernel with the scalar
+        tiles for sm_60, 70 and 75 and the tensor-core tiles for sm_80, 86 and 90, the pair
+        kernel with each path for sm_70 and sm_86; the tensor-core action kernel for sm_75 is
+        refused."""
+        include, reason = nvrtc_include()
+        if include is None:
+            self.skipTest(reason)
+        cases = [("action", False, arch) for arch in ("sm_60", "sm_70", "sm_75")]
+        cases += [("action", True, arch) for arch in ("sm_80", "sm_86", "sm_90")]
+        cases += [("pair", False, "sm_70"), ("pair", True, "sm_86")]
+        for kernel, use_mma, arch in cases:
+            n_blocks, panels, temps = fused.PHI4_KERNELS[kernel]
+            source = fused.kernel_source(8, n_blocks, use_mma=use_mma, panels=panels, temps=temps)
+            with self.subTest(kernel=kernel, use_mma=use_mma, arch=arch):
+                try:
+                    status, cubin, log = compile_cubin(source, arch, include)
+                except OSError as error:        # libnvrtc itself cannot be loaded here
+                    self.skipTest(f"libnvrtc cannot be loaded: {error}")
+                self.assertEqual(status, 0, log)
+                self.assertEqual(cubin[:4], b"\x7fELF")
+        status, _, log = compile_cubin(fused.kernel_source(8, 26, use_mma=True), "sm_75", include)
+        self.assertNotEqual(status, 0)
+        self.assertIn("ptxas", log)
 
 
 class Device(Case):
