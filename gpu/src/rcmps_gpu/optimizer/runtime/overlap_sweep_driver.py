@@ -4,7 +4,7 @@ The default original controller retains the ordinary sweep L-BFGS controller
 and cold stationary solve. ``--controller robust`` selects the existing
 resolution-aware controller and accepted-density stationary correction. Both
 choices preserve the physical objective, FP64 precision and strict kinetic
-residual. Quartic graph construction is serialized and included per objective;
+residual. Quartic solver preparation is serialized and included per objective;
 only its propagation/pullback overlaps the independent kinetic calculation.
 
 Example, through trajectory_sweep_driver, which supplies the quartic solver
@@ -106,7 +106,7 @@ def matching_source_hashes(snapshot, args):
 
 
 class OverlapObjective:
-    """Run-owned coordinator; repeated calls reuse workers/streams, never graphs."""
+    """Run-owned coordinator; repeated calls reuse workers/streams, never quartic solvers."""
     def __init__(self):
         self.cp = None
         self.executor = None
@@ -146,7 +146,7 @@ class OverlapObjective:
             self._initialize(xp)
             q = -1j*k-adj(r)@r/2
             original = tuple(np.array(x, dtype=np.complex128, copy=True) for x in (q, r, rho))
-            # No prior evaluation is active, and GLOBAL graph capture below
+            # No prior evaluation is active, and the quartic solver preparation below
             # starts only after this producer stream has finished its uploads.
             xp.cuda.get_current_stream().synchronize()
             started = time.perf_counter()

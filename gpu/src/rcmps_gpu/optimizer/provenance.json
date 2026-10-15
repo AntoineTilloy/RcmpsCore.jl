@@ -2609,6 +2609,56 @@
      ]
     ]
    }
+  },
+  {
+   "commit_subject": "Reword the runtime comments that still describe CUDA graph capture",
+   "change": "comments only: since the pruning commit no quartic solver of the overlap path captures a CUDA graph (PreparedTrajectoryQuartic launches the cooperative trajectory kernel, the qualification oracle runs the host-driven integrator), so the overlap_sweep_driver module docstring, the OverlapObjective docstring and the comment before the solver preparation, and the overlap_benchmark.dispatch_pair docstring speak of quartic solver preparation and solver owners",
+   "hunks": {
+    "overlap_benchmark.py": [
+     [
+      100,
+      [
+       "    A failed job never abandons the other running graph. Exceptions are",
+       "    collected only after both futures finish, so stream/graph owners remain",
+       "    alive through their final synchronization."
+      ],
+      [
+       "    A failed job never abandons the other running job. Exceptions are",
+       "    collected only after both futures finish, so stream and solver owners",
+       "    remain alive through their final synchronization."
+      ]
+     ]
+    ],
+    "overlap_sweep_driver.py": [
+     [
+      7,
+      [
+       "residual. Quartic graph construction is serialized and included per objective;"
+      ],
+      [
+       "residual. Quartic solver preparation is serialized and included per objective;"
+      ]
+     ],
+     [
+      109,
+      [
+       "    \"\"\"Run-owned coordinator; repeated calls reuse workers/streams, never graphs.\"\"\""
+      ],
+      [
+       "    \"\"\"Run-owned coordinator; repeated calls reuse workers/streams, never quartic solvers.\"\"\""
+      ]
+     ],
+     [
+      149,
+      [
+       "            # No prior evaluation is active, and GLOBAL graph capture below"
+      ],
+      [
+       "            # No prior evaluation is active, and the quartic solver preparation below"
+      ]
+     ]
+    ]
+   }
   }
  ]
 }

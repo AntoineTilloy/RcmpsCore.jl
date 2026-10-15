@@ -522,7 +522,8 @@ every edit made since, commit by commit, in the format described in
 pruning commit, which deleted two modules that the generic run never imports and code
 paths it never reaches (old evaluators, the CUDA-graph integrator and the driver-library
 bindings it needed, the research benchmark command lines) and renamed the quartic backend
-label of the run to `persistent_trajectory`. The optimizer command line reverts those
+label of the run to `persistent_trajectory`, and a commit that rewords comments still
+describing CUDA graph capture. The optimizer command line reverts those
 edits in memory when it plans a run, and the worker again before and after the run: a
 runtime that is not the imported one with its recorded edits is refused, as the research
 launcher refused one that was not derived from the sealed H100 candidate. The sha256 of

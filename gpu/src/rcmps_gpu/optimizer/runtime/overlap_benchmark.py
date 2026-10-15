@@ -97,9 +97,9 @@ def checked_component(name, raw, xp, tolerance):
 def dispatch_pair(calls, executor, *, parallel, worker):
     """Dispatch precisely two independent jobs and join both before returning.
 
-    A failed job never abandons the other running graph. Exceptions are
-    collected only after both futures finish, so stream/graph owners remain
-    alive through their final synchronization.
+    A failed job never abandons the other running job. Exceptions are
+    collected only after both futures finish, so stream and solver owners
+    remain alive through their final synchronization.
     """
     if set(calls) != {'kinetic', 'quartic'}:
         raise ValueError('exactly one kinetic and one quartic component required')
