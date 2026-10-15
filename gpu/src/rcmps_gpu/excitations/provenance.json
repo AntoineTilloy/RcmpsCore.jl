@@ -1018,6 +1018,24 @@
      ]
     ]
    }
+  },
+  {
+   "commit_subject": "Say what the A100 measured of the two tile paths: equal values, and their speed",
+   "change": "docstring only: the module docstring of fused.py said the two tile paths gave bitwise identical trajectories on the A100; that measurement was the largest absolute difference of the samples (0, the same steps), which does not see the sign of zeros, so it now says equal trajectories",
+   "hunks": {
+    "fused.py": [
+     [
+      25,
+      [
+       "refuses use_mma=True below 8.0. On the A100 the two gave bitwise identical trajectories."
+      ],
+      [
+       "refuses use_mma=True below 8.0. On the A100 the two gave equal trajectories (largest",
+       "difference 0, the same steps)."
+      ]
+     ]
+    ]
+   }
   }
  ]
 }

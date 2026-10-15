@@ -31,8 +31,10 @@ above that its two independent routes (action and bilinear) agree to 4e-10. The 
 runtime is the generic version of the H100 runtime of the research campaign: for the sizes
 that runtime supported (packed d = D/2 in {2, 3, 4, 8, 16, 32, 48, 64, 128}) it generates
 the same CUDA source and compiler options, bit for bit, but the generic runtime itself has
-not yet run on a GPU, nor has its scalar tile path. Both kernels run on NVIDIA GPUs with or
-without FP64 tensor cores (see "GPUs"); only the A100 and the H100 have run them.
+not yet run on a GPU, nor has its scalar tile path. Both kernels choose their tile product
+by device, for NVIDIA GPUs with or without FP64 tensor cores (see "GPUs"); the excitation
+kernel has run on an A100 only (both tile paths), and the optimizer's kernel only within the
+research runtimes of its family, on an A100 and an H100.
 
 ## Installation
 
@@ -85,18 +87,22 @@ either path is audited: FP64 `mma.sync` for a target 8.0 or later on the tensor-
 no `mma` at all on the scalar path, no FP32 arithmetic on either. The optimizer audits its
 kernel's PTX at every compilation; the excitation kernel's PTX is audited by the CPU tests
 (NVRTC for compute_60 to 90) and on the device by the qualification (`gpu_bringup.py
---stages compile`), not by a run. On one GPU the two
-paths agree bit for bit wherever the tensor cores compute the same FMA chain, as the A100's
-did for the excitation kernel; across GPUs, results agree to rounding. The resolved tiles
-are recorded (`compile.json`, the checkpoint and `final_validation.json` of the optimizer;
-`settings.tiles` and the kernel occupancies in the excitation `result.json`). The scalar
-path issues 24 shuffles and 8 FMAs per real tile where the tensor cores issue one
-instruction, so it is correct but not fast; it has not been timed on a GPU yet.
+--stages compile`), not by a run. On one GPU the two paths agree bit for bit wherever the
+tensor cores compute the same chain of FMAs, which `gpu_optimizer_check.py --stages unit`
+measures; on the A100 the excitation kernel's two paths gave equal trajectories (largest
+difference 0, the same steps; a comparison of values, blind to the sign of zeros). Across
+GPUs, results agree to rounding. The resolved tiles are recorded (`compile.json`, the
+checkpoint and `final_validation.json` of the optimizer; `settings.tiles` and the kernel
+occupancies in the excitation `result.json`). The scalar path issues 24 shuffles and 8 FMAs
+per real tile where the tensor cores issue one instruction: on the A100 the excitation
+kernel took 1.2 to 1.4 times as long per right-hand side with the scalar tiles at D = 4 to
+16, and 1.5 to 2.5 times at D = 32 to 128 (with earlier sources). The optimizer's scalar
+path, and GPUs without FP64 tensor cores, have not been timed.
 
 | GPU | Compute capability | Tiles (`auto`) | Status |
 |---|---|---|---|
 | H100 | 9.0 | mma | the research runtime this one derives from ran the optimizer (D = 32 to 256); this package has not run there |
-| A100 | 8.0 | mma | excitation solver qualified up to D = 128 (scalar tiles bitwise identical to mma); the optimizer's kernels of this family ran (D = 32 to 128) |
+| A100 | 8.0 | mma | excitation solver qualified up to D = 128 (scalar tiles equal to mma, largest difference 0); the optimizer's kernels of this family ran (D = 32 to 128) |
 | A30, A10, RTX 30, L4, L40, RTX 40 | 8.0, 8.6, 8.9 | mma | compiled only (the tests compile for compute_80 and 86; compute_89 was checked once); FP64 at 1/64 of FP32 except the A30 |
 | V100 | 7.0 | scalar | compiled only; a rental is planned |
 | T4, RTX 20 | 7.5 | scalar | compiled only; FP64 at 1/32 of FP32 |
@@ -252,9 +258,9 @@ The tile products of the kernel follow the device (`--tiles`, recorded in `plan.
 `auto`, the default, uses the FP64 tensor cores (`mma`) on compute capability 8.0 or later
 and the scalar tiles (`scalar`) below; `--tiles mma` is refused below 8.0 before anything
 is compiled, and `--tiles scalar` runs anywhere, on an A100 or H100 too. The scalar tiles
-compute each element as a chain of FMAs in k order, which is what the tensor cores of the
-A100 compute (the excitation kernel's two paths gave bitwise identical trajectories there),
-so on one GPU both paths are expected to agree bit for bit, and across GPUs to rounding. The
+compute each element as a chain of FMAs in k order. Where the tensor cores compute the same
+chain, both paths agree bit for bit on one GPU (on the A100 the excitation kernel's two
+paths gave equal trajectories, largest difference 0), and across GPUs to rounding. The
 worker records the resolved tiles in `compile.json`, the checkpoint (`trajectory_controls`,
 for every run) and `final_validation.json`; a resume of a checkpoint may use other tiles,
 since it forks. The tensor-core path generates the source of `golden_cuda.json`, unchanged;
@@ -351,14 +357,14 @@ group and two-sided groups (`packed.py`), so one kernel serves both sectors, any
 both scalings, and the bilinear system (`packed_pair.py`, three two-sided groups). Stages
 alternate between two buffers, which removes one grid barrier per stage. The scalar tiles
 (`--tiles scalar`, or `--scalar-tiles`; `use_mma=False`) replace the tensor-core tile
-product by warp shuffles and FMAs with the same layout; on the A100 the two gave bitwise
-identical trajectories. `--tiles auto` (`use_mma=None`, the default) chooses by device as
-the optimizer does, and `result.json` records the tiles that ran (`settings.tiles`, and per
-kernel in `kernels`). The φ⁴ action system has 26 packed blocks and 190 products per
-right-hand side (the optimizer's ground-state system: 10 blocks, 60 products); the bilinear
-system of the validation has 20 blocks and needs more shared memory per block (1024 d + 16
-w bytes against 768 d + 16 w, w = ceil(d/8)), so it can fail to be resident where the action
-kernel is. The command line therefore compiles both kernels, and checks their cooperative
+product by warp shuffles and FMAs with the same layout; on the A100 the two gave equal
+trajectories (largest difference 0, the same steps). `--tiles auto` (`use_mma=None`, the
+default) chooses by device as the optimizer does, and `result.json` records the tiles that
+ran (`settings.tiles`, and per kernel in `kernels`). The φ⁴ action system has 26 packed
+blocks and 190 products per right-hand side (the optimizer's ground-state system: 10
+blocks, 60 products); the bilinear system of the validation has 20 blocks and needs more
+shared memory per block (1024 d + 16 w bytes against 768 d + 16 w, w = ceil(d/8)), so it
+can fail to be resident where the action kernel is. The command line therefore compiles both kernels, and checks their cooperative
 grids, before the output directory is created (`fused.preflight`): a GPU that cannot hold
 one is refused at once, naming it, and `--host-bilinear` validates without the second one.
 
@@ -553,7 +559,7 @@ Kernel checks, with the scripts of `qualification/excitations/` (each prints JSO
 |---|---|---|
 | `gpu_fused_check.py` | fused kernel against the host-controlled NumPy integrator: random Z2 states D = 4 and 8, both sectors, p = 0 and 0.4, both scalings | same steps; samples to 2e-14, action to 1.2e-14 |
 | | the same on the D = 16 fixture (stability-limited steps) | samples to 9e-11, action to 4e-11 |
-| | tensor-core against scalar tiles: D = 4 to 16 (D = 32 to 128 with earlier sources) | bitwise identical |
+| | tensor-core against scalar tiles: D = 4 to 16 (D = 32 to 128 with earlier sources) | equal (largest difference 0), same steps; scalar tiles 1.2 to 1.4 times the tensor-core time per right-hand side (1.5 to 2.5 at D = 32 to 128) |
 | `gpu_action_check.py --reference` | complete action, fused GPU route against the unpacked equations on the CPU, D = 16; repeated action, D = 16 (D = 64 to 128 with earlier sources) | 3.1e-11; repeat difference 0 |
 | `gpu_pair_check.py --reference` | bilinear φ⁴ term, fused kernel against the host packed and unpacked systems, D = 16; repeated launches, D = 16 (D = 64 with earlier sources) | 4.4e-15, 6.2e-15; repeat difference 0 |
 | `gpu_bringup.py` * | batched GMRES and kinetic action, GPU against NumPy, D = 64 | 6e-14, 7e-14 |

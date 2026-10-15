@@ -15,7 +15,7 @@ Model    (1) SCALAR_TILE, executed lane by lane in Python with a correctly round
          on a tie (c = 1 plus two products of 2^-53). Whether a GPU's FP64 tensor core
          computes the chain is what qualification/optimizer/gpu_optimizer_check.py --stages
          unit measures on the device; on the A100 the excitation kernel's two tile paths gave
-         bitwise identical trajectories.
+         equal trajectories (largest difference 0).
 Rule     (2) generic_layout.select_tiles on a grid of compute capabilities; the launcher copy
          optimizer/layout.py is byte for byte generic_layout.py; describe records the request.
 Audit    (3) audit_trajectory_ptx on hand-written PTX.

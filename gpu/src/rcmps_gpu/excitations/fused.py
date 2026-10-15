@@ -22,7 +22,8 @@ instruction, which needs compute capability 8.0 or later; without, the same frag
 moved by warp shuffles and accumulated by a chain of FP64 FMAs in k order, on any GPU with
 cooperative launch. FusedTrajectory(use_mma=None), the default, chooses by device with the
 rule of the optimizer (select_tiles: tensor cores from 8.0 on, scalar tiles below) and
-refuses use_mma=True below 8.0. On the A100 the two gave bitwise identical trajectories.
+refuses use_mma=True below 8.0. On the A100 the two gave equal trajectories (largest
+difference 0, the same steps).
 
 Importing this module does not import CuPy. `kernel_source` and `kernel_tables`
 are pure Python/NumPy and are tested on the CPU; `compile_ptx` checks the source
