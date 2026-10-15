@@ -8,8 +8,12 @@ Stages (choose with --stages, default all that apply):
   compile   fused trajectory kernels of a phi^4 solve (--kernels: the action system, the pair system of
             the validation) for each packed dimension (--packed) and tile path (--tiles; default every
             path of the device: tensor cores and scalar tiles from compute capability 8.0 on, scalar
-            tiles below): compilation, registers, register cap and cooperative residency
-Every result is one JSON line on stdout; nothing is written elsewhere.
+            tiles below): compilation, registers, register cap and cooperative residency, and the
+            audit of the kernel's PTX for this device (ptx_audit). A kernel this device cannot hold
+            or run (a cooperative grid not resident at any register cap, shared memory, threads per
+            block, --tiles mma below 8.0) is a result ("resident": false, "refused"), not a failure.
+Every result is one JSON line on stdout; nothing is written elsewhere. The exit status is 1
+if a check failed ("ok": false: a compilation or audit failure of the compile stage).
 
     python gpu_bringup.py --state STATE --stages device solver kinetic [--scaling density] [--nodes 256]
 STATE is an rcmps_store .jld2 file or a portable export directory of the GPU optimizer.
@@ -17,7 +21,9 @@ STATE is an rcmps_store .jld2 file or a portable export directory of the GPU opt
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
+import sys
 import time
 from pathlib import Path
 
@@ -33,8 +39,39 @@ from rcmps_gpu.excitations import scaled
 from rcmps_gpu.excitations import states
 
 
+FAILED = []     # the rows with "ok": false, of every script that imports emit from here
+# What FusedTrajectory (and fused.select_tiles) raise for a kernel that this device cannot
+# hold or run: a result of the qualification, not a failure.
+REFUSALS = ("--tiles mma needs", "unsafe cooperative grid", "exceeds the device limit", "thread-block limit")
+
+
 def emit(**row):
+    if row.get("ok") is False:
+        FAILED.append(row)
     print(json.dumps(row, default=float), flush=True)
+
+
+def finish():
+    """Last line of a script: the number of failed checks, and exit status 1 if any."""
+    emit(stage="summary", failed=len(FAILED))
+    sys.exit(1 if FAILED else 0)
+
+
+def describe(error):
+    return f"{type(error).__name__}: {error}"[:2000]
+
+
+def refusal(error):
+    """The message of `error` if it is the refusal of a kernel this device cannot hold or run
+    (REFUSALS), else None."""
+    return describe(error) if any(text in str(error) for text in REFUSALS) else None
+
+
+def bitwise(x, y):
+    """Same shape, type and bytes (signed zeros and NaN payloads included)."""
+    x, y = np.asarray(x), np.asarray(y)
+    return bool(x.shape == y.shape and x.dtype == y.dtype
+                and np.ascontiguousarray(x).tobytes() == np.ascontiguousarray(y).tobytes())
 
 
 def device_tiles(cp, requested=None):
@@ -162,6 +199,39 @@ def stage_host_ode(xp, args, c, ss, reference):
             np.linalg.norm(out["device"] - out["numpy"]) / np.linalg.norm(out["numpy"])))
 
 
+def ptx_audit(cp, trajectory, d, n_blocks, panels, temps):
+    """Audit of the PTX of a compiled FusedTrajectory on this device: its source, compiled by
+    NVRTC for this device's compute capability with the kernel's options, as the optimizer's
+    trajectory_ptx_report does, passes fused.audit_ptx and the optimizer's audit of the same
+    tile products (audit_trajectory_ptx: a .target directive, FP64 mma.sync for a target of
+    8.0 or later on the tensor-core path; no mma, and the shuffles and FP64 FMAs of the tile
+    product, on the scalar path; no FP32 arithmetic on either). The run itself does not audit
+    the excitation kernel's PTX. Raises RuntimeError if the audit fails."""
+    from cupy.cuda import compiler
+    from cupy._core import core
+    from rcmps_gpu.optimizer.runtime.persistent_trajectory_backend import audit_trajectory_ptx
+    cuda_path = cp.cuda.get_cuda_path()
+    directories = [] if cuda_path is None else [Path(cuda_path) / "include"]
+    try:
+        package = importlib.util.find_spec("nvidia.cuda_runtime")
+    except ModuleNotFoundError:
+        package = None
+    if package and package.submodule_search_locations:
+        directories.extend(Path(path) / "include" for path in package.submodule_search_locations)
+    includes = tuple("-I" + str(path) for path in directories if path.is_dir())
+    includes += tuple(core._get_cccl_include_options())
+    arch = cp.cuda.Device().compute_capability
+    source = fused.kernel_source(d, n_blocks, use_mma=trajectory.use_mma, panels=panels, temps=temps)
+    program = compiler._NVRTCProgram(source, "excitation_trajectory_audit.cu", method="ptx")
+    binary, _ = program.compile(tuple(trajectory.options) + (
+        "--device-c", "--device-as-default-execution-space", "-arch=compute_" + arch) + includes)
+    ptx = binary.decode()
+    audit = dict(fused.audit_ptx(ptx, use_mma=trajectory.use_mma), **audit_trajectory_ptx(ptx, trajectory.tiles))
+    if audit["ptx_target"] != "sm_" + arch:
+        raise RuntimeError(f"PTX audit failed: target {audit['ptx_target']}, the device is sm_{arch}")
+    return dict(audit, arch=arch)
+
+
 def stage_compile(xp, args):
     if xp.__name__ != "cupy":
         return emit(stage="compile", skipped="needs a GPU")
@@ -171,13 +241,22 @@ def stage_compile(xp, args):
             for tiles in paths:
                 started = time.perf_counter()
                 row = dict(stage="compile", D=2 * d, d=d, kernel=kernel, tiles=tiles, compute_capability=capability)
+                n_blocks, panels, temps = fused.PHI4_KERNELS[kernel]
                 try:
-                    n_blocks, panels, temps = fused.PHI4_KERNELS[kernel]
                     trajectory = fused.FusedTrajectory(xp, d, n_blocks, panels=panels, temps=temps,
                                                        use_mma=fused.USE_MMA[tiles])
-                    emit(**row, resident=True, seconds=time.perf_counter() - started, occupancy=trajectory.occupancy)
                 except Exception as error:  # report and continue with the next size
-                    emit(**row, resident=False, error=f"{type(error).__name__}: {error}"[:2000])
+                    message = refusal(error)
+                    if message:
+                        emit(**row, resident=False, refused=message, ok=True)
+                    else:
+                        emit(**row, resident=False, error=describe(error), ok=False)
+                    continue
+                row.update(resident=True, seconds=time.perf_counter() - started, occupancy=trajectory.occupancy)
+                try:
+                    emit(**row, ptx_audit=ptx_audit(xp, trajectory, d, n_blocks, panels, temps), ok=True)
+                except Exception as error:
+                    emit(**row, error=describe(error), ok=False)
 
 
 def main():
@@ -208,7 +287,7 @@ def main():
     if "compile" in args.stages:
         stage_compile(xp, args)
     if not args.state:
-        return
+        return finish()
     c = load(args.state)
     c.state.integrator = states.IntegratorParameters(n_quad=args.n_quad, max_point=args.window, atol=1e-13, rtol=1e-12)
     ss = reference = None
@@ -218,6 +297,7 @@ def main():
         stage_kinetic(xp, args, c, ss, reference)
     if "host_ode" in args.stages:
         stage_host_ode(xp, args, c, ss, reference)
+    finish()
 
 
 if __name__ == "__main__":

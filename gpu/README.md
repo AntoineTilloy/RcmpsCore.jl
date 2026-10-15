@@ -80,9 +80,12 @@ instruction `mma.sync.aligned.m8n8k4.row.col.f64`, in one of two ways:
 The rule is the same in both command lines (`--tiles`, default `auto`): `auto` gives `mma`
 from compute capability 8.0 on, any minor version, and `scalar` below; `--tiles mma` below
 8.0 is refused before anything is compiled, with a message; `--tiles scalar` runs anywhere.
-Everything else (layout, controller, FP64 arithmetic, tolerances) is the same, and the PTX
-of either path is audited: FP64 `mma.sync` for a target 8.0 or later on the tensor-core
-path, no `mma` at all on the scalar path, no FP32 arithmetic on either. On one GPU the two
+Everything else (layout, controller, FP64 arithmetic, tolerances) is the same. The PTX of
+either path is audited: FP64 `mma.sync` for a target 8.0 or later on the tensor-core path,
+no `mma` at all on the scalar path, no FP32 arithmetic on either. The optimizer audits its
+kernel's PTX at every compilation; the excitation kernel's PTX is audited by the CPU tests
+(NVRTC for compute_60 to 90) and on the device by the qualification (`gpu_bringup.py
+--stages compile`), not by a run. On one GPU the two
 paths agree bit for bit wherever the tensor cores compute the same FMA chain, as the A100's
 did for the excitation kernel; across GPUs, results agree to rounding. The resolved tiles
 are recorded (`compile.json`, the checkpoint and `final_validation.json` of the optimizer;
@@ -470,14 +473,24 @@ environments) are kept outside the repository. All runs used Python 3.11, NumPy 
 SciPy 1.17.1 and CuPy 14.2.0, φ⁴ at g = 2 (the D = 16 fixture) or g = 2.7.
 
 To qualify a GPU, `bash gpu/qualification/run_all.sh NEW_DIR` (from the repository root,
-with the package and CuPy installed) runs the scripts of `qualification/` in turn, with the
-tiles the device selects and, from compute capability 8.0 on, with the scalar tiles forced:
-the optimizer's tile product, trajectories, compilation and residency per D, short runs
-(D = 8 to 64, and 96 and 128 when resident; 30 iterations at D = 16 and 32), the excitation
-kernels' compilation and checks against the host integrator, and the reference levels of
-`excitation_references.toml` through the command line (and, with `RCMPS_STATE_D64`, a
-D = 64 solve). Each step writes one log of JSON lines, and `NEW_DIR/status.tsv` lists the
-exit status and time of every step; the script's header lists the steps.
+with the package and CuPy installed) runs, with the tiles the device selects and, from
+compute capability 8.0 on, with the scalar tiles forced: `gpu_optimizer_check.py` (the
+optimizer's tile product, trajectories, compilation and residency per D, short runs at
+D = 8 to 64, and 96 and 128 when resident, and 30 iterations at D = 16 and 32);
+`gpu_bringup.py --stages device compile` (both excitation kernels per D: compilation,
+residency, PTX audit); `gpu_fused_check.py`, `gpu_pair_check.py --reference` and
+`gpu_action_check.py --reference` (the fused kernel, the bilinear term and the complete
+action against the host integrator and the CPU equations, on random states and the D = 16
+fixture); `check_references.py` (the reference levels of `excitation_references.toml`
+through the command line, against Julia); and, with `RCMPS_STATE_D64`, a D = 64 solve. It
+does not run `gpu_settings_check.py` (the kinetic-node study) or the solver, kinetic and
+host-integrator stages of `gpu_bringup.py`. Every script exits with status 1 when a check
+fails: an error, a failed compilation or PTX audit, a repeated launch whose result is not
+the same bytes (or, for the complete action, differs by more than 1e-9), a difference from
+the host integrator or the CPU equations above 1e-9 (relative), a level outside its
+tolerance; a size or tile path the GPU cannot hold or run is reported, not failed. Each
+step writes one log of JSON lines, and `NEW_DIR/status.tsv` lists the exit status and time
+of every step; the script's header lists the steps.
 
 **Excitation solver, A100 PCIe 40 GB, 2026-10-13 and 14, up to D = 128.** The import commit
 of this package holds byte for byte the sources of the last batch of runs (see Provenance):
@@ -535,13 +548,19 @@ Kernel checks, with the scripts of `qualification/excitations/` (each prints JSO
 |---|---|---|
 | `gpu_fused_check.py` | fused kernel against the host-controlled NumPy integrator: random Z2 states D = 4 and 8, both sectors, p = 0 and 0.4, both scalings | same steps; samples to 2e-14, action to 1.2e-14 |
 | | the same on the D = 16 fixture (stability-limited steps) | samples to 9e-11, action to 4e-11 |
-| | tensor-core against scalar tiles, and repeated launches: D = 4 to 16 (D = 32 to 128 with earlier sources) | bitwise identical |
-| `gpu_action_check.py --reference` | complete action, fused GPU route against the unpacked equations on the CPU, D = 16 | 3.1e-11 |
-| `gpu_pair_check.py --reference` | bilinear φ⁴ term, fused kernel against the host packed and unpacked systems, D = 16 | 4.4e-15, 6.2e-15 |
+| | tensor-core against scalar tiles: D = 4 to 16 (D = 32 to 128 with earlier sources) | bitwise identical |
+| `gpu_action_check.py --reference` | complete action, fused GPU route against the unpacked equations on the CPU, D = 16; repeated action, D = 16 (D = 64 to 128 with earlier sources) | 3.1e-11; repeat difference 0 |
+| `gpu_pair_check.py --reference` | bilinear φ⁴ term, fused kernel against the host packed and unpacked systems, D = 16; repeated launches, D = 16 (D = 64 with earlier sources) | 4.4e-15, 6.2e-15; repeat difference 0 |
 | `gpu_bringup.py` * | batched GMRES and kinetic action, GPU against NumPy, D = 64 | 6e-14, 7e-14 |
 | `gpu_settings_check.py` * | kinetic nodes and window settings: D = 16 to 128 (the last batch only repeated D = 128 at 512 nodes against itself) | "Kinetic nodes at large D" |
 | `rcmps-gpu-excitations --start` * | restart from the checkpoint of a finished D = 16 run | converged in 1 action, same validated energy |
 | `check_references.py` | reference levels against Julia (the A100 values above) | not yet run on a GPU |
+
+The repeated launches of `gpu_fused_check.py` in these runs compared the second launch with
+itself: the kernel returns its sample buffer, which the second launch overwrote before the
+comparison. The script now copies the samples of the first launch and compares the bytes;
+the repeats above are those of `gpu_action_check.py` and `gpu_pair_check.py`, whose values
+are copied to the host.
 
 The fused kernel occupies 104 of 324 resident thread blocks of the A100 at D = 64, 156 of
 216 at D = 96 and 208 of 216 at D = 128; it has not run beyond D = 128 there (with register
@@ -590,7 +609,12 @@ from the ladder). `tests/optimizer/test_tiles.py` checks the scalar tile product
 against the chain of FMAs it implements, the selection rule, the PTX audit, and with NVRTC
 (no GPU) both tile paths of the kernel for compute capability 6.0 to 9.0, as
 `tests/excitations/test_fused.py` does for the excitation kernel. `tests/test_qualification.py`
-checks that every option `qualification/run_all.sh` gives a script exists. The same
+checks that every option `qualification/run_all.sh` gives a script exists, that
+`gpu_optimizer_check.py` runs the optimizer with its own settings, and runs the excitation
+scripts of the batch on a stand-in device (`tests/qualification_on_cpu.py`: NumPy arrays, a
+fused kernel whose launch is the host integrator), where a compilation error, an FP32
+instruction in the PTX, a launch that is not repeatable bitwise and a result off by 1e-6
+each give exit status 1, and a size the device cannot hold does not. The same
 command, from `gpu/`:
 
 ```bash
@@ -643,7 +667,8 @@ commands. The optimizer's GPU checks are part of every run (`--compile-only` for
 compiler and resource checks alone); `qualification/optimizer/gpu_optimizer_check.py`
 qualifies a GPU: the tile product alone against the chain of FMAs, trajectories with each
 tile path, compilation and residency per D, and short runs through the command line.
-`qualification/run_all.sh` runs all of them on one GPU (see "GPU qualification").
+`qualification/run_all.sh` runs the qualification batch of one GPU (see "GPU
+qualification" for what it runs and what it leaves out).
 
 ## Provenance
 
@@ -698,7 +723,8 @@ src/rcmps_gpu/excitations/       the modules above, provenance.json
 src/rcmps_gpu/io.py              state files: JLD2 checkpoints and portable directories
 src/rcmps_gpu/provenance.py      provenance record format and check
 julia/                           Julia scripts: export, import and initial portable states
-tests/optimizer/, tests/excitations/, tests/test_package.py, tests/test_io.py, tests/test_qualification.py
+tests/optimizer/, tests/excitations/, tests/test_package.py, tests/test_io.py, tests/test_qualification.py,
+                                 tests/qualification_on_cpu.py
 qualification/run_all.sh         the qualification batch of one GPU
 qualification/optimizer/         GPU qualification script of the optimizer
 qualification/excitations/       GPU qualification scripts of the excitation solver

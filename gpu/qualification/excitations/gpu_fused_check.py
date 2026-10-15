@@ -3,17 +3,22 @@
 For each case the Z2-packed action system of one tangent is integrated with the
 host-controlled NumPy integrator (ode.integrate_host, exact source) and with the fused
 kernel for each tile path (--tiles; default every path of the device: native FP64
-tensor-core products and scalar tiles from compute capability 8.0 on, scalar tiles below).
-The samples at the quadrature nodes and the resulting action are compared, and the two
-paths with each other. Every result is one JSON line on stdout.
+tensor-core products and scalar tiles from compute capability 8.0 on, scalar tiles below),
+twice. A path passes ("ok") when its two launches give the same bytes and, against the host
+integrator (D <= --reference-limit), the samples at the quadrature nodes and the resulting
+action differ by at most --tolerance (relative; 1e-9, the bound of the optimizer's
+trajectory check: rounding can move a step, a bug cannot stay below it; the A100 gave 5e-12
+and 4e-11 on the D = 16 fixture). A kernel this device cannot hold is reported as refused,
+not failed. The two paths are compared with each other (largest difference, same bytes,
+same steps) as a measurement. Every result is one JSON line on stdout; the exit status is 1
+if a path failed.
 
     python gpu_fused_check.py [--state STATE] [--random D [D ...]] [--window 16] [--n-quad 64]
-        [--tiles mma scalar]
+        [--tiles mma scalar] [--tolerance 1e-9]
 """
 from __future__ import annotations
 
 import argparse
-import json
 import math
 import time
 from pathlib import Path
@@ -29,11 +34,7 @@ from rcmps_gpu.excitations import packed
 from rcmps_gpu.excitations import potential
 from rcmps_gpu.excitations import scaled
 from rcmps_gpu.excitations import states
-from gpu_bringup import device_tiles
-
-
-def emit(**row):
-    print(json.dumps(row, default=float), flush=True)
+from gpu_bringup import bitwise, describe, device_tiles, emit, finish, refusal
 
 
 def tangent(ss, sector, momentum, seed):
@@ -67,32 +68,49 @@ def check(cp, state, label, args, sector, momentum, scaling, paths):
         started, statistics = time.perf_counter(), {}
         reference = ode.integrate_host(system, points, endpoint, state.integrator, statistics=statistics)
         row.update(host_seconds=time.perf_counter() - started, host_attempts=statistics["attempts"])
-    results = {}
+    results, attempts = {}, {}
     for name in paths:
         try:
             trajectory = fused.FusedTrajectory(cp, system.d, len(system.blocks), use_mma=fused.USE_MMA[name])
-            samples = trajectory.integrate(system, points, endpoint, state.integrator)
-            again = trajectory.integrate(system, points, endpoint, state.integrator)   # warm timing
-            results[name] = cp.asnumpy(again)
-            last = trajectory.last
-            row[name] = dict(milliseconds=last["device_milliseconds"], attempts=last["attempts"],
-                             rejected=last["rejected"], dense_steps=last["dense_steps"], rhs_calls=last["rhs_calls"],
-                             microseconds_per_rhs=1e3 * last["device_milliseconds"] / last["rhs_calls"],
-                             registers=trajectory.occupancy["registers"],
-                             repeat_difference=float(np.abs(cp.asnumpy(samples) - results[name]).max()))
+        except Exception as error:
+            message = refusal(error)
+            row[name] = dict(refused=message, ok=True) if message else dict(error=describe(error), ok=False)
+            continue
+        try:
+            # integrate returns the kernel's sample buffer, which the next launch overwrites: copy it first.
+            first = cp.asnumpy(trajectory.integrate(system, points, endpoint, state.integrator))
+            first_attempts = trajectory.last["attempts"]
+            again = cp.asnumpy(trajectory.integrate(system, points, endpoint, state.integrator))   # warm timing
+            results[name], last = again, trajectory.last
+            attempts[name] = last["attempts"]
+            entry = dict(milliseconds=last["device_milliseconds"], attempts=last["attempts"],
+                         rejected=last["rejected"], dense_steps=last["dense_steps"], rhs_calls=last["rhs_calls"],
+                         microseconds_per_rhs=1e3 * last["device_milliseconds"] / last["rhs_calls"],
+                         registers=trajectory.occupancy["registers"],
+                         compiler_options=trajectory.occupancy["compiler_options"],
+                         repeat_difference=float(np.abs(first - again).max()), repeat_bitwise=bitwise(first, again),
+                         repeat_same_steps=first_attempts == last["attempts"])
+            failed = [] if entry["repeat_bitwise"] else ["repeat_bitwise"]
             if reference is not None:
                 scale = np.abs(reference).max()
-                row[name]["max_difference_from_host"] = float(np.abs(results[name] - reference).max())
-                row[name]["relative"] = float(np.abs(results[name] - reference).max() / scale)
+                entry["same_steps_as_host"] = last["attempts"] == row["host_attempts"]
+                entry["max_difference_from_host"] = float(np.abs(again - reference).max())
+                entry["relative"] = float(np.abs(again - reference).max() / scale)
                 f_ref, a_ref, _ = system.pullback(reference, points, weights)
-                f, a, _ = system.pullback(results[name], points, weights)
-                row[name]["action_relative_difference"] = float(np.linalg.norm(f - f_ref) / np.linalg.norm(f_ref))
-                row[name]["boundary_relative_difference"] = float(np.linalg.norm(a - a_ref) / max(np.linalg.norm(a_ref), 1e-300))
+                f, a, _ = system.pullback(again, points, weights)
+                entry["action_relative_difference"] = float(np.linalg.norm(f - f_ref) / np.linalg.norm(f_ref))
+                entry["boundary_relative_difference"] = float(np.linalg.norm(a - a_ref) / max(np.linalg.norm(a_ref), 1e-300))
+                failed += [key for key in ("relative", "action_relative_difference")
+                           if not entry[key] <= args.tolerance]     # NaN fails
+            entry.update(failed_checks=failed, ok=not failed)
         except Exception as error:
-            row[name] = dict(error=f"{type(error).__name__}: {error}"[:1500])
+            entry = dict(error=describe(error), ok=False)
+        row[name] = entry
     if len(results) == 2:
         row["mma_vs_scalar"] = float(np.abs(results["mma"] - results["scalar"]).max())
-    emit(**row)
+        row["mma_vs_scalar_bitwise"] = bitwise(results["mma"], results["scalar"])
+        row["mma_vs_scalar_same_steps"] = attempts["mma"] == attempts["scalar"]
+    emit(**row, tolerance=args.tolerance, ok=all(row[name]["ok"] for name in paths))
 
 
 def main():
@@ -104,6 +122,8 @@ def main():
     parser.add_argument("--atol", type=float, default=1e-13)
     parser.add_argument("--rtol", type=float, default=1e-12)
     parser.add_argument("--reference-limit", type=int, default=16)
+    parser.add_argument("--tolerance", type=float, default=1e-9,
+                        help="largest relative difference from the host integrator (samples and action)")
     parser.add_argument("--quick", action="store_true", help="one configuration per state")
     parser.add_argument("--tiles", nargs="+", choices=fused.TILES, default=None,
                         help="tile paths (default: every path of the device)")
@@ -123,6 +143,7 @@ def main():
                           [("odd", 0.0, "none"), ("odd", 0.0, "density"), ("even", 0.4, "density")])
         for sector, momentum, scaling in configurations:
             check(cp, state, label, args, sector, momentum, scaling, paths)
+    finish()
 
 
 if __name__ == "__main__":

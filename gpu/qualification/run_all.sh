@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # The GPU qualification batch of rcmps_gpu on one machine (one GPU), for any NVIDIA GPU with
-# cooperative launch: every check of gpu/qualification in turn, one log per step, a status file.
+# cooperative launch: the checks of gpu/qualification listed below in turn, one log per step, a
+# status file.
 #
 #     bash gpu/qualification/run_all.sh OUTPUT_DIR
 #
@@ -30,23 +31,30 @@
 #   optimizer_short       gpu_optimizer_check.py --stages run, D = 16 32, 30 accepted iterations
 #                         (with both paths, their histories compared)
 #   excitation_compile    gpu_bringup.py --stages device compile: both kernels of a solve, every
-#                         path, packed d = 2 to 64 (D = 4 to 128)
+#                         path, packed d = 2 to 64 (D = 4 to 128): compilation, residency (a size
+#                         the GPU cannot hold is reported, not failed) and the PTX audit
 #   excitation_fused      gpu_fused_check.py on random Z2 states (D = 4 6 8 12) and on the D = 16
-#                         fixture: every path against the host-controlled integrator
-#   excitation_pair       gpu_pair_check.py --reference on the D = 16 fixture
+#                         fixture: every path against the host-controlled integrator, repeated
+#                         launches compared bitwise
+#   excitation_pair       gpu_pair_check.py --reference on the D = 16 fixture: the bilinear term of
+#                         every path against the host packed and unpacked systems
+#   excitation_action     gpu_action_check.py --reference on the D = 16 fixture, --tiles auto: the
+#                         complete action on the GPU against the unpacked equations on the CPU
+#   excitation_action_scalar  the same with --tiles scalar (compute capability 8.0 or later)
 #   references            check_references.py: the D = 16 and D = 32 levels of
 #                         test/fixtures/excitation_references.toml through the command line,
 #                         against Julia, with --tiles auto
 #   references_scalar     the same with --tiles scalar (compute capability 8.0 or later)
 #   excitation_d64        rcmps-gpu-excitations on RCMPS_STATE_D64 (odd sector, p = 0, the
-#                         defaults) with --tiles auto (8.0 or later, with the state)
+#                         defaults) with --tiles auto (8.0 or later, with the state); fails unless
+#                         result.json says the level is accepted
 #   excitation_d64_scalar the same with --tiles scalar
 #
 # OUTPUT_DIR/status.tsv: one line per step (step, exit status, seconds, log); the exit status
 # of this script is 1 if any step failed. Steps continue after a failed one.
 set -u
 if [ $# -ne 1 ]; then
-    sed -n '2,46p' "$0" >&2
+    sed -n '2,54p' "$0" >&2
     exit 2
 fi
 OUT=$1
@@ -108,6 +116,19 @@ print(json.dumps(row))
 EOF
 }
 
+solve() {   # solve OUTPUT STATE [options]: rcmps-gpu-excitations, failing unless its level is accepted
+    local directory=$1
+    shift
+    "$PY" -m rcmps_gpu.excitations "$@" --output "$directory" || return $?
+    "$PY" - "$directory/result.json" <<'EOF'
+import json, sys
+result = json.load(open(sys.argv[1]))
+print(json.dumps(dict(stage="solve", accepted=result.get("accepted"), stop_reason=result.get("stop_reason"),
+                      energies=result.get("energies"), validated_energies=result.get("validated_energies"))))
+sys.exit(0 if result.get("accepted") is True else 1)
+EOF
+}
+
 resident_sizes() {   # D among 96 and 128 that the compile step found resident with auto tiles
     "$PY" - "$OUT/logs/03_optimizer_compile.log" <<'EOF'
 import json, sys
@@ -151,15 +172,17 @@ run_step 05 optimizer_short $OPT --output "$OUT/optimizer_short" --stages run --
 run_step 06 excitation_compile "$PY" "$EXC/gpu_bringup.py" --stages device compile --packed 2 4 8 16 32 48 64
 run_step 07 excitation_fused "$PY" "$EXC/gpu_fused_check.py" --random 4 6 8 12 --state "$D16"
 run_step 08 excitation_pair "$PY" "$EXC/gpu_pair_check.py" --state "$D16" --reference
-run_step 09 references "$PY" "$EXC/check_references.py" --output "$OUT/references" --tiles auto
+run_step 09 excitation_action "$PY" "$EXC/gpu_action_check.py" --state "$D16" --reference --tiles auto
 if [ "$CC" -ge 80 ]; then
-    run_step 10 references_scalar "$PY" "$EXC/check_references.py" --output "$OUT/references_scalar" --tiles scalar
+    run_step 10 excitation_action_scalar "$PY" "$EXC/gpu_action_check.py" --state "$D16" --reference --tiles scalar
+fi
+run_step 11 references "$PY" "$EXC/check_references.py" --output "$OUT/references" --tiles auto
+if [ "$CC" -ge 80 ]; then
+    run_step 12 references_scalar "$PY" "$EXC/check_references.py" --output "$OUT/references_scalar" --tiles scalar
 fi
 if [ -n "${RCMPS_STATE_D64:-}" ] && [ "$CC" -ge 80 ]; then
-    run_step 11 excitation_d64 "$PY" -m rcmps_gpu.excitations "$RCMPS_STATE_D64" \
-        --output "$OUT/excitation_d64" --tiles auto
-    run_step 12 excitation_d64_scalar "$PY" -m rcmps_gpu.excitations "$RCMPS_STATE_D64" \
-        --output "$OUT/excitation_d64_scalar" --tiles scalar
+    run_step 13 excitation_d64 solve "$OUT/excitation_d64" "$RCMPS_STATE_D64" --tiles auto
+    run_step 14 excitation_d64_scalar solve "$OUT/excitation_d64_scalar" "$RCMPS_STATE_D64" --tiles scalar
 fi
 echo "status: $OUT/status.tsv"
 column -t -s $'\t' "$OUT/status.tsv" 2>/dev/null || cat "$OUT/status.tsv"
