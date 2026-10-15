@@ -18,3 +18,7 @@ docs/*.synctex.gz
 /benchmark/d64_50/
 /benchmark/large_scaling/
 /benchmark/threading/
+# Python environments and test caches; the build and test outputs of the GPU
+# package (gpu/build/, gpu/dist/, *.egg-info/) are listed in gpu/.gitignore.
+.venv/
+.pytest_cache/

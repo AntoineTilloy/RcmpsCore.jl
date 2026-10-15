@@ -2,8 +2,17 @@
 
 CUDA implementations of two algorithms of RcmpsCore, in Python with CuPy, for the φ⁴
 model on Z2-symmetric relativistic continuous matrix product states (even bond dimension
-D). Everything is float64/complex128. The Julia package in the repository root is the
-reference implementation and is not modified by this one.
+D). Everything is float64/complex128.
+
+The Julia package RcmpsCore in the repository root is the reference implementation (CPU,
+every model) and is not modified by this one. This package accelerates its ground-state
+optimizer and its tangent-space excitation solver for φ⁴ on Z2-symmetric states, and is
+tested against it through shared fixtures and reference levels (`test/fixtures`). When the
+two disagree beyond the tolerances documented here, the Julia result is the right one, with
+one documented exception: the excitation solver evaluates the Julia formulas on a
+stationary density re-solved in scaled variables, whose small eigenvalues are accurate to
+full relative precision where those of the stored ρ that the Julia code uses are not (see
+"Excitation solver: differences from the Julia code").
 
 - `rcmps_gpu.optimizer`: ground-state optimizer. One persistent cooperative CUDA kernel
   integrates the whole adaptive DOP853 trajectory of the quartic term with native FP64
@@ -13,22 +22,38 @@ reference implementation and is not modified by this one.
 - `rcmps_gpu.excitations`: tangent-space excitation solver (matrix-free Hamiltonian
   action, Davidson, validation by the bilinear route), both parity sectors, any momentum.
   The action trajectory of a Z2 sector runs in one fused cooperative kernel.
+- `rcmps_gpu.io`: the state files of both: checkpoints of the Julia package and portable
+  state directories.
 
-Status: the excitation solver was qualified on an A100 up to D = 128; at D = 16 and 32
-its energies agree with the Julia code to about 1e-11, and above that its two
-independent routes (action and bilinear) agree to 4e-10. The optimizer's runtime is the
-generic version of the H100 runtime of the research campaign: for the sizes that runtime
-supported (packed d = D/2 in {2, 3, 4, 8, 16, 32, 48, 64, 128}) it generates the same CUDA
-source and compiler options, bit for bit, but the generic runtime itself has not yet run
-on a GPU. The optimizer needs FP64 tensor cores (SM80 or SM90); the excitation kernel uses
-them too, with a scalar-tile variant (`--scalar-tiles`) meant for debugging.
+Status (details under "GPU qualification"): the excitation solver was qualified on an A100
+up to D = 128; at D = 16 and 32 its energies agree with the Julia code to about 1e-11, and
+above that its two independent routes (action and bilinear) agree to 4e-10. The optimizer's
+runtime is the generic version of the H100 runtime of the research campaign: for the sizes
+that runtime supported (packed d = D/2 in {2, 3, 4, 8, 16, 32, 48, 64, 128}) it generates
+the same CUDA source and compiler options, bit for bit, but the generic runtime itself has
+not yet run on a GPU. Both kernels need FP64 tensor cores (SM80 or SM90).
 
 ## Installation
 
-Python 3.11 or later. From the repository root:
+Python 3.11 or later. On a machine with an NVIDIA A100 (SM80) or H100 (SM90) and a driver
+for CUDA 12, from the repository root:
 
 ```bash
-pip install -e "./gpu[cuda12]"  # with CuPy for CUDA 12 (cupy-cuda12x[ctk])
+pip install "./gpu[cuda12]"     # with CuPy for CUDA 12 (cupy-cuda12x[ctk] ~= 14.2)
+```
+
+Both kernels compute their matrix products with native FP64 tensor-core instructions
+(`mma.sync` m8n8k4), which today restricts them to compute capability 8.0 and 9.0. The
+optimizer refuses other devices; the excitation kernel accepts them only with
+`--scalar-tiles`, a variant with the same layout meant for debugging (bitwise identical to
+the tensor-core kernel on the A100, not qualified on any other GPU). GPUs without FP64
+tensor cores (V100, T4, consumer cards) are therefore not supported yet. The qualification
+runs used Python 3.11, NumPy 2.4.6, SciPy 1.17.1 and CuPy 14.2.0.
+
+For development:
+
+```bash
+pip install -e "./gpu[cuda12]"  # editable, on a GPU machine
 pip install -e "./gpu[test]"    # CPU only: enough for the tests and for the CUDA source
 ```
 
@@ -51,18 +76,25 @@ rcmps-gpu-optimize --D 160 --seed 42 --coupling 2.7 --run-gpu --output RUN
 rcmps-gpu-optimize --D 160 --resume-from RUN/optimization.json --run-gpu --output RUN2
 ```
 
-Output directories must be new. A run starts from a random Z2 state (`--seed`) or from
-`--initial DIR`, a portable state directory (see State files below): the `initial/` or
-`optimized_state/` of an earlier run, a checkpoint of the Julia package exported by
-`gpu/julia/export_state.jl`, or a random state of `gpu/julia/prepare_initial.jl`. Either
-way the run writes the state it starts from to `initial/`. If that state carries an
-energy (and a gradient), the first evaluation must reproduce them, the energy to 1e-8 and
-the gradient to 3e-6 in the metric norm, or the optimizer does not start. There is no
-default wall-time limit (`--max-seconds` sets one). A GPU run first compares the fast
-energy and gradient with an independent CuPy evaluation at the initial state; after
-stopping it runs a five-row consistency check at refined settings and, if it passes,
-writes `optimized_state/`, with the energy and gradient of the refined check (window 40,
-1024 nodes, 1e-14/1e-13).
+Only `--D` changes between sizes. Output directories must be new. A run starts from a
+random Z2 state (`--seed`) or from `--initial DIR`, a portable state directory (see State
+files below): the `initial/` or `optimized_state/` of an earlier run, a checkpoint of the
+Julia package exported by `gpu/julia/export_state.jl`, or a random state of
+`gpu/julia/prepare_initial.jl`. The random start of `--seed` uses NumPy PCG64 complex
+Gaussian draws (scaling 1/sqrt(D)) and solves for the stationary density; it does not
+reproduce Julia's `RandomStateZ2`, whose draws `prepare_initial.jl` reproduces. Either way
+the run writes the state it starts from to `initial/`. If that state carries an energy (and
+a gradient), the first evaluation must reproduce them, the energy to 1e-8 and the gradient
+to 3e-6 in the metric norm, or the optimizer does not start.
+
+The default target is a gradient norm of 1e-7 (metric norm), with at most 20,000 accepted
+iterations per invocation. There is no default wall-time limit (`--max-seconds` sets one);
+`--max-device-seconds` (300) is the watchdog of one quartic trajectory, not a limit on the
+run. Reaching the target, the iteration limit, numerical stagnation, a numerical failure
+and the time limit are distinct recorded outcomes. `--resume-from` continues a stopped
+checkpoint of this runtime without resetting its L-BFGS pairs, next step, counters or
+history; the objective controls are inherited and cannot change, and the original files
+stay as they are.
 
 Excitations (`rcmps-gpu-excitations`, or `python -m rcmps_gpu.excitations`):
 
@@ -70,23 +102,209 @@ Excitations (`rcmps-gpu-excitations`, or `python -m rcmps_gpu.excitations`):
 rcmps-gpu-excitations STATE --output DIR [--momentum 0.0] [--nev 1] [--sector odd|even|all]
 ```
 
-STATE is an `rcmps_store` checkpoint (.jld2) or a portable state directory. `--backend
-numpy` runs the same code on the CPU. `--help` describes the defaults: the Davidson
-schedule of the A100 runs (search space min(160, n), thick restarts) and the kinetic
-nodes of `eigsolve.default_kinetic_nodes` (below). From Python the entry points are
-`rcmps_gpu.excitations.eigsolve.excitation_eigsolve` and `iterative_dispersion`.
+STATE is an `rcmps_store` checkpoint (.jld2) or a portable state directory. `--help`
+describes every option. The defaults:
+
+- **Problem:** odd sector for a Z2 state, p = 0, one level, φ⁴ at the stored coupling.
+- **Discretization:** window 30, 512 quadrature nodes, ODE tolerances 1e-13/1e-12; kinetic
+  nodes `eigsolve.default_kinetic_nodes(D)`, 256 up to D = 64 and 512 beyond (see
+  "Kinetic nodes at large D"); 8 preconditioner nodes; solver tolerance 1e-14; scaled
+  variables.
+- **Validation:** on; refined settings window 40, 1024 nodes, tolerances divided by 10,
+  twice the kinetic nodes.
+- **Davidson:** residual target 1e-7, at most 200 actions, and the schedule of the A100
+  mass and sector runs (the Davidson part of the Julia D ≤ 48 research configuration,
+  `eigsolve.research_davidson_options`): for a sector of dimension n, a search space of
+  min(160, n) vectors with thick restarts keeping min(max(12, nev), maxspace - 1) Ritz
+  vectors. `--fresh-restarts` selects the library schedule of the Julia code instead
+  (search space max(8, 2 nev + 2), retain nev, every restart recomputes the actions), and
+  `--maxspace` and `--retain` override either schedule. The stall rule is the
+  `DavidsonOptions` default (`--stall-residual-limit` max(1e-5, 10 tol),
+  `--stall-energy-atol` 1e-9).
+
+`--backend fused` (the default) integrates one parity sector of a Z2 state per launch, so
+`--sector all` needs `--backend host` (host-controlled integrator on the device, slow) or
+`--backend numpy` (the same code on the CPU). `--basis-bytes` and `--chunk` bound the GPU
+memory of the batched solves (1.0e10 and 32 were used at D = 128 on 40 GB). The output
+directory receives `result.json` (energies, the four validation energies, history,
+timings, solver and kernel statistics, source hashes, and `settings`: the options with the
+values used), `vectors.npz` (white coefficients and tangents W in the gauge of the state),
+`log.jsonl`, and during the search `checkpoint.npz` (current Ritz vectors after every
+action). `--start FILE` restarts from either file for the same state and sector, so a
+failure after the search costs one action; the white coefficients refer to the
+eigenvectors of ρ computed in that run, so reuse a checkpoint in the same software
+environment.
+
+From Python the entry points are `rcmps_gpu.excitations.eigsolve.excitation_eigsolve(state,
+p, ...)` and `iterative_dispersion` (a loop over momenta with warm starts). They resolve
+`kinetic_nodes=None` to `default_kinetic_nodes(state.D)`, but their Davidson default stays
+the library schedule of the Julia code; the command line's schedule is
+`davidson_options=eigsolve.research_davidson_options(eigsolve.sector_dimension(state), nev)`
+(with the same `sector`, `parity`, `gauge` and `metric_tol` in both calls).
+
+## Optimizer: sizes, devices and checks
+
+The packed Z2 representation requires even D. The row layout generates every even D from
+2 to 512; this is a code-generation range, not a promise that every size fits every GPU.
+The whole cooperative grid must be resident: shared memory, registers and the device's
+thread-block limits can impose a smaller maximum, and compilation refuses an unsafe grid
+before the trajectory sample buffers are allocated (`--compile-only` checks a size on the
+target GPU; without `--run-gpu` the plan gives the size of those buffers). Panels larger
+than 48 KiB use dynamic shared memory, and resource use and spills are reported. There is
+no automatic slower backend, reduced precision or relaxed tolerance. Sizes above 512 need
+another row layout.
+
+Before optimizing, a GPU run compares the fast energy and gradient, and their raw terms,
+with an independent CuPy propagation and the baseline kinetic solver at the initial state;
+a failure keeps the raw data and stops before the optimizer starts. Compilation audits the
+PTX for native FP64 MMA instructions and the absence of FP32 arithmetic. After stopping,
+the five-row consistency validator re-evaluates the final state (three standard
+evaluations, two refined ones) and, if it passes, writes `optimized_state/` with the energy
+and gradient of the finest row (window 40, 1024 nodes, 1e-14/1e-13);
+`gpu/julia/import_state.jl` turns it into a checkpoint. Reports keep validation separate
+from convergence, and failed or partial results are kept. A run directory holds the plan,
+the compiler, resource and PTX report, the initial qualification, the complete optimizer
+history (JSON and NPZ), the final consistency report and, after a pass,
+`optimized_state/`. These are consistency checks, not an independent error certificate
+for the gradient, nor a guarantee that the target can be reached.
+
+## Excitation solver: differences from the Julia code
+
+The Hamiltonian action F(W), the bilinear cross-check, the preconditioner, the field seed
+and the Davidson iteration follow the Julia code (`src/excitation_*.jl`, `src/davidson.jl`;
+mathematics in `docs/excitations.tex`) formula by formula. Nothing uses a D² x D² transfer
+matrix, Schur form or LU factor, so memory and time are set by D x D products. There are
+three structural changes. The first two leave the result unchanged; the third keeps the
+formulas and changes their conditioning, and with it the density they are evaluated on:
+
+1. **Matrix-free solves** (`scaled.py`). Every resolvent `(sigma - z L) X = B` and every
+   pinned Poisson problem is solved by right-preconditioned GMRES on a whole batch of
+   independent systems at once (all theta nodes, source operators and tangents). The
+   preconditioner is the exact inverse of the no-jump part `X -> sigma X - z (Q X + X Q')`,
+   diagonal in the eigenbasis of Q. A solve takes 30 iterations on average at D = 64-128
+   (up to 55) for a relative residual of 1e-14. The spectral test of the Julia context (a
+   unique, mixing transfer fixed point) is one such solve, of a generic right-hand side on
+   the pinned operator (`eigsolve.check_mixing`): a reducible state is refused before the
+   first action.
+2. **Tangent-independent halves are computed once** (`kinetic.py`, `potential.py`). In the
+   resolvent quadrature and in the ODE, the ground-state halves do not depend on W.
+   Boundary terms are linear, so one shifted dual Poisson solve serves all terms.
+3. **Scaled variables** (`scaled.py`). With S = sqrt(ρ) in the density gauge, each matrix
+   index is kept either in the stored left-canonical gauge or rescaled by S, so that every
+   intermediate is O(1): a density x is stored as xh with x = S xh S, a tangent as
+   Wh = W S, and so on. The right fixed point becomes close to 1 and no result is divided
+   by a small Schmidt value. `--scaling none` (S = 1) evaluates the Julia formulas
+   literally; both modes are the same code.
+
+The third point matters at large D. With the Julia formulas the white-coordinate action
+carries Float64 roundoff amplified by 1/λ_min(ρ); this is the residual floor near 1e-6 of
+the D ≥ 56 CPU runs. On the D = 64, g = 2.7 CPU checkpoint, with the library Davidson
+schedule (`--fresh-restarts`) and solver tolerance 1e-12, `--scaling none` stalls at
+residual 2.1e-6 after 146 actions, as the CPU run did, and the scaled variables converge
+to 8.8e-8 in 124.
+
+It also changes which density the formulas see. The Julia code uses the stored ρ, whose
+small eigenvalues are known to a relative accuracy of about eps x cond(ρ). The scaled route
+re-solves the fixed point in the scaled variables (`fixed_point_residual` in the log),
+which determines those eigenvalues to full relative accuracy, and both the action and the
+bilinear route use it. The two therefore differ by up to about eps x cond(ρ) times the
+weight of the vector on the small-ρ columns, and a comparison with Julia at large D cannot
+be better than that. On crafted D = 4 states with cond(ρ) = 1.3e7, 1e10 and 6e12, one
+bilinear energy of the scaled route agrees to 1e-15 (relative) with the Julia formulas
+evaluated on the refined density and to 2e-14, 2e-13 and 5e-12 with the same formulas on
+a 50-digit stationary density, while the stored density gives 9e-12, 2e-8 and 3e-6. On
+the optimized states used here the effect is small: at D = 64 (cond 5.6e10) the
+field-seed energy is 0.06920762511 scaled, 0.06920762518 with the Julia formulas on the
+GPU, and 0.06920762547 on the CPU.
+
+Modules of `rcmps_gpu.excitations`:
+
+| Module | Role |
+|---|---|
+| `states`, `models` | states (loaded through `rcmps_gpu.io`), φ⁴ terms, grids, source kernel |
+| `coordinates`, `davidson` | white tangent coordinates and Davidson: line-by-line ports |
+| `scaled` | scaled variables, typed Lindblad maps, batched preconditioned GMRES |
+| `kinetic` | kinetic and quadratic terms by the theta resolvent quadrature |
+| `potential`, `ode` | ODE terms: equations, pullback, host-controlled DOP853 (reference path) |
+| `packed` | Z2-packed, reduced action ODE as term tables (26 blocks for φ⁴) |
+| `fused` | fused cooperative FP64 kernel that integrates a packed system in one launch |
+| `hamiltonian` | the complete action F(W) |
+| `bilinear`, `packed_pair`, `bilinear_fused` | bilinear energies: reference route, packed diagonal system, fused route |
+| `eigsolve` | operator in white coordinates, preconditioner, seed, Davidson driver, validation, defaults (kinetic nodes, Davidson schedules) |
+| `cli` | command line |
+
+The fused kernel (`fused.py`) runs the whole adaptive DOP853 trajectory of the action
+(forward and adjoint together, as in the optimizer) inside one cooperative kernel: step
+controller, twelve stages, error norm and dense output at the quadrature nodes, with no
+host synchronization per step. It reuses the controller arithmetic, source approximation
+(the Chebyshev table of `optimizer/runtime/jax_source.py`), thread-to-tile mapping and
+`mma.sync` m8n8k4 FP64 products of the optimizer's trajectory kernel. The right-hand side
+is table driven: each packed block has a list of d x d products in a jac group, a source
+group and two-sided groups (`packed.py`), so one kernel serves both sectors, any momentum,
+both scalings, and the bilinear system (`packed_pair.py`, three two-sided groups). Stages
+alternate between two buffers, which removes one grid barrier per stage. `--scalar-tiles`
+(`use_mma=False`) replaces the tensor-core tile product by warp shuffles with the same
+layout; the two give bitwise identical trajectories. The φ⁴ action system has 26 packed
+blocks and 190 products per right-hand side (the optimizer's ground-state system: 10 blocks,
+60 products).
+
+Three settings matter for accuracy:
+
+- **Solver tolerance.** An energy inherits about tolerance x ||H||. At 1e-12 the D = 64
+  mass is off by 1e-8; the default 1e-14 costs about 15% more iterations. GMRES stops by
+  itself when it reaches the roundoff level of a system (largest attained residual 1e-14
+  at D = 16, 9e-14 at D = 64, 2e-13 at D = 96, 4e-13 at D = 128) and accepts residuals up
+  to max(20 tol, 1e-11); the attained residuals are in `result.json`
+  (`solver.residual_by_tolerance`).
+- **Kinetic nodes.** The Julia default of 256 nodes is converged up to D = 64 only, hence
+  the default of 512 beyond (`eigsolve.default_kinetic_nodes`, used by the command line and
+  by the entry points of `eigsolve.py`: `excitation_eigsolve`, `iterative_dispersion`,
+  `solve_levels`, `ExcitationOperator`; the building blocks `hamiltonian.HamiltonianAction`
+  and `bilinear.BilinearElement` keep Julia's 256). See "Kinetic nodes at large D".
+- **Davidson schedule.** The library schedule (search space 8, every restart recomputes
+  the actions) is safe against drift but needs 124 actions at D = 64 where one unrestarted
+  space needs 44. With scaled variables the stored actions stay consistent with fresh ones
+  (fresh and recombined residuals agree to better than 1% up to D = 96), so the command
+  line's default keeps up to min(160, n) vectors and recombines the stored actions at a
+  restart; none of the runs under "GPU qualification" needed one.
+
+## Kinetic nodes at large D
+
+Measured on an A100 with `qualification/excitations/gpu_settings_check.py`: the two parts
+of the action of a converged vector, at each setting, against the finest one (1024
+kinetic nodes; 2048 window nodes, window 40, ODE tolerances 1e-14/1e-13), on the states of
+the mass runs under "GPU qualification". Each part has norm 5 (D = 16) to 21 (D = 128), and
+at D = 128 the two energies cancel from +1.29 and -1.26 to the mass 0.035.
+
+| D | Resolvent part, 256 nodes: action, energy | 512 nodes: action, energy | ODE part, standard settings: action, energy |
+|---|---|---|---|
+| 16 | 4.0e-12, 1.2e-12 | 5.4e-12, 6.8e-13 | 1.0e-10, 2.4e-11 |
+| 64 | 9.6e-11, 1.9e-12 | 5.8e-11, 3.4e-12 | 5.2e-10, 3.7e-12 |
+| 96 | 2.1e-7, 4.8e-12 | 1.0e-10, 1.8e-11 | 1.7e-9, 2.0e-11 |
+| 128 | 1.2e-5, 7.0e-10 | 3.1e-10, 2.3e-11 | 5.3e-9, 9.0e-11 |
+
+The Julia default of 256 kinetic nodes is converged up to D = 64 and fails abruptly
+beyond: at D = 128 a vector converged with 256 nodes has a residual of 1.2e-5 under 512
+nodes, above the acceptance limit of 1e-5. 512 nodes are converged to 3e-10 up to
+D = 128, at 4 s more per action there (8.6 s instead of 4.4 s for the resolvent part), so
+`default_kinetic_nodes(D)` is 256 up to D = 64 and 512 above (with twice as many for the
+refined check of the validation). The window settings of the ODE part are adequate at
+every D. Nothing was measured beyond D = 128; the command line notes it there, and warns
+when `--kinetic-nodes` is below the default.
 
 ## State files
 
-`rcmps_gpu.io` reads the states of both subpackages and writes those of the optimizer:
+Two formats connect this package with the Julia one. `rcmps_gpu.io` reads the states of
+both subpackages and writes those of the optimizer:
 
 - `read_jld2`: an `rcmps_store` checkpoint of the Julia package (JLD2 schema 1 of
-  `src/storage.jl`), read with h5py. `mass` is read when present (1.0 otherwise); a φ⁴
-  state with another mass is refused. `rho` is not stored, and is recomputed.
+  `src/storage.jl`), read with h5py; this direction only. `mass` is read when present (1.0
+  otherwise); a φ⁴ state with another mass is refused. `rho` is not stored, and is
+  recomputed.
 - `read_portable`, `write_portable`: a portable state directory, "rcmps-portable-state"
-  format 1, the format exchanged with Julia. `metadata.toml` holds `format =
-  "rcmps-portable-state"`, `format_version = 1`, `D`, `model`, `coupling` (real), and
-  optionally `mass` (default 1.0, and 1.0 for φ⁴), `energy`, `gradient_norm`,
+  format 1, the format exchanged with Julia in both directions. `metadata.toml` holds
+  `format = "rcmps-portable-state"`, `format_version = 1`, `D`, `model`, `coupling` (real),
+  and optionally `mass` (default 1.0, and 1.0 for φ⁴), `energy`, `gradient_norm`,
   `validation_passed`, `producer`, `source`, `info`, an `[integration]` table (`n_quad`,
   `max_point`, `atol`, `rtol`, optional `maxiters`: the settings of the energy and
   gradient) and a `[manifold]` table (`metric_reg`, `precond_reg`, optional
@@ -133,25 +351,158 @@ The recorded mass of the research mass scan at D = 16 (level `mass_scan_D16_g2`)
 `tests/excitations/test_eigsolve.py` and `test_stored_references.py` compare with, is read
 from the same file.
 
-## Kinetic nodes at large D
+## GPU qualification
 
-Measured on an A100 with `qualification/excitations/gpu_settings_check.py`: the two parts
-of the action of a converged vector, at each setting, against the finest one (1024
-kinetic nodes; 2048 window nodes, window 40, ODE tolerances 1e-14/1e-13), on the g = 2.7
-states. Each part has norm 5 (D = 16) to 21 (D = 128).
+What has run on which GPU, summarized; the detailed run records (logs, result files,
+environments) are kept outside the repository. All runs used Python 3.11, NumPy 2.4.6,
+SciPy 1.17.1 and CuPy 14.2.0, φ⁴ at g = 2 (the D = 16 fixture) or g = 2.7.
 
-| D | Resolvent part, 256 nodes: action, energy | 512 nodes: action, energy | ODE part, standard settings: action, energy |
-|---|---|---|---|
-| 16 | 4.0e-12, 1.2e-12 | 5.4e-12, 6.8e-13 | 1.0e-10, 2.4e-11 |
-| 64 | 9.6e-11, 1.9e-12 | 5.8e-11, 3.4e-12 | 5.2e-10, 3.7e-12 |
-| 96 | 2.1e-7, 4.8e-12 | 1.0e-10, 1.8e-11 | 1.7e-9, 2.0e-11 |
-| 128 | 1.2e-5, 7.0e-10 | 3.1e-10, 2.3e-11 | 5.3e-9, 9.0e-11 |
+**Excitation solver, A100 PCIe 40 GB, 2026-10-13 and 14, up to D = 128.** The import commit
+of this package holds byte for byte the sources of the last batch of runs (see Provenance):
+the four masses at D = 16, 32, 64 and 128, the D = 16 even level, and the kernel checks
+below not marked *. The other runs used earlier sources of the same algorithms;
+across the three source versions the D = 16, 32 and 64 masses agree to 2e-13, 8e-13 and
+2e-11. The mass and sector runs (the defaults of the command line, with 256 kinetic nodes;
+the D = 96 and 128 rows end with restarts at 512):
 
-The Julia default of 256 kinetic nodes is converged up to D = 64 and fails abruptly
-beyond. 512 nodes are converged to 3e-10 up to D = 128, so `default_kinetic_nodes(D)` is
-256 up to D = 64 and 512 above (with twice as many for the refined check of the
-validation). Nothing was measured beyond D = 128; the command line notes it there, and
-warns when `--kinetic-nodes` is below the default.
+| State | D | Sector, p | Actions | Wall | Validated energy | Four-energy spread | Julia | GPU - Julia |
+|---|---|---|---|---|---|---|---|---|
+| g = 2 fixture | 16 | odd, 0 | 16 | 22 s | 0.3523798021159728 | 8.2e-12 | 0.3523798021182097 | -2.2e-12 |
+| | 16 | odd, 0.5 * | 17 | 35 s | 0.6115040261903056 | 5.0e-12 | 0.6115040261920367 | -1.7e-12 |
+| | 16 | even, 0.5 | 20 | 22 s | 1.2896320149270475 | 4.2e-11 | 1.2896320149261895 | +8.6e-13 |
+| g = 2.7 | 32 | odd, 0 | 25 | 61 s | 0.03377574625890766 | 5.0e-11 | 0.03377574626049129 † | -1.6e-12 |
+| | 32 | odd, 0.05 * | 27 | 64 s | 0.05575314792848829 | 4.0e-11 | 0.05575314792508679 | +3.4e-12 |
+| | 32 | odd, 0.1 * | 28 | 65 s | 0.10235418166420304 | 3.5e-11 | 0.10235418166753874 | -3.3e-12 |
+| | 32 | even, 0 * | 30 | 61 s | 0.31281412705278433 | 3.5e-11 | 0.3128141270643408 | -1.2e-11 |
+| g = 2.7, CPU checkpoint | 64 | odd, 0 | 44 | 376 s | 0.03469099908836591 | 5.1e-11 | 0.03469099882896343 ‡ | +2.6e-10 |
+| g = 2.7, GPU-optimizer state | 96 | odd, 0 * | 71 + 2 | 1783 s + 508 s | 0.03484655970011241 | 3.5e-10 | | |
+| g = 2.7, GPU-optimizer state | 128 | odd, 0 | 108 + 12 + 13 | 6454 s + 1983 s + 2033 s | 0.03496269270838775 | 3.2e-10 | | |
+
+\* earlier sources. † recorded mass of the research mass scan (Julia, at its own settings).
+‡ Julia run that stalled at residual 2.3e-7, its four energies spread over 6.8e-10. The
+Julia values are levels of `test/fixtures/excitation_references.toml`. In every case
+computed by the Julia library at the settings of the GPU run (D = 16 and the D = 32 rows
+other than p = 0) the two codes take the same number of actions and both accept the level;
+the D = 16 mass is also 3.3e-12 below the recorded one. The D = 96 and 128 rows end with
+restarts (`--start`) from the run before with 512 kinetic nodes, the first 256-node
+D = 128 run being refused by its refined check (residual 1.2e-5). At D = 128 the state has
+four Schmidt values below the metric cutoff 10 D eps, so four columns of the tangent are
+dropped, as the Julia code would do (sector dimension 7936 instead of 8192). The
+four-energy spread at D = 96 and 128 is between the action and the bilinear route, not
+within either; it is the Float64 floor of the linear solves (GMRES residuals 2e-13 and
+4e-13, ρ with condition number 2.6e12), an attribution by elimination. The D = 96 and 128
+masses of these states are therefore known to about 4e-10.
+
+Time per stage on the A100 (seconds; the Julia code needs 548 s per action and 23,900 s
+for the preconditioner at D = 64, and 40 minutes per level at D = 32 on two threads):
+
+| D | Sector dimension | Operator setup | Preconditioner | One action | Validation |
+|---|---|---|---|---|---|
+| 16 | 128 | 0.7 | 1.1 | 0.54 | 4.0 |
+| 32 | 512 | 1.6 | 6.2 | 1.4 | 10.6 |
+| 64 | 2048 | 5.7 | 57 | 5.7 | 44 |
+| 96 | 4608 | 18 | 287 | 18.8 | 143 |
+| 128 | 7936 | 46 | 897 | 47.8 (52.4 with 512 kinetic nodes) | 349 |
+
+Kernel checks, with the scripts of `qualification/excitations/` (each prints JSON lines):
+
+| Script | Check | Result |
+|---|---|---|
+| `gpu_fused_check.py` | fused kernel against the host-controlled NumPy integrator: random Z2 states D = 4 and 8, both sectors, p = 0 and 0.4, both scalings | same steps; samples to 2e-14, action to 1.2e-14 |
+| | the same on the D = 16 fixture (stability-limited steps) | samples to 9e-11, action to 4e-11 |
+| | tensor-core against scalar tiles, and repeated launches: D = 4 to 16 (D = 32 to 128 with earlier sources) | bitwise identical |
+| `gpu_action_check.py --reference` | complete action, fused GPU route against the unpacked equations on the CPU, D = 16 | 3.1e-11 |
+| `gpu_pair_check.py --reference` | bilinear φ⁴ term, fused kernel against the host packed and unpacked systems, D = 16 | 4.4e-15, 6.2e-15 |
+| `gpu_bringup.py` * | batched GMRES and kinetic action, GPU against NumPy, D = 64 | 6e-14, 7e-14 |
+| `gpu_settings_check.py` | kinetic nodes and window settings: D = 128 (D = 16 to 96 with earlier sources) | "Kinetic nodes at large D" |
+| `rcmps-gpu-excitations --start` * | restart from the checkpoint of a finished D = 16 run | converged in 1 action, same validated energy |
+| `check_references.py` | reference levels against Julia (the A100 values above) | not yet run on a GPU |
+
+The fused kernel occupies 104 of 324 resident thread blocks of the A100 at D = 64, 156 of
+216 at D = 96 and 208 of 216 at D = 128: it does not fit on that GPU beyond D = 128. The
+coarse kinetic preconditioner is a dense matrix of dimension D²/2 built from D²/2 kinetic
+actions; it scales as D⁴ and is, with the kernel layout, the first thing to replace beyond
+D = 128.
+
+**Optimizer.** The kernels of this family ran full optimizations at g = 2.7 on an A100
+SXM4 40 GB (D = 32, 64, 96, 128) and on an H100 SXM 80 GB (D = 32, 64, 128, 256, with the
+H100 runtime from which this one derives; for its packed sizes this runtime generates the
+same CUDA source and compiler options bit for bit, `tests/optimizer/golden_cuda.json`). On
+the A100, D = 64 from the CPU initial state took 704 s (565 iterations) to a gradient norm
+of 2.7e-5, with a refined energy 1.9e-10 from the saved CPU checkpoint. On the H100, fresh
+runs took 125 s at D = 32 and 629 s at D = 64 (stagnation at gradient norm 6.6e-6, and the
+target 3e-5 reached), 5408 s at D = 128 (1106 iterations, norm 2.1e-4) and about 8 h at
+D = 256 (723 iterations, norm 1.1e-3, not converged); a warm energy and gradient evaluation
+took 0.43 s, 1.39 s and 9.2 s at D = 32, 64 and 128. The selected states pass the five-row
+consistency check (at D = 128 on the A100 only with 512 kinetic nodes); the independent
+directional-derivative audit passes at D = 32 but not at D = 96 and 128, so there is no
+independent error certificate for these gradients. The generic runtime, with the command
+line, worker and validator of this package, has not yet run on a GPU, nor have the sizes
+outside the historical set; the plan of every run says so
+(`layout.generic_runtime_actual_GPU_qualified` false).
+
+## Tests
+
+CPU only (NumPy, SciPy, h5py); no test imports CuPy. From the repository root:
+
+```bash
+pip install -e "./gpu[test]"
+cd gpu && OPENBLAS_NUM_THREADS=1 python -m pytest        # whole default suite, about 25 minutes
+```
+
+GitLab CI runs, on Python 3.11 and 3.12, the job `python` when `gpu/`, `test/fixtures/`
+or `.gitlab-ci.yml` change and on the default branch: the optimizer, state-file and
+reference-level tests and the excitation files that exercise every production module (the
+driver on the strict CPU stand-in for CuPy, the command line), in about 8 minutes on one
+thread of a workstation. The same command, from `gpu/`:
+
+```bash
+OPENBLAS_NUM_THREADS=1 python -m pytest tests/optimizer tests/test_io.py \
+  tests/excitations/test_references.py tests/excitations/test_{coordinates,davidson,scaled}.py \
+  tests/excitations/test_{kinetic,fused,symmetry,run,potential,packed,packed_pair}.py \
+  tests/excitations/test_{device_strict,hamiltonian}.py
+```
+
+The manual job `python-full` runs the whole default suite: it adds the eigsolve,
+validation, bilinear and dense_reference files (the driver, the validation and the
+bilinear route against the dense oracle, and the oracle itself), the provenance and
+packaging tests, and the stored-reference tests, which skip without the companion
+repository. Without pytest, the files run one by one with unittest (each line from the
+repository root):
+
+```bash
+cd gpu/tests/excitations && for t in test_*.py; do OPENBLAS_NUM_THREADS=1 python -m unittest ${t%.py}; done
+cd gpu/tests/optimizer && OPENBLAS_NUM_THREADS=1 python -m unittest test_generic test_portable
+cd gpu/tests && OPENBLAS_NUM_THREADS=1 python -m unittest test_package test_io
+```
+
+Without installing, put the absolute path of `gpu/src` on `PYTHONPATH`. The optimizer
+tests take about 10 s, the 19 excitation files about 25 minutes on one thread. The
+excitation tests check every module against a dense NumPy port of the Julia algorithm
+(`dense_reference.py`), the oracle against analytic states, the solver against the Julia
+levels of `excitation_references.toml` (and, with the slow flag, against the stored Julia
+results of the companion repository), invariance under the scaling S, the kernel tables
+against the packed systems, the driver on a strict CPU stand-in for CuPy (`fakecupy.py`),
+the command line and the defaults it resolves, time reversal (levels of (R, K) at p equal
+those of (conj R, -conj K) at -p), and compilation of the kernel source with NVRTC when the
+CUDA headers are available. With the slow tests the suite takes roughly an hour on one
+thread, run one file at a time. Environment variables:
+
+| Variable | Effect |
+|---|---|
+| `RCMPS_EXCITATION_SLOW=1` | slow tests: planted-bug mutations, larger grids and restarts, D = 16 references |
+| `RCMPS_EXCITATION_D16_SOLVE=1`, `RCMPS_EXCITATION_D16_HISTORY=1` | with the previous one, full D = 16 solves (about 8 and 6 minutes) |
+| `RCMPS_EXCITATION_REPORT=1` | print the largest measured errors |
+| `RCMPS_TEST_FIXTURES` | fixtures shared with the Julia tests (default: `test/fixtures` of the repository; outside it, as in an unpacked sdist, the tests that read them are skipped unless it is set) |
+| `RCMPS_PHI4_Z2` | companion repository with the stored Julia references (default: `rcmps-phi4-z2` next to this repository) |
+| `RCMPS_CUDA_INCLUDE` | directory with the CUDA header `nv/target`, for the NVRTC compilation test |
+
+The GPU qualification scripts of the excitation solver are in `qualification/excitations/`
+(`gpu_bringup.py`, `gpu_fused_check.py`, `gpu_action_check.py`, `gpu_pair_check.py`,
+`gpu_settings_check.py`, `check_references.py`; see "GPU qualification"). They run on a
+GPU against the installed package and print JSON lines; their docstrings give the
+commands. The optimizer's GPU checks are part of every run (`--compile-only` for the
+compiler and resource checks alone).
 
 ## Provenance
 
@@ -194,58 +545,16 @@ their import path (`settings.source_sha256`, keyed by file name, the shared ones
 to `rcmps_gpu`), and the outcome of that check (`settings.source_provenance`); the command
 line logs a warning, but runs, when the check fails.
 
-## Tests
-
-CPU only (NumPy, SciPy, h5py); no test imports CuPy.
-
-```bash
-pip install -e "./gpu[test]"
-cd gpu && python -m pytest
-```
-
-or file by file (each line from the repository root):
-
-```bash
-cd gpu/tests/excitations && for t in test_*.py; do OPENBLAS_NUM_THREADS=1 python -m unittest ${t%.py}; done
-cd gpu/tests/optimizer && OPENBLAS_NUM_THREADS=1 python -m unittest test_generic test_portable
-cd gpu/tests && OPENBLAS_NUM_THREADS=1 python -m unittest test_package test_io
-```
-
-Without installing, put the absolute path of `gpu/src` on `PYTHONPATH`. The optimizer
-tests take about 10 s, the 19 excitation files about 25 minutes on one thread. The
-excitation tests check every module against a dense NumPy port of the Julia algorithm
-(`dense_reference.py`), the driver on a strict CPU stand-in for CuPy (`fakecupy.py`), the
-command line, and compilation of the kernel source with NVRTC when the CUDA headers are
-available.
-Environment variables:
-
-| Variable | Effect |
-|---|---|
-| `RCMPS_EXCITATION_SLOW=1` | slow tests: planted-bug mutations, larger grids and restarts, D = 16 references |
-| `RCMPS_EXCITATION_D16_SOLVE=1`, `RCMPS_EXCITATION_D16_HISTORY=1` | with the previous one, full D = 16 solves (about 8 and 6 minutes) |
-| `RCMPS_EXCITATION_REPORT=1` | print the largest measured errors |
-| `RCMPS_TEST_FIXTURES` | fixtures shared with the Julia tests (default: `test/fixtures` of the repository; outside it, as in an unpacked sdist, the tests that read them are skipped unless it is set) |
-| `RCMPS_PHI4_Z2` | companion repository with the stored Julia references (default: `rcmps-phi4-z2` next to this repository) |
-| `RCMPS_CUDA_INCLUDE` | directory with the CUDA header `nv/target`, for the NVRTC compilation test |
-
-The GPU qualification scripts of the excitation solver are in
-`qualification/excitations/` (`gpu_bringup.py`, `gpu_fused_check.py`,
-`gpu_action_check.py`, `gpu_pair_check.py`, `gpu_settings_check.py`,
-`check_references.py`). They run on a GPU against the installed package and print JSON
-lines.
-
 ## Layout
 
 ```
 src/rcmps_gpu/optimizer/         cli.py (command line), worker.py (GPU process), layout.py,
                                  validate_sweep.py, validate_trajectory_sweep.py, provenance.json
 src/rcmps_gpu/optimizer/runtime/ numerical runtime, research file names kept
-src/rcmps_gpu/excitations/       states, models, coordinates, davidson, scaled, kinetic, potential,
-                                 ode, packed, packed_pair, fused, hamiltonian, bilinear,
-                                 bilinear_fused, eigsolve, cli, provenance.json
+src/rcmps_gpu/excitations/       the modules above, provenance.json
 src/rcmps_gpu/io.py              state files: JLD2 checkpoints and portable directories
-julia/                           Julia scripts: export, import and initial portable states
 src/rcmps_gpu/provenance.py      provenance record format and check
-tests/optimizer/, tests/excitations/, tests/test_package.py, tests/test_io.py,
-qualification/excitations/
+julia/                           Julia scripts: export, import and initial portable states
+tests/optimizer/, tests/excitations/, tests/test_package.py, tests/test_io.py
+qualification/excitations/       GPU qualification scripts of the excitation solver
 ```

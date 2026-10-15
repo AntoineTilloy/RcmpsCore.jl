@@ -26,3 +26,60 @@ test:
       allow_failure: true
     - when: on_success
   timeout: 1h
+
+# CPU tests of the Python package rcmps_gpu in gpu/ (no GPU, no CuPy), on Python
+# 3.11 (the version of the GPU runs) and 3.12, with one BLAS thread. The job
+# python runs the subset that exercises every production module, including the
+# D=4 levels of test/fixtures/excitation_references.toml (about 8 minutes on
+# one thread of a workstation), when gpu/, test/fixtures/ or this file change
+# and on the default branch. python-full, started by hand, runs the whole
+# default suite (about 25 minutes); the slow tests (RCMPS_EXCITATION_SLOW=1)
+# are not run here.
+.python:
+  stage: test
+  image: python:${PYTHON_VERSION}-slim
+  parallel:
+    matrix:
+      - PYTHON_VERSION: ["3.11", "3.12"]
+  variables:
+    OPENBLAS_NUM_THREADS: "1"
+    PYTHONDONTWRITEBYTECODE: "1"
+    PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  cache:
+    key:
+      files: [gpu/pyproject.toml]
+      prefix: "pip-$PYTHON_VERSION"
+    paths:
+      - .cache/pip
+  before_script:
+    - python -m pip install "./gpu[test]"
+  timeout: 1h
+
+python:
+  extends: .python
+  script:
+    - cd gpu
+    - >-
+      python -m pytest -q -ra --durations=20
+      tests/optimizer tests/test_io.py tests/excitations/test_references.py
+      tests/excitations/test_coordinates.py tests/excitations/test_davidson.py
+      tests/excitations/test_scaled.py tests/excitations/test_kinetic.py
+      tests/excitations/test_fused.py tests/excitations/test_symmetry.py
+      tests/excitations/test_run.py tests/excitations/test_potential.py
+      tests/excitations/test_packed.py tests/excitations/test_packed_pair.py
+      tests/excitations/test_device_strict.py tests/excitations/test_hamiltonian.py
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - changes:
+        - gpu/**/*
+        - test/fixtures/**/*
+        - .gitlab-ci.yml
+
+python-full:
+  extends: .python
+  script:
+    - cd gpu
+    - python -m pytest -q -ra --durations=30
+  rules:
+    - when: manual
+      allow_failure: true
