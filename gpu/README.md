@@ -453,8 +453,13 @@ cd gpu && OPENBLAS_NUM_THREADS=1 python -m pytest        # whole default suite, 
 GitLab CI runs, on Python 3.11 and 3.12, the job `python` when `gpu/`, `test/fixtures/`
 or `.gitlab-ci.yml` change and on the default branch: the optimizer, state-file and
 reference-level tests and the excitation files that exercise every production module (the
-driver on the strict CPU stand-in for CuPy, the command line), in about 8 minutes on one
-thread of a workstation. The same command, from `gpu/`:
+driver on the strict CPU stand-in for CuPy, the command line), in about 9 minutes on one
+thread of a workstation. The optimizer tests include a run of `rcmps-gpu-optimize --run-gpu`
+at D = 8 and its resume, end to end on the CPU (`tests/optimizer/test_worker_cpu.py`): the
+command line, worker, qualification, optimization and validation run as written, with
+stand-ins for the GPU leaves only (`tests/optimizer/worker_on_cpu.py`: a NumPy-backed
+`cupy`, the CPU oracle of the trajectory kernel, the CPU kinetic solvers). The same
+command, from `gpu/`:
 
 ```bash
 OPENBLAS_NUM_THREADS=1 python -m pytest tests/optimizer tests/test_io.py \
@@ -472,12 +477,12 @@ repository root):
 
 ```bash
 cd gpu/tests/excitations && for t in test_*.py; do OPENBLAS_NUM_THREADS=1 python -m unittest ${t%.py}; done
-cd gpu/tests/optimizer && OPENBLAS_NUM_THREADS=1 python -m unittest test_generic test_portable
+cd gpu/tests/optimizer && OPENBLAS_NUM_THREADS=1 python -m unittest test_generic test_portable test_worker_cpu
 cd gpu/tests && OPENBLAS_NUM_THREADS=1 python -m unittest test_package test_io
 ```
 
 Without installing, put the absolute path of `gpu/src` on `PYTHONPATH`. The optimizer
-tests take about 10 s, the 19 excitation files about 25 minutes on one thread. The
+tests take about 40 s, the 19 excitation files about 25 minutes on one thread. The
 excitation tests check every module against a dense NumPy port of the Julia algorithm
 (`dense_reference.py`), the oracle against analytic states, the solver against the Julia
 levels of `excitation_references.toml` (and, with the slow flag, against the stored Julia

@@ -30,7 +30,7 @@ test:
 # CPU tests of the Python package rcmps_gpu in gpu/ (no GPU, no CuPy), on Python
 # 3.11 (the version of the GPU runs) and 3.12, with one BLAS thread. The job
 # python runs the subset that exercises every production module, including the
-# D=4 levels of test/fixtures/excitation_references.toml (about 8 minutes on
+# D=4 levels of test/fixtures/excitation_references.toml (about 9 minutes on
 # one thread of a workstation), when gpu/, test/fixtures/ or this file change
 # and on the default branch. python-full, started by hand, runs the whole
 # default suite (about 25 minutes); the slow tests (RCMPS_EXCITATION_SLOW=1)
