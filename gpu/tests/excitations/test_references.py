@@ -81,6 +81,23 @@ class File(unittest.TestCase):
         for key, entries in refs.solves(REFERENCES["levels"]).items():
             self.assertEqual(sorted(entry["level"] for entry in entries), list(range(1, len(entries) + 1)), key)
 
+    def test_the_a100_values_agree_with_julia_within_the_tolerances(self):
+        """The gpu_* fields: each A100 run agrees with the Julia level as a recomputation must
+        (the tolerance basis of these levels), and names its source table."""
+        from rcmps_gpu.excitations import cli
+        entries = [entry for entry in REFERENCES["levels"] if "gpu_run" in entry]
+        self.assertEqual(len(entries), 6)
+        for entry in entries:
+            with self.subTest(level=entry["name"]):
+                self.assertEqual(entry["gpu_numops"], entry["numops"])
+                self.assertLessEqual(abs(entry["gpu_validated_energy"] - entry["validated_energy"]), entry["tolerance"])
+                for gpu, julia in zip(entry["gpu_four_energies"], entry["four_energies"], strict=True):
+                    self.assertLessEqual(abs(gpu - julia), entry["tolerance"])
+                self.assertLessEqual(abs(entry["gpu_ritz_energy"] - entry["ritz_energy"]), entry["ritz_tolerance"])
+                self.assertRegex(entry["gpu_sources_sha256"], "^[0-9a-f]{64}$")
+        qualified = {entry["name"] for entry in entries if entry["gpu_sources_sha256"] == cli.QUALIFIED_SOURCES_SHA256}
+        self.assertEqual(qualified, {"D16_odd_p0", "D16_even_p0.5"})   # runs of final2, the imported sources
+
     def test_state_files(self):
         for name, entry in REFERENCES["states"].items():
             with self.subTest(state=name):

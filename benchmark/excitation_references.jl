@@ -78,7 +78,10 @@ function load_state(name,entry)
     return s
 end
 
-# The commit and the state of src/ of the RcmpsCore that runs, when it is a git checkout.
+# The sources of the RcmpsCore that runs, when it is a git checkout: the tree hash of its src/,
+# which a rebase or merge of the commit keeps, and a commit of the default branch (origin/HEAD)
+# with that src/ when the merge base of HEAD and that branch has it. A commit of a local branch
+# is not recorded: it may disappear when the branch is rebased.
 function rcmpscore_source()
     repo = dirname(dirname(realpath(pathof(RcmpsCore))))
     git(args...) = try
@@ -86,10 +89,16 @@ function rcmpscore_source()
     catch
         nothing
     end
-    head,tree = git("rev-parse","--short=12","HEAD"),git("rev-parse","--short=12","HEAD:src")
+    tree = git("rev-parse","--short=12","HEAD:src")
     status = git("status","--porcelain","--untracked-files=no","--","src")
-    (isnothing(head) || isnothing(tree) || isnothing(status)) && return "unknown (not a git checkout)"
-    return "commit $head, src tree $tree" * (isempty(status) ? "" : " with uncommitted changes in src/")
+    (isnothing(tree) || isnothing(status)) && return "unknown (not a git checkout)"
+    isempty(status) || return "src tree $tree with uncommitted changes in src/"
+    branch = git("symbolic-ref","--quiet","--short","refs/remotes/origin/HEAD")
+    base = isnothing(branch) ? nothing : git("merge-base","HEAD",branch)
+    if isnothing(base) || git("rev-parse","--short=12","$base:src") != tree
+        return "src tree $tree"
+    end
+    return "src tree $tree (the src/ of commit $(git("rev-parse","--short=12",base)) of $branch)"
 end
 
 function solve(s,settings,sector,momentum,nev)

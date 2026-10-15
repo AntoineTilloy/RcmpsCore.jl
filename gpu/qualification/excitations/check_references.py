@@ -15,8 +15,9 @@ other Davidson controls, maxiters) must be at its defaults; that is checked befo
 Every result is one JSON line on stdout (the command line's own log goes to stderr): per level
 the computed validated, four validation and Ritz energies, their differences from the stored
 Julia values with the level's tolerances, and the differences from the stored A100 values
-(gpu_*, informative: those runs used earlier sources, see gpu_sources_sha256). The last line
-is a summary. Exit status 1 if any level is out of tolerance or not accepted.
+(gpu_*, informative; gpu_sources_sha256 tells which runs used the sources this package
+imported, the table rcmps_gpu.excitations.cli.QUALIFIED_SOURCES_SHA256, and which earlier
+ones). The last line is a summary. Exit status 1 if any level is out of tolerance or not accepted.
 
 Not run by the test suite: it needs a GPU (about a minute per D = 16 or D = 32 solve on an
 A100). --backend numpy runs on the CPU; with --level D4_odd_p0.4_1 D4_odd_p0.4_2 it checks the
