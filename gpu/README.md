@@ -116,7 +116,7 @@ time), and 1.3 to 1.5 times for the reference levels at D = 16 and 32.
 | H100 | 9.0 | mma | the research runtime this one derives from ran the optimizer (D = 32 to 256); this package has not run there |
 | A100 | 8.0 | mma | qualified with both tile paths (2026-10-15), which gave identical results: optimizer runs at D = 8 to 128 (3 and 30 iterations), grids compiled and resident up to D = 256; excitation kernels resident up to D = 128, reference levels at D = 16 and 32, a solve at D = 64; earlier, the excitation solver up to D = 128 (tensor cores, imported and earlier sources) and the research optimizer runtimes (D = 32 to 128) |
 | A30, A10, RTX 30, L4, L40, RTX 40 | 8.0, 8.6, 8.9 | mma | compiled only (the tests compile for compute_80 and 86; compute_89 was checked once); FP64 at 1/64 of FP32 except the A30 |
-| V100 | 7.0 | scalar | qualified with the scalar tiles (2026-10-15): optimizer runs at D = 8 to 128 (3 and 30 iterations), grid resident up to D = 160 and refused at 192 and 256; excitation action kernel resident up to D = 96 and pair kernel up to D = 64 (so solves with validation up to D = 64), reference levels at D = 16 and 32; `--tiles mma` refused |
+| V100 | 7.0 | scalar | qualified with the scalar tiles (2026-10-15): optimizer runs at D = 8 to 128 (3 and 30 iterations), grid resident up to D = 160 and refused at 192 and 256; excitation action kernel resident up to D = 96 and refused at 128, pair kernel resident at D = 64 and refused at 96 (its limit estimated at 94 in the table below), reference levels at D = 16 and 32; `--tiles mma` refused |
 | T4, RTX 20 | 7.5 | scalar | compiled only; FP64 at 1/32 of FP32 |
 | P100 | 6.0 | scalar | compiled only |
 
@@ -283,11 +283,12 @@ and the scalar tiles (`scalar`) below; `--tiles mma` is refused below 8.0 before
 is compiled, and `--tiles scalar` runs anywhere, on an A100 or H100 too. The scalar tiles
 compute each element as a chain of FMAs in k order. Where the tensor cores compute the same
 chain, both paths agree bit for bit on one GPU (on the A100 the two paths gave the same
-trajectories, histories and final states, byte for byte), and across GPUs to rounding. The
-worker records the resolved tiles in `compile.json`, the checkpoint (`trajectory_controls`,
-for every run) and `final_validation.json`; a resume of a checkpoint may use other tiles,
-since it forks. The tensor-core path generates the source of `golden_cuda.json`, unchanged;
-the scalar path differs only by the tile function (`tests/optimizer/golden_cuda_scalar.json`).
+trajectories and final states, byte for byte, and the same histories), and across GPUs to
+rounding. The worker records the resolved tiles in `compile.json`, the checkpoint
+(`trajectory_controls`, for every run) and `final_validation.json`; a resume of a
+checkpoint may use other tiles, since it forks. The tensor-core path generates the source
+of `golden_cuda.json`, unchanged; the scalar path differs only by the tile function
+(`tests/optimizer/golden_cuda_scalar.json`).
 
 Before optimizing, a GPU run compares the fast energy and gradient, and their raw terms,
 with an independent CuPy propagation and the baseline kinetic solver at the initial state;
@@ -538,7 +539,9 @@ be refused. Python 3.11.9, NumPy 2.4.6, SciPy 1.17.1, CuPy 14.2.0 with the CUDA 
 runtime libraries of the `cupy-cuda12x[ctk]` wheels, drivers for CUDA 13.2 (A100) and 13.0
 (V100). A preliminary batch the same day, with the same package sources and the earlier
 `gpu_optimizer_check.py` (the commit "Correct the register range of register_caps for every
-packed d <= 64"), also passed every step.
+packed d <= 64"), passed every step it ran: all of them on the V100; on the A100 steps 01
+to 11, after which it was stopped during the scalar reference levels (three of the six done,
+all accepted), before the D = 64 solves.
 
 The optimizer, with `gpu_optimizer_check.py` (the random Z2 state of seed 0, g = 2.7, the
 integration settings of the command line). The tile product alone: on the A100 the
@@ -559,7 +562,7 @@ A100 the two paths gave the same bytes. Device time per trajectory (ms):
 
 Compilation and residency (`--compile-only`): registers per thread (with the register cap
 and the bytes spilled, where there are any) and the thread blocks resident, against the
-blocks of the grid. Every compiled kernel passed the PTX audit (FP64 `mma.sync` on the
+blocks of the grid. Every resident kernel passed the PTX audit (FP64 `mma.sync` on the
 tensor-core path, none on the scalar path, no FP32 arithmetic on either).
 
 | D | Blocks | A100, tensor cores | A100, scalar tiles | V100 |
@@ -585,8 +588,8 @@ The runs (`rcmps-gpu-optimize --run-gpu`): 3 accepted iterations at D = 8 to 128
 qualification against the CuPy oracle and the final five-row validation. At the initial
 state the fast energy differs from the oracle's by at most 7.8e-15 and the gradient by
 1.5e-14 to 6.2e-14 (metric norm), on both GPUs. On the A100 the two paths gave the same
-first gradient, the same energy at every iteration and the same final R, K and gradient,
-byte for byte, at every D and for both lengths. The seconds include compilation, initial
+first gradient and the same final R, K and gradient, byte for byte, and the same energy at
+every iteration, at every D and for both lengths. The seconds include compilation, initial
 qualification and validation:
 
 | D | Iterations | Initial energy | Fast - oracle: A100, V100 | Final energy (A100) | V100 - A100 | Seconds: A100 tensor cores, scalar; V100 |
@@ -612,7 +615,7 @@ V100 the action kernel is resident up to D = 96 (156 of 160 blocks) and the pair
 to D = 64 (80 of 160), and the pair kernel at D = 96 and both at D = 128 are refused
 ("unsafe cooperative grid: 120 blocks are not resident for any register cap (cap,
 registers, capacity): [(None, 168, 80), (160, 160, 80), (120, 120, 80), (96, 96, 80), (64,
-64, 80)]" at D = 96). Every compiled kernel passed the PTX audit. The kernel checks:
+64, 80)]" at D = 96). Every resident kernel passed the PTX audit. The kernel checks:
 
 | Script | Check | A100: tensor cores and scalar tiles | V100: scalar tiles |
 |---|---|---|---|
@@ -646,9 +649,10 @@ search 274 s and 415 s, the preconditioner 81 s and 80 s, the validation 49 s an
 
 On the V100 machine, before the batches, the CI subset of the tests (the command under
 "Tests") ran under Python 3.11.9 at the commit "Excitation qualification: fail on errors and
-wrong numbers, compare launches bitwise": 275 passed and 10 skipped (the four NVRTC
-compilation tests, the CUDA headers being absent there, and six slow tests), in 8.5
-minutes. The three tests added since are two NVRTC tests and a CPU test of
+wrong numbers, compare launches bitwise" (the log does not record it; identified by the
+number of tests and the lines of the skipped ones): 275 passed and 10 skipped (the four
+NVRTC compilation tests, the CUDA headers being absent there, and six slow tests), in 513 s.
+The three tests added since are two NVRTC tests and a CPU test of
 `gpu_optimizer_check.py`.
 
 Not qualified: any other GPU (the P100, the T4 and RTX 20 cards, the A30, the 8.6 and 8.9
