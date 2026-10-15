@@ -244,15 +244,16 @@ thread-block limits can impose a smaller maximum, and compilation refuses an uns
 before the trajectory sample buffers are allocated (`--compile-only` checks a size on the
 target GPU; without `--run-gpu` the plan gives the size of those buffers). Panels larger
 than 48 KiB use dynamic shared memory, and resource use and spills are reported. Up to
-D = 128 the kernel compiles without a register cap (106 to 244 registers per thread,
-depending on the target and the tiles), so a GPU with fewer or smaller multiprocessors
-than the A100 may hold too few blocks: the worker then recompiles with the caps 128, 96 and
-64 in turn and takes the first whose grid is resident (spills grow from about 50 bytes at
-cap 128 to 1.5 KB at cap 64), recording the cap and every attempt in `compile.json`; the
-run, its qualification and its validation use that cap. Above D = 128 the historical cap 64
-is the only one. On the A100 and H100 the first attempt is expected to be resident at every
-size, so their compiler options stay the historical ones. There is no automatic slower
-backend, reduced precision or relaxed tolerance. Sizes above 512 need another row layout.
+D = 128 the kernel compiles without a register cap (about 100 to 250 registers per thread
+with NVRTC 12.8, depending on the target, the tiles and D), so a GPU with fewer or smaller
+multiprocessors than the A100 may hold too few blocks: the worker then recompiles with the
+caps 128, 96 and 64 in turn and takes the first whose grid is resident (spills grow from
+about 50 bytes at cap 128 to 1.5 KB at cap 64), recording the cap and every attempt in
+`compile.json`; the run, its qualification and its validation use that cap. Above D = 128
+the historical cap 64 is the only one. On the A100 and H100 the first attempt is expected
+to be resident at every size, so their compiler options stay the historical ones. There is
+no automatic slower backend, reduced precision or relaxed tolerance. Sizes above 512 need
+another row layout.
 
 The tile products of the kernel follow the device (`--tiles`, recorded in `plan.json`):
 `auto`, the default, uses the FP64 tensor cores (`mma`) on compute capability 8.0 or later
@@ -695,11 +696,12 @@ pruning commit, which deleted two modules that the generic run never imports and
 paths it never reaches (old evaluators, the CUDA-graph integrator and the driver-library
 bindings it needed, the research benchmark command lines) and renamed the quartic backend
 label of the run to `persistent_trajectory`, a commit that rewords comments still
-describing CUDA graph capture, and the portability commit, which adds the scalar tile path
-and the selection of the tiles by device. The optimizer command line reverts those
-edits in memory when it plans a run, and the worker again before and after the run: a
-runtime that is not the imported one with its recorded edits is refused, as the research
-launcher refused one that was not derived from the sealed H100 candidate. The sha256 of
+describing CUDA graph capture, and the portability commits, which add the scalar tile path
+and the selection of the tiles by device, then the register caps, and correct the register
+range in a docstring. The optimizer command line reverts those edits in memory when it
+plans a run, and the worker again before and after the run: a runtime that is not the
+imported one with its recorded edits is refused, as the research launcher refused one that
+was not derived from the sealed H100 candidate. The sha256 of
 the imported manifest is written in the code (`cli.IMPORTED_MANIFEST_SHA256`) and in the
 tests, and the package `__init__` modules, which run with every runtime import, must hold
 only a docstring and constants. A test pins the sha256 of the generated CUDA source,
