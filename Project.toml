@@ -1,7 +1,7 @@
 name = "RcmpsCore"
 uuid = "dc2d0369-e811-4a76-a451-968b98ba0a85"
 authors = ["Antoine Tilloy and contributors"]
-version = "0.2.0"
+version = "0.2.1"
 
 [deps]
 JLD2 = "033835bb-8acc-5ee8-8aae-3f567f8a3819"

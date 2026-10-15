@@ -35,7 +35,8 @@ julia --project=. gpu/julia/check_portable.jl [FIXTURES_DIRECTORY]
   `rcmps-gpu-optimize --initial`. Nothing is evaluated.
 - `check_portable.jl`: export and import of the shared fixture `test/fixtures/phi4_g2_D16_z2_state.jld2`
   in a temporary directory: the export reproduces the committed `test/fixtures/phi4_g2_D16_z2_portable`
-  (made by `export_state.jl`), and importing either gives back the checkpoint exactly.
+  (made by `export_state.jl` of RcmpsCore 0.2.0; only the version in `producer` may differ), and
+  importing either gives back the checkpoint exactly.
 
 `portable.jl`, included by the scripts, reads and writes format-1 directories and reads the
 research dialects as `rcmps_gpu.io.read_portable` does. None of the scripts overwrites an

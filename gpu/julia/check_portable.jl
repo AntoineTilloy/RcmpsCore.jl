@@ -1,7 +1,8 @@
 # Round trip of the portable format on the shared D = 16 fixture, in a temporary directory:
 # export_state.jl of test/fixtures/phi4_g2_D16_z2_state.jld2 reproduces the committed export
-# test/fixtures/phi4_g2_D16_z2_portable (R, K, gradient and metadata exactly, rho to 1e-12,
-# since its last bits depend on the BLAS), and import_state.jl of either export gives back
+# test/fixtures/phi4_g2_D16_z2_portable (R, K, gradient and metadata exactly, except for the
+# RcmpsCore version in the producer, rho to 1e-12, since its last bits depend on the BLAS),
+# and import_state.jl of either export gives back
 # the checkpoint: R, K, rho (recomputed by rcmps_load), model, coupling, integration and
 # manifold parameters, e0, gradient and info, all exactly. Directories that rcmps_gpu.io
 # refuses (a format_version that is not an integer, an empty model name) are refused too.
@@ -22,9 +23,14 @@ function check_portable(fixtures::AbstractString)
     mktempdir() do tmp
         exported = joinpath(tmp, "export")
         export_state(checkpoint, exported)
-        for name in ("R.bin", "K.bin", "gradient.bin", "metadata.toml")
+        for name in ("R.bin", "K.bin", "gradient.bin")
             check("export $name equals the committed one", read(joinpath(exported, name)) == read(joinpath(committed, name)))
         end
+        # The producer records the RcmpsCore version that made the export (0.2.0 for the committed one).
+        unversioned(directory) = replace(read(joinpath(directory, "metadata.toml"), String),
+                                         r"\nproducer = \"RcmpsCore [^,\"]+," => "\nproducer = \"RcmpsCore,")
+        check("export metadata.toml equals the committed one but for the RcmpsCore version",
+              unversioned(exported) == unversioned(committed) && unversioned(committed) != read(joinpath(committed, "metadata.toml"), String))
         rho = read_portable(committed).rho
         check("export rho.bin equals the committed one to 1e-12", norm(read_portable(exported).rho - rho, Inf) <= 1e-12)
         check("committed rho is the state's to 1e-12", norm(rho - original.ρ0, Inf) <= 1e-12)
