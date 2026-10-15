@@ -17,11 +17,18 @@ eight-column tile. Constant left operands of a block are cached as 8 x d row
 panels in shared memory; the two two-sided intermediates (X R' with X a sum of
 products) stay in shared memory between the two product passes of a stage.
 
+Tile products: with use_mma (the '#if USE_MMA' branch) a tile is one FP64 tensor-core
+instruction, which needs compute capability 8.0 or later; without, the same fragments are
+moved by warp shuffles and accumulated by a chain of FP64 FMAs in k order, on any GPU with
+cooperative launch. FusedTrajectory(use_mma=None), the default, chooses by device with the
+rule of the optimizer (select_tiles: tensor cores from 8.0 on, scalar tiles below) and
+refuses use_mma=True below 8.0. On the A100 the two gave bitwise identical trajectories.
+
 Importing this module does not import CuPy. `kernel_source` and `kernel_tables`
 are pure Python/NumPy and are tested on the CPU; `compile_ptx` checks the source
-with NVRTC alone (no GPU); `FusedTrajectory` needs CuPy and an SM80/SM90 device
-(or any cooperative-launch device with use_mma=False, a scalar tile fallback
-meant for debugging).
+with NVRTC alone (no GPU); `FusedTrajectory` needs CuPy and a GPU with cooperative
+launch. `preflight` compiles the kernels of a solve before it starts, so that a GPU
+that cannot hold one of them is refused at once.
 """
 from __future__ import annotations
 
@@ -45,6 +52,30 @@ STATUS = {0: "success", 1: "max_steps", 2: "step_underflow", 3: "nonfinite_error
 FLOAT_NAMES = ("t", "h", "next_h", "t_new", "last_error", "min_h", "max_h")
 INT_NAMES = ("status", "attempts", "accepted", "rejected", "was_rejected", "accept_now",
              "next_point", "dense_steps", "dense_nodes_max")
+TILES = ("mma", "scalar")
+TILE_CHOICES = ("auto",) + TILES
+USE_MMA = {"auto": None, "mma": True, "scalar": False}    # use_mma of FusedTrajectory for each --tiles
+# (packed blocks, cached left panels, two-sided groups) of the kernels of a phi^4 solve, for
+# both sectors and any momentum: the action system (packed.PackedActionSystem) and the
+# diagonal bilinear system of the validation (packed_pair.PackedDiagonalPair).
+PHI4_KERNELS = {"action": (26, 4, 2), "pair": (20, 5, 3)}
+
+
+def select_tiles(requested, major, minor):
+    """The tile product on a device of compute capability major.minor: "mma" (FP64 tensor
+    cores, 8.0 or later) or "scalar" (any GPU with cooperative launch); "auto" gives mma from
+    8.0 on and scalar below, and mma below 8.0 is refused. The rule of the optimizer
+    (rcmps_gpu.optimizer.runtime.generic_layout.select_tiles), copied so that these sources
+    take nothing from the optimizer runtime but its source table; a test checks that both agree."""
+    if requested not in TILE_CHOICES:
+        raise ValueError(f"tiles must be one of {', '.join(TILE_CHOICES)}, not {requested!r}")
+    native = (int(major), int(minor)) >= (8, 0)
+    if requested == "auto":
+        return "mma" if native else "scalar"
+    if requested == "mma" and not native:
+        raise ValueError(f"--tiles mma needs FP64 tensor-core instructions (mma.sync m8n8k4 f64, compute "
+                         f"capability 8.0 or later); this GPU is {int(major)}.{int(minor)}: use --tiles auto or scalar")
+    return requested
 
 
 def source_table():
@@ -497,35 +528,40 @@ def compile_ptx(d, n_blocks, *, use_mma=True, arch="compute_80", include_dirs=()
 
 
 def audit_ptx(ptx, *, use_mma=True):
-    """FP64 tensor-core instructions present and no FP32 arithmetic (optimizer convention)."""
+    """No FP32 arithmetic, and FP64 tensor-core instructions with use_mma, no mma instruction
+    of any kind without (optimizer convention)."""
     mma = sorted(set(re.findall(r"mma\.sync[^\s;]*\.f64\.f64\.f64\.f64", ptx)))
+    any_mma = sorted(set(re.findall(r"\bw?mma\.[^\s;]*", ptx)))
     fp32 = sorted(set(re.findall(r"\b(?:add|sub|mul|fma|div|mad|sqrt|rcp|ex2|lg2)\.(?:[a-z0-9]+\.)*f32\b", ptx)))
-    if fp32 or (use_mma and not mma):
-        raise RuntimeError(f"FP64 PTX audit failed: mma={mma}, fp32={fp32}")
+    if fp32 or (use_mma and not mma) or (not use_mma and any_mma):
+        raise RuntimeError(f"FP64 PTX audit failed ({'mma' if use_mma else 'scalar'} tiles): "
+                           f"mma={any_mma if not use_mma else mma}, fp32={fp32}")
     return dict(f64_mma_instructions=mma, fp32_arithmetic_instructions=fp32)
 
 
 class FusedTrajectory:
     """Compiled trajectory kernel for one (d, number of packed blocks, panels, two-sided
     groups) with its buffers. One cooperative launch per trajectory; the whole grid must
-    be resident."""
-    def __init__(self, cp, d, n_blocks, *, panels=PANELS, temps=TEMPS, use_mma=True,
+    be resident. use_mma: None (default) chooses the tiles by device (select_tiles "auto"),
+    True the tensor-core tiles (refused below compute capability 8.0), False the scalar tiles."""
+    def __init__(self, cp, d, n_blocks, *, panels=PANELS, temps=TEMPS, use_mma=None,
                  max_device_seconds=600.0, initial_step=0.01):
-        self.cp, self.info, self.use_mma = cp, geometry(d, n_blocks, panels, temps), bool(use_mma)
+        self.cp, self.info = cp, geometry(d, n_blocks, panels, temps)
         self.max_device_seconds, self.initial_step = float(max_device_seconds), float(initial_step)
         props = cp.cuda.runtime.getDeviceProperties(cp.cuda.Device().id)
         capability = (int(props["major"]), int(props["minor"]))
         if not props.get("cooperativeLaunch", False):
             raise ValueError("the trajectory kernel requires cooperative launch")
-        if self.use_mma and capability not in ((8, 0), (9, 0)):
-            raise ValueError("native FP64 MMA requires an SM80 or SM90 device; use use_mma=False to debug")
+        self.tiles_requested = "auto" if use_mma is None else "mma" if use_mma else "scalar"
+        self.tiles = select_tiles(self.tiles_requested, *capability)
+        self.use_mma = self.tiles == "mma"
         started = time.perf_counter()
         shared = self.info["shared_bytes"]
         if shared > int(props.get("sharedMemPerBlockOptin", props["sharedMemPerBlock"])):
             raise RuntimeError(f"kernel shared memory {shared} exceeds the device limit")
         if self.info["threads"] > int(props["maxThreadsPerBlock"]):
             raise RuntimeError("packed dimension exceeds the thread-block limit")
-        source = kernel_source(d, n_blocks, use_mma=use_mma, panels=panels, temps=temps)
+        source = kernel_source(d, n_blocks, use_mma=self.use_mma, panels=panels, temps=temps)
         tried = []
         for cap in REGISTER_CAPS:
             self.options = compile_options(cap)
@@ -550,9 +586,10 @@ class FusedTrajectory:
                               multiprocessors=int(props["multiProcessorCount"]),
                               registers=int(self.kernel.num_regs), local_bytes=int(self.kernel.local_size_bytes),
                               compute_capability=capability, compiler_options=list(self.options),
-                              register_caps_tried=tried,
+                              register_caps_tried=tried, tiles=self.tiles, tiles_requested=self.tiles_requested,
                               matrix_arithmetic=("mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64"
                                                  if self.use_mma else "scalar warp-shuffle tiles"),
+                              kernel_run_time_limit=bool(props.get("kernelExecTimeoutEnabled", False)),
                               fast_math=False)
         source = source_table()
         self.source_maximum = source.MAXIMUM
@@ -625,18 +662,42 @@ class FusedTrajectory:
 def fused_integrator(cp, **options):
     """`integrate(system, points, endpoint, integrator)` for packed systems (e.g.
     potential.PotentialAction with system=packed.PackedActionSystem); kernels are compiled
-    once per (d, number of blocks, panels, two-sided groups)."""
+    once per (d, number of blocks, panels, two-sided groups): `integrate.kernel(d, n_blocks,
+    panels, temps)` gives the one of a shape, compiling it if needed, and
+    `integrate.kernels` holds them by shape. `options` go to FusedTrajectory (use_mma)."""
     cache = {}
+
+    def kernel(d, n_blocks, panels, temps):
+        key = (d, n_blocks, panels, temps)
+        if key not in cache:
+            cache[key] = FusedTrajectory(cp, d, n_blocks, panels=panels, temps=temps, **options)
+        return cache[key]
 
     def integrate(system, points, endpoint, integrator):
         tables = system.tables()
         n_blocks = len(tables["term_first"]) - 1
         panels = np.asarray(tables["left_constants"]).reshape(n_blocks, -1).shape[1]
         temps = np.asarray(tables["temp_right"]).reshape(n_blocks, -1).shape[1]
-        key = (system.d, n_blocks, panels, temps)
-        if key not in cache:
-            cache[key] = FusedTrajectory(cp, system.d, n_blocks, panels=panels, temps=temps, **options)
-        return cache[key].integrate(system, points, endpoint, integrator)
+        return kernel(system.d, n_blocks, panels, temps).integrate(system, points, endpoint, integrator)
 
     integrate.kernels = cache
+    integrate.kernel = kernel
     return integrate
+
+
+def preflight(integrate, d, names=("action", "pair")):
+    """Compile the kernels of the phi^4 systems `names` (PHI4_KERNELS) for packed dimension d
+    into the cache of `integrate` (a fused_integrator) and return them by name. Done before a
+    solve, it refuses at once a GPU that cannot run one of them (tensor-core tiles requested
+    below compute capability 8.0, shared memory, thread-block limit, a cooperative grid that
+    is not resident at any register cap): the pair kernel of the validation needs more
+    shared memory per block than the action kernel and is otherwise compiled only after the
+    Davidson search. Raises ValueError or RuntimeError naming the kernel."""
+    kernels = {}
+    for name in names:
+        try:
+            kernels[name] = integrate.kernel(d, *PHI4_KERNELS[name])
+        except (ValueError, RuntimeError) as error:
+            kind = ValueError if isinstance(error, ValueError) else RuntimeError
+            raise kind(f"the {name} kernel of D = {2 * d} cannot run on this GPU: {error}") from error
+    return kernels

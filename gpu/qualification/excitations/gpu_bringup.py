@@ -5,7 +5,10 @@ Stages (choose with --stages, default all that apply):
   solver    batched preconditioned GMRES: GPU versus NumPy on the same systems, and timing
   kinetic   kinetic action: GPU versus NumPy, and timing of the tangent-independent part and of one action
   host_ode  complete action with the host-controlled integrator: GPU versus NumPy (small D only)
-  compile   fused trajectory kernel: compilation, PTX audit, registers and cooperative residency per D
+  compile   fused trajectory kernels of a phi^4 solve (--kernels: the action system, the pair system of
+            the validation) for each packed dimension (--packed) and tile path (--tiles; default every
+            path of the device: tensor cores and scalar tiles from compute capability 8.0 on, scalar
+            tiles below): compilation, registers, register cap and cooperative residency
 Every result is one JSON line on stdout; nothing is written elsewhere.
 
     python gpu_bringup.py --state STATE --stages device solver kinetic [--scaling density] [--nodes 256]
@@ -32,6 +35,14 @@ from rcmps_gpu.excitations import states
 
 def emit(**row):
     print(json.dumps(row, default=float), flush=True)
+
+
+def device_tiles(cp, requested=None):
+    """The tile paths to check: `requested`, else every one this device runs (mma and scalar
+    from compute capability 8.0 on, scalar below), with the compute capability."""
+    props = cp.cuda.runtime.getDeviceProperties(cp.cuda.Device().id)
+    capability = (int(props["major"]), int(props["minor"]))
+    return list(requested or (("mma", "scalar") if capability >= (8, 0) else ("scalar",))), capability
 
 
 def host(a):
@@ -154,15 +165,19 @@ def stage_host_ode(xp, args, c, ss, reference):
 def stage_compile(xp, args):
     if xp.__name__ != "cupy":
         return emit(stage="compile", skipped="needs a GPU")
+    paths, capability = device_tiles(xp, args.tiles)
     for d in args.packed:
-        for use_mma in (True, False):
-            started = time.perf_counter()
-            try:
-                trajectory = fused.FusedTrajectory(xp, d, args.blocks, use_mma=use_mma)
-                emit(stage="compile", d=d, use_mma=use_mma, seconds=time.perf_counter() - started,
-                     occupancy=trajectory.occupancy)
-            except Exception as error:  # report and continue with the next size
-                emit(stage="compile", d=d, use_mma=use_mma, error=f"{type(error).__name__}: {error}"[:2000])
+        for kernel in args.kernels:
+            for tiles in paths:
+                started = time.perf_counter()
+                row = dict(stage="compile", D=2 * d, d=d, kernel=kernel, tiles=tiles, compute_capability=capability)
+                try:
+                    n_blocks, panels, temps = fused.PHI4_KERNELS[kernel]
+                    trajectory = fused.FusedTrajectory(xp, d, n_blocks, panels=panels, temps=temps,
+                                                       use_mma=fused.USE_MMA[tiles])
+                    emit(**row, resident=True, seconds=time.perf_counter() - started, occupancy=trajectory.occupancy)
+                except Exception as error:  # report and continue with the next size
+                    emit(**row, resident=False, error=f"{type(error).__name__}: {error}"[:2000])
 
 
 def main():
@@ -178,7 +193,9 @@ def main():
     parser.add_argument("--compare", type=int, default=8, help="systems recomputed with NumPy (0: none)")
     parser.add_argument("--basis-bytes", type=float, default=6e9)
     parser.add_argument("--packed", type=int, nargs="+", default=[2, 4, 8, 16, 32, 48, 64])
-    parser.add_argument("--blocks", type=int, default=26)
+    parser.add_argument("--kernels", nargs="+", choices=tuple(fused.PHI4_KERNELS), default=list(fused.PHI4_KERNELS))
+    parser.add_argument("--tiles", nargs="+", choices=fused.TILES, default=None,
+                        help="tile paths of the compile stage (default: every path of the device)")
     parser.add_argument("--window", type=float, default=30.0)
     parser.add_argument("--n-quad", type=int, default=512)
     args = parser.parse_args()

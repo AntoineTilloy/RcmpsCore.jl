@@ -31,14 +31,13 @@ above that its two independent routes (action and bilinear) agree to 4e-10. The 
 runtime is the generic version of the H100 runtime of the research campaign: for the sizes
 that runtime supported (packed d = D/2 in {2, 3, 4, 8, 16, 32, 48, 64, 128}) it generates
 the same CUDA source and compiler options, bit for bit, but the generic runtime itself has
-not yet run on a GPU, nor has its scalar tile path. The optimizer runs on any NVIDIA GPU
-with cooperative launch; the excitation kernel still needs FP64 tensor cores (SM80 or SM90)
-unless `--scalar-tiles` is given.
+not yet run on a GPU, nor has its scalar tile path. Both kernels run on NVIDIA GPUs with or
+without FP64 tensor cores (see "Installation"); only the A100 and the H100 have run them.
 
 ## Installation
 
-Python 3.11 or later. On a machine with an NVIDIA A100 (SM80) or H100 (SM90) and a driver
-for CUDA 12, from the repository root:
+Python 3.11 or later. On a machine with an NVIDIA GPU of compute capability 6.0 or later
+(Pascal and later; cooperative launch) and a driver for CUDA 12, from the repository root:
 
 ```bash
 pip install "./gpu[cuda12]"     # with CuPy for CUDA 12 (cupy-cuda12x[ctk] ~= 14.2)
@@ -46,12 +45,11 @@ pip install "./gpu[cuda12]"     # with CuPy for CUDA 12 (cupy-cuda12x[ctk] ~= 14
 
 Both kernels compute their matrix products as 8 x 8 x 4 tiles, with the native FP64
 tensor-core instruction `mma.sync` m8n8k4 (compute capability 8.0 or later) or with scalar
-tiles of the same layout (warp shuffles and FP64 FMAs, any GPU). The optimizer chooses by
-device (`--tiles auto`: tensor cores from compute capability 8.0 on, scalar tiles below; see
-"Optimizer: sizes, devices and checks"); the excitation kernel uses the tensor cores and
-accepts other GPUs only with `--scalar-tiles` (bitwise identical to the tensor-core kernel on
-the A100). The qualification runs used Python 3.11, NumPy 2.4.6, SciPy 1.17.1 and CuPy
-14.2.0.
+tiles of the same layout (warp shuffles and FP64 FMAs, any GPU). Both command lines choose
+by device with one rule, `--tiles auto` (the default): tensor cores from compute capability
+8.0 on, scalar tiles below; `--tiles mma` is refused below 8.0, `--tiles scalar` runs
+anywhere (see "Optimizer: sizes, devices and checks" and the fused kernel below). The
+qualification runs used Python 3.11, NumPy 2.4.6, SciPy 1.17.1 and CuPy 14.2.0.
 
 For development:
 
@@ -125,7 +123,8 @@ describes every option. The defaults:
   `DavidsonOptions` default (`--stall-residual-limit` max(1e-5, 10 tol),
   `--stall-energy-atol` 1e-9).
 
-`--backend fused` (the default) integrates one parity sector of a Z2 state per launch, so
+`--backend fused` (the default) integrates one parity sector of a Z2 state per launch with
+the tile products of `--tiles` (auto by default: see the fused kernel below), so
 `--sector all` needs `--backend host` (host-controlled integrator on the device, slow) or
 `--backend numpy` (the same code on the CPU). `--basis-bytes` and `--chunk` bound the GPU
 memory of the batched solves (1.0e10 and 32 were used at D = 128 on 40 GB). The output
@@ -258,11 +257,18 @@ host synchronization per step. It reuses the controller arithmetic, source appro
 is table driven: each packed block has a list of d x d products in a jac group, a source
 group and two-sided groups (`packed.py`), so one kernel serves both sectors, any momentum,
 both scalings, and the bilinear system (`packed_pair.py`, three two-sided groups). Stages
-alternate between two buffers, which removes one grid barrier per stage. `--scalar-tiles`
-(`use_mma=False`) replaces the tensor-core tile product by warp shuffles with the same
-layout; the two give bitwise identical trajectories. The φ⁴ action system has 26 packed
-blocks and 190 products per right-hand side (the optimizer's ground-state system: 10 blocks,
-60 products).
+alternate between two buffers, which removes one grid barrier per stage. The scalar tiles
+(`--tiles scalar`, or `--scalar-tiles`; `use_mma=False`) replace the tensor-core tile
+product by warp shuffles and FMAs with the same layout; on the A100 the two gave bitwise
+identical trajectories. `--tiles auto` (`use_mma=None`, the default) chooses by device as
+the optimizer does, and `result.json` records the tiles that ran (`settings.tiles`, and per
+kernel in `kernels`). The φ⁴ action system has 26 packed blocks and 190 products per
+right-hand side (the optimizer's ground-state system: 10 blocks, 60 products); the bilinear
+system of the validation has 20 blocks and needs more shared memory per block (1024 d + 16
+w bytes against 768 d + 16 w, w = ceil(d/8)), so it can fail to be resident where the action
+kernel is. The command line therefore compiles both kernels, and checks their cooperative
+grids, before the output directory is created (`fused.preflight`): a GPU that cannot hold
+one is refused at once, naming it, and `--host-bilinear` validates without the second one.
 
 Three settings matter for accuracy:
 

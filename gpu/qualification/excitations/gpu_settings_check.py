@@ -47,6 +47,7 @@ def main():
                                  "2048:40:1e-14:1e-13"])
     parser.add_argument("--tol", type=float, default=1e-14)
     parser.add_argument("--basis-bytes", type=float, default=6e9)
+    parser.add_argument("--tiles", choices=fused.TILE_CHOICES, default="auto", help="tile path of the fused kernel")
     args = parser.parse_args()
     import cupy as cp
 
@@ -62,9 +63,9 @@ def main():
     terms = models.phi4_terms(state.coupling)
     resolved = kinetic.kinetic_terms(terms)
     others = [term for term in terms if term not in resolved]
-    integrate = fused.fused_integrator(cp)
+    integrate = fused.fused_integrator(cp, use_mma=fused.USE_MMA[args.tiles])
     emit(stage="context", D=state.D, dimension=len(basis), momentum=args.momentum,
-         density_condition=basis.chart.density_condition, tol=args.tol)
+         density_condition=basis.chart.density_condition, tol=args.tol, tiles=args.tiles)
 
     def part(name, setting, build):
         started = time.perf_counter()

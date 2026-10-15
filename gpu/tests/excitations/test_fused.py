@@ -7,9 +7,14 @@ Geometry  (4) geometry; (6) the thread-to-element mapping, the scalar tile produ
           two product passes of block_rhs, re-implemented here from the kernel text.
 Source    (5) kernel_source: #define values, the tensor-core branch, FP64 only; (8) the
           Chebyshev source table against models.transformed_source.
-Compile   (7) compile_ptx and audit_ptx with NVRTC alone (no GPU, no CuPy); skipped without
-          the nvidia-cuda-nvrtc / nvidia-cuda-runtime wheels and a directory holding the
-          header nv/target (RCMPS_CUDA_INCLUDE, then ~/.julia/artifacts/*/include).
+Compile   (7) compile_ptx and audit_ptx with NVRTC alone (no GPU, no CuPy), the scalar tiles
+          for compute_60, 70, 75, 80, 86 and 90 and the tensor-core tiles for compute_80, 86
+          and 90; skipped without the nvidia-cuda-nvrtc / nvidia-cuda-runtime wheels and a
+          directory holding the header nv/target (RCMPS_CUDA_INCLUDE, then
+          ~/.julia/artifacts/*/include).
+Device    (9) the tile selection of FusedTrajectory (tensor cores from compute capability
+          8.0 on, scalar tiles below, the same rule as the optimizer), PHI4_KERNELS against
+          the systems, and preflight, with the CPU stand-in of fakedevice.py.
 
 Systems: states.random_state(D, z2=True), S = sqrt(diag rho), random class tangents.
 RCMPS_EXCITATION_REPORT=1 prints the largest measured errors.
@@ -36,6 +41,8 @@ from rcmps_gpu.excitations.packed import PackedActionSystem
 from rcmps_gpu.excitations.packed_pair import PackedDiagonalPair
 from rcmps_gpu.excitations.scaled import ScaledState, stack
 from rcmps_gpu.excitations.states import random_state
+from rcmps_gpu.optimizer.runtime import generic_layout
+from fakedevice import fake_cupy
 
 norm = np.linalg.norm
 DIMS, SECTORS, MOMENTA, DEGREES = (4, 6), ("odd", "even"), (0.0, 0.5), (2, 4)
@@ -504,6 +511,9 @@ class Compile(Case):
         self.assertEqual(fused.audit_ptx(self.PTX[False], use_mma=False)["f64_mma_instructions"], [])
         with self.assertRaises(RuntimeError):
             fused.audit_ptx(self.PTX[False], use_mma=True)
+        for ptx in (self.PTX[True], self.PTX[False] + "\twmma.mma.sync.aligned.row.col.m16n16k16.f32.f16 {%f1};\n"):
+            with self.assertRaisesRegex(RuntimeError, r"\(scalar tiles\)"):     # no mma at all on the scalar path
+                fused.audit_ptx(ptx, use_mma=False)
         for line in ("add.f32 %f1, %f2, %f3;", "mul.rn.f32 %f1, %f2, %f3;", "fma.rn.f32 %f1, %f2, %f3, %f4;",
                      "div.full.f32 %f1, %f2, %f3;", "sqrt.rn.f32 %f1, %f2;"):
             for use_mma in (True, False):
@@ -511,18 +521,21 @@ class Compile(Case):
                     fused.audit_ptx(self.PTX[use_mma] + "\t" + line + "\n", use_mma=use_mma)
 
     def test_compile_and_audit(self):
-        """(7) NVRTC compiles the kernel (sm_80, no GPU) for d = 3 and 32, the widths of the
-        action system (4 panels, 2 two-sided groups) and of the pair system (5, 3), with and
-        without tensor cores; the PTX has FP64 mma instructions exactly when use_mma and no
-        FP32 arithmetic."""
+        """(7) NVRTC compiles the kernel (no GPU) for d = 3 and 32, the widths of the action
+        system (4 panels, 2 two-sided groups) and of the pair system (5, 3): the scalar tiles
+        for compute_60, 70, 75, 80, 86 and 90, the tensor-core tiles for compute_80, 86 and 90;
+        the PTX has FP64 mma instructions exactly when use_mma and no FP32 arithmetic."""
         include, reason = nvrtc_include()
         if include is None:
             self.skipTest(reason)
-        for d, (panels, temps), use_mma in itertools.product((3, 32), WIDTHS.values(), (True, False)):
-            msg = f"d={d} panels={panels} temps={temps} use_mma={use_mma}"
+        targets = [(arch, False) for arch in ("compute_60", "compute_70", "compute_75", "compute_80", "compute_86",
+                                              "compute_90")] + [(arch, True) for arch in ("compute_80", "compute_86",
+                                                                                          "compute_90")]
+        for d, (panels, temps), (arch, use_mma) in itertools.product((3, 32), WIDTHS.values(), targets):
+            msg = f"d={d} panels={panels} temps={temps} use_mma={use_mma} {arch}"
             try:
-                ptx, _ = fused.compile_ptx(d, 26 if temps == 2 else 20, use_mma=use_mma, include_dirs=(include,),
-                                           panels=panels, temps=temps)
+                ptx, _ = fused.compile_ptx(d, 26 if temps == 2 else 20, use_mma=use_mma, arch=arch,
+                                           include_dirs=(include,), panels=panels, temps=temps)
             except OSError as error:        # libnvrtc itself cannot be loaded here
                 self.skipTest(f"libnvrtc cannot be loaded: {error}")
             audit = fused.audit_ptx(ptx, use_mma=use_mma)
@@ -531,7 +544,93 @@ class Compile(Case):
             self.assertEqual("mma.sync" in ptx, use_mma, msg)
             self.assertFalse(re.search(r"\bmma\.sync\S*\.f(?:16|32)\b", ptx), msg)
             self.assertIn(".entry excitation_trajectory", ptx, msg)
-            self.assertIn(".target sm_80", ptx, msg)
+            self.assertIn(".target " + arch.replace("compute", "sm"), ptx, msg)
+
+
+class Device(Case):
+    CAPABILITIES = ((6, 0), (7, 0), (7, 5), (8, 0), (8, 6), (8, 9), (9, 0), (10, 0), (12, 0))
+
+    def test_select_tiles_is_the_rule_of_the_optimizer(self):
+        """(9) fused.select_tiles, a copy of generic_layout.select_tiles, gives the same tiles
+        and refuses the same requests with the same messages."""
+        self.assertEqual((fused.TILES, fused.TILE_CHOICES), (generic_layout.TILES, generic_layout.TILE_CHOICES))
+        self.assertEqual(fused.USE_MMA, dict(auto=None, mma=True, scalar=False))
+        for (major, minor), requested in itertools.product(self.CAPABILITIES, ("auto", "mma", "scalar", "MMA", None)):
+            outcomes = []
+            for rule in (fused.select_tiles, generic_layout.select_tiles):
+                try:
+                    outcomes.append(rule(requested, major, minor))
+                except ValueError as error:
+                    outcomes.append(str(error))
+            self.assertEqual(outcomes[0], outcomes[1], (major, minor, requested))
+            if requested == "auto":
+                self.assertEqual(outcomes[0], "mma" if (major, minor) >= (8, 0) else "scalar")
+
+    def test_tiles_follow_the_device(self):
+        """(9) FusedTrajectory: use_mma None (the default) compiles the tensor-core tiles from
+        compute capability 8.0 on and the scalar tiles below; True below 8.0 is refused before
+        anything is compiled; False compiles the scalar tiles everywhere. The occupancy records
+        the tiles, the request, the arithmetic and the compute capability."""
+        for capability, use_mma, tiles in (((7, 0), None, "scalar"), ((6, 0), None, "scalar"), ((7, 5), False, "scalar"),
+                                           ((8, 0), None, "mma"), ((8, 6), None, "mma"), ((8, 9), None, "mma"),
+                                           ((9, 0), True, "mma"), ((8, 6), False, "scalar")):
+            cp = fake_cupy(capability)
+            kernel = fused.FusedTrajectory(cp, 8, 26, use_mma=use_mma)
+            requested = {None: "auto", True: "mma", False: "scalar"}[use_mma]
+            self.assertEqual((kernel.tiles, kernel.tiles_requested, kernel.use_mma), (tiles, requested, tiles == "mma"))
+            self.assertEqual(len(cp.compiled), 1)
+            self.assertIn(f"#define USE_MMA {int(tiles == 'mma')}\n", cp.compiled[0].code)
+            occupancy = kernel.occupancy
+            self.assertEqual((occupancy["tiles"], occupancy["tiles_requested"], occupancy["compute_capability"]),
+                             (tiles, requested, capability))
+            self.assertEqual(occupancy["matrix_arithmetic"], "mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64"
+                             if tiles == "mma" else "scalar warp-shuffle tiles")
+        for capability in ((7, 0), (7, 5), (6, 1)):
+            cp = fake_cupy(capability)
+            with self.assertRaisesRegex(ValueError, rf"--tiles mma needs .* this GPU is {capability[0]}\.{capability[1]}"):
+                fused.FusedTrajectory(cp, 8, 26, use_mma=True)
+            self.assertEqual(cp.compiled, [])
+        cp = fake_cupy((8, 0), cooperative=False)
+        with self.assertRaisesRegex(ValueError, "cooperative launch"):
+            fused.FusedTrajectory(cp, 8, 26)
+
+    def test_phi4_kernels(self):
+        """(9) PHI4_KERNELS, the shapes that preflight compiles, are those of the action and
+        pair systems of :phi^4: (D = 4 and 6, both sectors, p = 0 and 0.5), whose packed
+        dimension is D/2."""
+        for kind, dim, sector, p in itertools.product(WIDTHS, DIMS, SECTORS, MOMENTA):
+            s = system(kind, dim, sector, p, 4)
+            t = fused.kernel_tables(s.tables())
+            shape = (len(t["fixed"]), t["left_constants"].shape[1], t["temp_right"].shape[1])
+            self.assertEqual(shape, fused.PHI4_KERNELS[kind], (kind, dim, sector, p))
+            self.assertEqual(s.d, dim // 2)
+        self.assertEqual(set(fused.PHI4_KERNELS), set(WIDTHS))
+
+    def test_preflight(self):
+        """(9) preflight compiles the kernels of a solve into the integrator's cache, and
+        refuses, naming it, a kernel whose cooperative grid is not resident at any register
+        cap: here the pair kernel (20 blocks of 2064 bytes of shared memory at D = 4), on a
+        device whose stand-in occupancy holds the action kernel (26 blocks of 1552 bytes)."""
+        def resident(threads, shared, registers):
+            return 1 if shared < 2000 else 0
+        cp = fake_cupy((7, 0), multiprocessors=26, resident=resident)
+        integrate = fused.fused_integrator(cp)
+        kernels = fused.preflight(integrate, 2, ("action",))
+        self.assertEqual(list(integrate.kernels), [(2, *fused.PHI4_KERNELS["action"])])
+        self.assertIs(kernels["action"], integrate.kernels[(2, 26, 4, 2)])
+        self.assertEqual((kernels["action"].tiles, kernels["action"].occupancy["resident_capacity"]), ("scalar", 26))
+        with self.assertRaisesRegex(RuntimeError, r"^the pair kernel of D = 4 cannot run on this GPU: unsafe cooperative "
+                                                  r"grid: 20 blocks are not resident for any register cap"):
+            fused.preflight(integrate, 2)
+        self.assertEqual(len(cp.compiled), 1 + len(fused.REGISTER_CAPS))      # the pair kernel tried every cap
+        cp = fake_cupy((7, 0))
+        with self.assertRaisesRegex(ValueError, r"^the action kernel of D = 4 cannot run on this GPU: --tiles mma needs"):
+            fused.preflight(fused.fused_integrator(cp, use_mma=True), 2)
+        # A register cap that makes the grid resident is taken, as in a run.
+        cp = fake_cupy((8, 6), multiprocessors=26, resident=lambda threads, shared, registers: int(registers <= 120))
+        kernels = fused.preflight(fused.fused_integrator(cp), 2)
+        self.assertEqual([k.options for k in kernels.values()], [("--std=c++17", "--maxrregcount=120")] * 2)
+        self.assertEqual(kernels["pair"].tiles, "mma")
 
 
 if __name__ == "__main__":

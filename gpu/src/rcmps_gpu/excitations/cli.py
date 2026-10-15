@@ -19,6 +19,15 @@ Backends: `fused` (GPU, one cooperative FP64 kernel per trajectory; Z2 states an
 parity sector only, so `--sector all` is refused), `host` (host-controlled integrator on
 the device; slow, any state and sector) and `numpy` (CPU).
 
+Tiles of the fused kernel. `--tiles auto` (the default) computes the matrix products on the
+FP64 tensor cores from compute capability 8.0 on and with scalar tiles of the same layout
+(warp shuffles, FP64 FMAs) below; `--tiles mma` is refused below 8.0, `--tiles scalar`
+(also `--scalar-tiles`) runs on any GPU with cooperative launch. Before the output
+directory is created, the kernels of the solve are compiled and their cooperative grids
+checked: the action kernel, and the kernel of the bilinear validation unless --no-validate
+or --host-bilinear (it needs more shared memory per block). result.json records the
+resolved tiles (settings.tiles, settings.tiles_requested) and each kernel's occupancy.
+
 Davidson schedule. The default is that of the A100 mass and sector runs of the README
 (not of its comparison of scaled and unscaled variables, which used the CPU schedule), the
 Davidson part of the Julia D <= 48 research configuration (docs/excitations.md): a search
@@ -62,6 +71,7 @@ import numpy as np
 HERE = Path(__file__).resolve().parent
 from .. import provenance  # noqa: E402
 from . import eigsolve  # noqa: E402
+from . import fused  # noqa: E402
 from . import models  # noqa: E402
 from . import ode  # noqa: E402
 from . import states  # noqa: E402
@@ -172,7 +182,12 @@ def make_parser():
     parser.add_argument("--refined-rtol", type=float, default=None)
     parser.add_argument("--refined-kinetic-nodes", type=int, default=None)
     parser.add_argument("--basis-bytes", type=float, default=6e9, help="bound on one GMRES Krylov basis (GPU)")
-    parser.add_argument("--scalar-tiles", action="store_true", help="fused kernel without tensor-core products")
+    tiles = parser.add_mutually_exclusive_group()
+    tiles.add_argument("--tiles", choices=fused.TILE_CHOICES, default=None,
+                       help="tile products of the fused kernel: mma (FP64 tensor cores, compute capability >= 8.0), "
+                            "scalar (warp shuffles and FP64 FMAs, any GPU with cooperative launch) or auto (the "
+                            "default: mma from compute capability 8.0 on, scalar below)")
+    tiles.add_argument("--scalar-tiles", action="store_true", help="the same as --tiles scalar")
     parser.add_argument("--host-bilinear", action="store_true",
                         help="bilinear validation ODEs on the host-controlled integrator (reference, slow)")
     return parser
@@ -241,6 +256,38 @@ def main(argv=None):
     except ValueError as error:
         parser.error(str(error))
 
+    terms = models.phi4_terms(state.coupling)
+    tiles = "scalar" if args.scalar_tiles else args.tiles or "auto"
+    device = bilinear_element = None
+    kernels = {}
+    if args.backend == "numpy":
+        xp, integrate, system, basis_bytes = np, ode.integrate_host, None, None
+    else:
+        import cupy as xp
+        props = xp.cuda.runtime.getDeviceProperties(xp.cuda.Device().id)
+        device = dict(compute_capability=[int(props["major"]), int(props["minor"])],
+                      multiprocessors=int(props["multiProcessorCount"]), memory=int(xp.cuda.Device().mem_info[1]),
+                      cupy=xp.__version__, driver=int(xp.cuda.runtime.driverGetVersion()),
+                      kernel_run_time_limit=bool(props.get("kernelExecTimeoutEnabled", False)))
+        basis_bytes = args.basis_bytes
+        if args.backend == "fused":
+            from . import packed
+            integrate, system = fused.fused_integrator(xp, use_mma=fused.USE_MMA[tiles]), packed.PackedActionSystem
+            # Every kernel of the solve now, before the output directory exists: a GPU that
+            # cannot hold one is refused before the search, not after it.
+            names = ("action",) if args.no_validate or args.host_bilinear else ("action", "pair")
+            try:
+                kernels = fused.preflight(integrate, state.D // 2, names)
+            except (ValueError, RuntimeError) as error:
+                parser.error(f"{error}" + ("; --host-bilinear validates without it, on the host-controlled integrator"
+                                           if str(error).startswith("the pair kernel") else ""))
+            if not args.host_bilinear:
+                # The bilinear validation energies also go through the fused kernel.
+                from . import bilinear_fused
+                bilinear_element = bilinear_fused.bound(integrate)
+        else:
+            integrate, system = ode.integrate_host, None
+
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=False)
     log_file = (output / "log.jsonl").open("w")
@@ -251,27 +298,6 @@ def main(argv=None):
         log_file.write(json.dumps(row) + "\n")
         log_file.flush()
 
-    terms = models.phi4_terms(state.coupling)
-    device = bilinear_element = None
-    if args.backend == "numpy":
-        xp, integrate, system, basis_bytes = np, ode.integrate_host, None, None
-    else:
-        import cupy as xp
-        props = xp.cuda.runtime.getDeviceProperties(xp.cuda.Device().id)
-        device = dict(compute_capability=[int(props["major"]), int(props["minor"])],
-                      multiprocessors=int(props["multiProcessorCount"]), memory=int(xp.cuda.Device().mem_info[1]),
-                      cupy=xp.__version__, driver=int(xp.cuda.runtime.driverGetVersion()))
-        basis_bytes = args.basis_bytes
-        if args.backend == "fused":
-            from . import fused
-            from . import packed
-            integrate, system = fused.fused_integrator(xp, use_mma=not args.scalar_tiles), packed.PackedActionSystem
-            if not args.host_bilinear:
-                # The bilinear validation energies also go through the fused kernel.
-                from . import bilinear_fused
-                bilinear_element = bilinear_fused.bound(integrate)
-        else:
-            integrate, system = ode.integrate_host, None
     refined = None
     if any(v is not None for v in (args.refined_window, args.refined_n_quad, args.refined_atol, args.refined_rtol)):
         base = eigsolve.refined_integration(state.integrator)
@@ -285,6 +311,8 @@ def main(argv=None):
     settings = dict(arguments, kinetic_nodes=resolved["kinetic_nodes"], maxspace=options.maxspace,
                     retain=resolved["retain"], thick_restart=not options.refresh, fresh_restarts=options.refresh,
                     arguments=arguments, coupling=state.coupling, D=state.D, saved_energy=state.e0, device=device,
+                    tiles=kernels["action"].tiles if kernels else None,
+                    tiles_requested=tiles if args.backend == "fused" else None,
                     numpy=np.__version__, davidson_schedule=resolved["schedule"],
                     sector_dimension=resolved["dimension"], default_kinetic_nodes=resolved["default_kinetic_nodes"],
                     source_sha256={**{name: hashlib.sha256((HERE / name).read_bytes()).hexdigest() for name in SOURCES},
@@ -297,6 +325,11 @@ def main(argv=None):
             f"{settings['source_provenance']['error']}")
     for message in resolved["messages"]:
         log(message)
+    for name, kernel in kernels.items():
+        o = kernel.occupancy
+        log(f"{name} kernel: tiles {o['tiles']} (requested {o['tiles_requested']}, compute capability "
+            f"{'.'.join(map(str, o['compute_capability']))}), {o['blocks']} thread blocks of {o['resident_capacity']} "
+            f"resident, {o['registers']} registers, options {' '.join(o['compiler_options'])}")
     start = "auto"
     if args.start is not None:
         with np.load(args.start) as stored:

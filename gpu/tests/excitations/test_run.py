@@ -15,6 +15,12 @@ never solved, and one end-to-end CPU run of the D = 4 state on every default (od
 n = 8: maxspace 8, retain 7, 256 kinetic nodes; eight actions, about 5 s). result.json
 `settings` records the values used (integer kinetic nodes, maxspace, retain, thick_restart),
 as the A100 result files did, and the parsed arguments under `settings.arguments`.
+
+Tiles of the fused backend (Tiles), on the CPU stand-in device of fakedevice.py (installed
+as the module cupy; nothing is launched): --tiles and its alias --scalar-tiles, the refusal
+of --tiles mma below compute capability 8.0 and of a GPU that cannot hold the kernel of the
+bilinear validation, both before the output directory exists, and what result.json and the
+log record of the tiles (the solve itself is replaced by a stub).
 """
 from __future__ import annotations
 
@@ -33,6 +39,7 @@ from rcmps_gpu.excitations import eigsolve
 from rcmps_gpu.excitations import cli as run
 from rcmps_gpu.excitations.davidson import DavidsonOptions
 from rcmps_gpu.excitations.states import random_state
+from fakedevice import fake_cupy
 
 
 def export(directory, state, coupling):
@@ -279,6 +286,99 @@ class Defaults(unittest.TestCase):
                              [16, 8, 2, False, True, "fresh-restarts"])
             self.assertEqual([settings["arguments"][k] for k in ("maxspace", "retain", "thick_restart",
                                                                  "fresh_restarts")], [None, None, False, True])
+
+
+class Tiles(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.scratch = tempfile.TemporaryDirectory()
+        cls.state = Path(cls.scratch.name) / "state"
+        export(cls.state, random_state(4, seed=11, scaling=0.5, z2=True), 1.0)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.scratch.cleanup()
+
+    def test_arguments(self):
+        """--tiles auto|mma|scalar (default none: auto); --scalar-tiles is --tiles scalar and
+        cannot be given with --tiles."""
+        self.assertEqual((parse().tiles, parse().scalar_tiles), (None, False))
+        self.assertEqual(parse("--tiles", "mma").tiles, "mma")
+        self.assertTrue(parse("--scalar-tiles").scalar_tiles)
+        for arguments in (("--tiles", "scalar", "--scalar-tiles"), ("--tiles", "fast")):
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                parse(*arguments)
+
+    def run_fused(self, output, cp, *arguments):
+        """main() of the fused backend on the stand-in device, the solve returning at once:
+        what it printed (on SystemExit, as the exception's attribute `printed`)."""
+        def solve(state, momentum, terms, **options):
+            n = eigsolve.sector_dimension(state, sector=options["sector"], metric_tol=options["metric_tol"])
+            return dict(dimension=n, coefficients=np.zeros((1, n)), vectors=np.zeros((1, state.D, state.D)),
+                        energies=[0.0], validated_energies=None, accepted=[False], stop_reason="stub", numops=0)
+        argv = ["rcmps-gpu-excitations", str(self.state), "--output", str(output), "--window", "14", "--n-quad", "32",
+                *arguments]
+        printed = io.StringIO()
+        with mock.patch.dict(sys.modules, {"cupy": cp}), mock.patch.object(eigsolve, "excitation_eigsolve", solve), \
+                mock.patch.object(sys, "argv", argv), contextlib.redirect_stdout(printed), \
+                contextlib.redirect_stderr(printed):
+            try:
+                run.main()
+            except SystemExit as error:
+                error.printed = printed.getvalue()
+                raise
+        return printed.getvalue()
+
+    def test_tiles_are_resolved_and_recorded(self):
+        """auto on compute capability 7.0 gives the scalar tiles, on 8.6 the tensor-core
+        tiles; --scalar-tiles and --tiles scalar the scalar tiles. Both kernels of the solve
+        are compiled before it, the pair kernel only when the validation uses it."""
+        cases = (((7, 0), (), "auto", "scalar", 2), ((8, 6), (), "auto", "mma", 2),
+                 ((8, 0), ("--scalar-tiles",), "scalar", "scalar", 2), ((9, 0), ("--tiles", "mma"), "mma", "mma", 2),
+                 ((7, 5), ("--tiles", "scalar", "--host-bilinear"), "scalar", "scalar", 1),
+                 ((8, 0), ("--no-validate",), "auto", "mma", 1))
+        for n, (capability, arguments, requested, tiles, kernels) in enumerate(cases):
+            with self.subTest(capability=capability, arguments=arguments), tempfile.TemporaryDirectory() as scratch:
+                cp, output = fake_cupy(capability), Path(scratch) / "out"
+                printed = self.run_fused(output, cp, *arguments)
+                result = json.loads((output / "result.json").read_text())
+                settings = result["settings"]
+                self.assertEqual((settings["tiles"], settings["tiles_requested"]), (tiles, requested))
+                self.assertEqual(settings["device"]["compute_capability"], list(capability))
+                self.assertEqual(sorted(result["kernels"]), sorted(["2_26_4_2", "2_20_5_3"][:kernels]))
+                for kernel in result["kernels"].values():
+                    occupancy = kernel["occupancy"]
+                    self.assertEqual((occupancy["tiles"], occupancy["tiles_requested"]), (tiles, requested))
+                self.assertEqual(len(cp.compiled), kernels)
+                self.assertTrue(all(f"#define USE_MMA {int(tiles == 'mma')}\n" in k.code for k in cp.compiled))
+                self.assertIn(f"action kernel: tiles {tiles} (requested {requested}, compute capability "
+                              f"{capability[0]}.{capability[1]}), 26 thread blocks of", printed)
+
+    def test_refusals_before_the_output_directory(self):
+        """--tiles mma below compute capability 8.0, and a GPU on which the pair kernel of the
+        validation is not resident, are usage errors before anything is written; the latter
+        names --host-bilinear, with which the run goes on."""
+        def resident(threads, shared, registers):
+            return 1 if shared < 2000 else 0        # D = 4: the action kernel fits, the pair kernel does not
+        for cp, arguments, message in (
+                (fake_cupy((7, 5)), ("--tiles", "mma"), "the action kernel of D = 4 cannot run on this GPU: --tiles mma "
+                                                         "needs FP64 tensor-core instructions"),
+                (fake_cupy((7, 0), multiprocessors=26, resident=resident), (),
+                 "the pair kernel of D = 4 cannot run on this GPU: unsafe cooperative grid: 20 blocks are not "
+                 "resident for any register cap")):
+            with self.subTest(message=message[:40]), tempfile.TemporaryDirectory() as scratch:
+                output = Path(scratch) / "out"
+                with self.assertRaises(SystemExit) as failure:
+                    self.run_fused(output, cp, *arguments)
+                self.assertEqual(failure.exception.code, 2)
+                self.assertFalse(output.exists())
+                printed = " ".join(failure.exception.printed.split())
+                self.assertIn(message, printed)
+                self.assertEqual("--host-bilinear validates without it" in printed, not arguments)
+        with tempfile.TemporaryDirectory() as scratch:
+            cp = fake_cupy((7, 0), multiprocessors=26, resident=resident)
+            self.run_fused(Path(scratch) / "out", cp, "--host-bilinear")
+            self.assertEqual(json.loads((Path(scratch) / "out" / "result.json").read_text())["settings"]["tiles"], "scalar")
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 """Reference excitation levels on a GPU, through the production command line.
 
     python check_references.py --output NEW_DIR [--level NAME ...] [--backend fused|host|numpy]
-        [--references FILE] [--fixtures DIR]
+        [--tiles auto|mma|scalar] [--references FILE] [--fixtures DIR]
 
 Recomputes levels of test/fixtures/excitation_references.toml (by default every level at
 [settings.gpu_comparison]: the three D = 16 and the three D = 32 levels) with
@@ -11,6 +11,10 @@ vectors.npz, log.jsonl) with the arguments that reproduce its [settings] table: 
 keys, the `python` table and, for a GPU backend, the `gpu` table. Settings the command line
 does not expose (gauge, parity, start, validation and acceptance limits, refine steps, the
 other Davidson controls, maxiters) must be at its defaults; that is checked before any solve.
+With the fused backend, --tiles is passed to the command line: by default auto (the device
+chooses: tensor cores from compute capability 8.0 on, scalar tiles below), or scalar for a
+[settings] table whose gpu table has tensor_cores = false; each solve reports the tiles it
+ran with (settings.tiles of its result.json).
 
 Every result is one JSON line on stdout (the command line's own log goes to stderr): per level
 the computed validated, four validation and Ritz energies, their differences from the stored
@@ -67,8 +71,9 @@ def check_fixed(name, settings):
             raise ValueError(f"[settings.{name}] {table}.maxiters must be {maxiters}")
 
 
-def arguments(state_path, settings, sector, momentum, nev, n, backend, output):
-    """The command line of one solve."""
+def arguments(state_path, settings, sector, momentum, nev, n, backend, output, tiles=None):
+    """The command line of one solve; tiles: --tiles of the fused backend (None: auto, or
+    scalar when the settings' gpu table says tensor_cores = false)."""
     i, f, d, py = settings["integration"], settings["refined_integration"], settings["davidson"], settings["python"]
     argv = [str(state_path), "--output", str(output), "--momentum", repr(momentum), "--nev", str(nev),
             "--sector", sector, "--backend", backend, "--scaling", py["scaling"],
@@ -85,13 +90,13 @@ def arguments(state_path, settings, sector, momentum, nev, n, backend, output):
             "--refined-window", repr(f["max_point"]), "--refined-n-quad", str(f["n_quad"]),
             "--refined-atol", repr(f["atol"]), "--refined-rtol", repr(f["rtol"]),
             "--refined-kinetic-nodes", str(settings["refined_kinetic_nodes"])]
-    if backend != "numpy" and "gpu" in settings:   # without a gpu table: the command line's defaults
-        gpu = settings["gpu"]
+    gpu = settings.get("gpu") if backend != "numpy" else None   # without a gpu table: the defaults
+    if gpu:
         argv += ["--basis-bytes", repr(gpu["max_basis_bytes"])]
-        if not gpu["tensor_cores"]:
-            argv.append("--scalar-tiles")
         if gpu["bilinear"] != "fused":
             argv.append("--host-bilinear")
+    if backend == "fused":
+        argv += ["--tiles", tiles or ("scalar" if gpu and not gpu["tensor_cores"] else "auto")]
     return argv
 
 
@@ -124,6 +129,8 @@ def main():
     parser.add_argument("--output", required=True, help="new directory for the runs")
     parser.add_argument("--level", nargs="+", default=None, help="level names (default: settings gpu_comparison)")
     parser.add_argument("--backend", default="fused", choices=("fused", "host", "numpy"))
+    parser.add_argument("--tiles", choices=("auto", "mma", "scalar"), default=None,
+                        help="tiles of the fused backend (default: auto, or scalar for settings without tensor cores)")
     parser.add_argument("--references", default=None,
                         help="reference file (default: excitation_references.toml in the fixtures directory)")
     parser.add_argument("--fixtures", default=None,
@@ -165,7 +172,7 @@ def main():
         n = eigsolve.sector_dimension(states.load_jld2(path), sector=sector, parity=settings["parity"],
                                       gauge=settings["gauge"], metric_tol=settings["metric_tol"])
         run = output / f"{state_name}_{sector}_p{momentum:g}_nev{nev}"
-        argv = arguments(path, settings, sector, momentum, nev, n, args.backend, run)
+        argv = arguments(path, settings, sector, momentum, nev, n, args.backend, run, args.tiles)
         emit(stage="solve", state=state_name, settings=settings_name, sector=sector, momentum=momentum, nev=nev,
              backend=args.backend, output=run.name, arguments=argv[1:])
         with contextlib.redirect_stdout(sys.stderr):
@@ -174,8 +181,9 @@ def main():
         for entry in group:
             row = compare(entry, result)
             passed += row["ok"]
-            emit(stage="level", name=entry["name"], wall_seconds=result["wall_seconds"], **row)
-    emit(stage="summary", levels=len(entries), passed=passed, backend=args.backend)
+            emit(stage="level", name=entry["name"], wall_seconds=result["wall_seconds"],
+                 tiles=result["settings"].get("tiles"), **row)
+    emit(stage="summary", levels=len(entries), passed=passed, backend=args.backend, tiles_requested=args.tiles)
     sys.exit(0 if passed == len(entries) else 1)
 
 

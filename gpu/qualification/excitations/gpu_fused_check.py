@@ -1,12 +1,14 @@
 """Qualification of the fused trajectory kernel on a GPU.
 
-For each case the Z2-packed action system of one tangent is integrated three ways:
-with the host-controlled NumPy integrator (ode.integrate_host, exact source), with
-the fused kernel using native FP64 tensor-core products, and with the fused kernel
-using scalar tiles. The samples at the quadrature nodes and the resulting action
-are compared. Every result is one JSON line on stdout.
+For each case the Z2-packed action system of one tangent is integrated with the
+host-controlled NumPy integrator (ode.integrate_host, exact source) and with the fused
+kernel for each tile path (--tiles; default every path of the device: native FP64
+tensor-core products and scalar tiles from compute capability 8.0 on, scalar tiles below).
+The samples at the quadrature nodes and the resulting action are compared, and the two
+paths with each other. Every result is one JSON line on stdout.
 
     python gpu_fused_check.py [--state STATE] [--random D [D ...]] [--window 16] [--n-quad 64]
+        [--tiles mma scalar]
 """
 from __future__ import annotations
 
@@ -27,6 +29,7 @@ from rcmps_gpu.excitations import packed
 from rcmps_gpu.excitations import potential
 from rcmps_gpu.excitations import scaled
 from rcmps_gpu.excitations import states
+from gpu_bringup import device_tiles
 
 
 def emit(**row):
@@ -51,7 +54,7 @@ def tangent(ss, sector, momentum, seed):
     return tuple(np.ascontiguousarray(x[:, 0, :]) for x in (frame.wh, frame.vh, frame.rw))
 
 
-def check(cp, state, label, args, sector, momentum, scaling):
+def check(cp, state, label, args, sector, momentum, scaling, paths):
     ss = scaled.ScaledState(state, scaling)
     spec = models.monomial_spec(4)
     system = packed.PackedActionSystem(ss, momentum, spec, tangent(ss, sector, momentum, 5))
@@ -65,10 +68,9 @@ def check(cp, state, label, args, sector, momentum, scaling):
         reference = ode.integrate_host(system, points, endpoint, state.integrator, statistics=statistics)
         row.update(host_seconds=time.perf_counter() - started, host_attempts=statistics["attempts"])
     results = {}
-    for use_mma in (True, False):
-        name = "mma" if use_mma else "scalar"
+    for name in paths:
         try:
-            trajectory = fused.FusedTrajectory(cp, system.d, len(system.blocks), use_mma=use_mma)
+            trajectory = fused.FusedTrajectory(cp, system.d, len(system.blocks), use_mma=fused.USE_MMA[name])
             samples = trajectory.integrate(system, points, endpoint, state.integrator)
             again = trajectory.integrate(system, points, endpoint, state.integrator)   # warm timing
             results[name] = cp.asnumpy(again)
@@ -103,8 +105,12 @@ def main():
     parser.add_argument("--rtol", type=float, default=1e-12)
     parser.add_argument("--reference-limit", type=int, default=16)
     parser.add_argument("--quick", action="store_true", help="one configuration per state")
+    parser.add_argument("--tiles", nargs="+", choices=fused.TILES, default=None,
+                        help="tile paths (default: every path of the device)")
     args = parser.parse_args()
     import cupy as cp
+    paths, capability = device_tiles(cp, args.tiles)
+    emit(stage="device", compute_capability=capability, tiles=paths)
     integrator = states.IntegratorParameters(n_quad=args.n_quad, max_point=args.window, atol=args.atol, rtol=args.rtol)
     cases = [(states.random_state(d, scaling=0.5, seed=17 + d, z2=True), f"random{d}") for d in args.random]
     for path in args.state:
@@ -116,7 +122,7 @@ def main():
         configurations = ([("odd", 0.0, "density")] if args.quick else
                           [("odd", 0.0, "none"), ("odd", 0.0, "density"), ("even", 0.4, "density")])
         for sector, momentum, scaling in configurations:
-            check(cp, state, label, args, sector, momentum, scaling)
+            check(cp, state, label, args, sector, momentum, scaling, paths)
 
 
 if __name__ == "__main__":

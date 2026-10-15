@@ -1,6 +1,6 @@
 """Complete Hamiltonian action on a GPU with the fused trajectory kernel: accuracy and timing.
 
-    python gpu_action_check.py --state STATE [--reference] [--scaling density] [--momentum 0]
+    python gpu_action_check.py --state STATE [--reference] [--scaling density] [--momentum 0] [--tiles auto]
 With --reference the same action is recomputed on the CPU with NumPy, the unpacked
 equations and the host-controlled integrator (minutes at D=16; do not use beyond D=24).
 Every result is one JSON line on stdout.
@@ -38,6 +38,7 @@ def main():
     parser.add_argument("--tol", type=float, default=1e-12)
     parser.add_argument("--repeat", type=int, default=2)
     parser.add_argument("--basis-bytes", type=float, default=6e9)
+    parser.add_argument("--tiles", choices=fused.TILE_CHOICES, default="auto", help="tile path of the fused kernel")
     args = parser.parse_args()
     import cupy as cp
     c = load(args.state)
@@ -46,7 +47,7 @@ def main():
     terms = models.phi4_terms(s.coupling)
     started = time.perf_counter()
     ss = scaled.ScaledState(s, args.scaling, xp=cp, max_basis_bytes=args.basis_bytes)
-    integrate = fused.fused_integrator(cp)
+    integrate = fused.fused_integrator(cp, use_mma=fused.USE_MMA[args.tiles])
     action = hamiltonian.HamiltonianAction(ss, args.momentum, terms, integrator=s.integrator, kinetic_nodes=args.nodes,
                                            tol=args.tol, integrate=integrate, system=packed.PackedActionSystem)
     cp.cuda.get_current_stream().synchronize()
@@ -67,6 +68,7 @@ def main():
     h12, h21 = np.vdot(v1, white[1]), np.vdot(v2, white[0])
     emit(stage="action", D=s.D, scaling=args.scaling, momentum=args.momentum, setup_seconds=setup,
          action_seconds=timings, trajectory=kernel.last, registers=kernel.occupancy["registers"],
+         tiles=kernel.tiles, tiles_requested=kernel.tiles_requested,
          kinetic_stats=action.kinetic.stats, rayleigh_1=complex(np.vdot(v1, white[0])).real,
          imaginary_1=complex(np.vdot(v1, white[0])).imag, hermiticity_defect=abs(h12 - np.conj(h21)),
          repeat_difference=float(np.linalg.norm(results[-1] - results[0]) / np.linalg.norm(results[0])) if args.repeat > 1 else None)
