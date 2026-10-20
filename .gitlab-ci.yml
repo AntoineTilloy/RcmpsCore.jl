@@ -4,6 +4,10 @@
 # current releases within the [compat] bounds.
 stages: [test]
 
+# The Inria instance runners only take tagged jobs; large is 4 CPUs and 8 GB RAM.
+default:
+  tags: [ci.inria.fr, large]
+
 test:
   stage: test
   image: julia:${JULIA_VERSION}
