@@ -41,7 +41,10 @@ function prepare!(s::State, coupling)
 end
 random_state(d, seed, coupling) = prepare!(RandomState(d; seed, scaling=1/sqrt(d)), coupling)
 
-fg(s, options) = fg_phi4(s, real(s.model_param.coupling); parallel=:both, kinetic_backend=:krylov,
+# RCMPS_KINETIC_BACKEND=resolvent: the dense Schur resolvent instead of the Krylov solves (for
+# states where the Arnoldi true residual stalls above 1e-12; O(D^6), affordable to D = 64).
+const KINETIC_BACKEND = Symbol(get(ENV, "RCMPS_KINETIC_BACKEND", "krylov"))
+fg(s, options) = fg_phi4(s, real(s.model_param.coupling); parallel=:both, kinetic_backend=KINETIC_BACKEND,
                          kinetic_options=options, krylov_options=KRYLOV)
 
 """c(W) = int_{-W}^{W} J(x) dx = 2 int_0^{sqrt W} transformed_source(t) dt (Gauss-Legendre)."""
@@ -67,8 +70,8 @@ function evaluated(s::State, directory; source, extra=Dict{String,Any}())
     metadata = Dict{String,Any}("julia_energy_1024" => ec,
         "julia_gradient_1024_metric_difference" => sqrt(metric(s, gc - g, gc - g)),
         "julia_phi_closed" => closed,
-        "julia_kinetic" => "krylov, tolerance 1e-12, maxdim 1024; energy/gradient.bin: 512 angular nodes; " *
-                           "*_1024: 1024 nodes",
+        "julia_kinetic" => (KINETIC_BACKEND == :krylov ? "krylov, tolerance 1e-12, maxdim 1024" : string(KINETIC_BACKEND)) *
+                           "; energy/gradient.bin: 512 angular nodes; *_1024: 1024 nodes",
         "julia_seconds_512" => t1 - t0, "julia_seconds_1024" => t2 - t1,
         "julia_threads" => Threads.nthreads())
     merge!(metadata, extra)

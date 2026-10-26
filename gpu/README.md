@@ -815,6 +815,7 @@ optimizations (tensor cores, φ⁴ at g = 3, target 1e-7, the defaults otherwise
 | 16 | the start of the Julia minimum | 177 (214) | 0.33 | stagnation: 3.0e-6 | -0.3886789420167186 (Julia's minimum -0.388678942017663) | 0.6172532155 (Julia 0.6172521147) |
 | 32 | random (`--seed 1`) | 418 (466) | 1.07 | stagnation: 1.7e-5 | -0.3897114771313478 | -0.6075901266 |
 | 64 | random (`--seed 1`), one job | 675 (676) | 3.8 (0.26 at the start, 8.5 at the end) | time budget (2700 s): 1.6e-4 | -0.3898340978399881 | 0.6047528105 |
+| 64 | its resume (`--resume-from`), a second job | 35 (710 in all) | 8.6 | stagnation: 3.0e-4 (7.9e-5 two iterations before) | -0.389834105677499 | 0.6047598111 |
 
 The time of an iteration is that of the trajectory: optimized states make the quartic
 integration stability limited, 6077 accepted steps (1.0 s) at iteration 200 of the D = 32
@@ -825,9 +826,16 @@ on almost unpopulated directions: 21 at D = 8 and 62 at D = 16 (the Julia minima
 GPU's D = 16 state has the same spread, smallest Schmidt value 3.6e-8 and condition number
 2.8e7 of ρ), 305 at the end of the D = 32 run (ρ condition number 7e9), and at D = 64 from
 5.6 at the random start to 1290 after 675 iterations, still growing (smallest eigenvalue of
-ρ 4.7e-13), with 29,517 steps (8.5 s) per trajectory. At D = 64 the optimizer therefore
-needs hours to converge; ⟨φ⟩ moved by 1e-5 over the last 100 of those iterations and the
-energy by 2e-8.
+ρ 4.7e-13), with 29,517 steps (8.5 s) per trajectory; ⟨φ⟩ moved by 1e-5 over the last 100
+of those iterations and the energy by 2e-8. The resumed run stopped by numerical stagnation
+after 35 more iterations, at gradient norm 3e-4: E fell by 7.6e-9 and ⟨φ⟩ moved by 7e-6 over
+them, and on the last iterate even the steepest-descent recovery found no Armijo step down to
+an expected decrease of 9e-14, although the energy is accurate there (the refined validation
+rows agree with the standard ones to 1e-13 in energy and 2e-9 in gradient, with 43,272 and
+30,452 steps): along the descent directions of these stiff states the energy is resolved
+only for steps too small to make progress, the floor of the controller that the Z2 runs at
+large D met too (D = 128: 2.1e-4). The D = 64 state of this table is therefore not converged
+in the gradient; its energy and ⟨φ⟩ settle at the levels above.
 
 **Excitation solver, A100 PCIe 40 GB, 2026-10-13 and 14, up to D = 128.** The import commit
 of this package holds byte for byte the sources of the last batch of runs (see Provenance):
