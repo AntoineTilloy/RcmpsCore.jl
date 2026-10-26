@@ -9,7 +9,7 @@ in the package's own environment, from the repository root:
 ```bash
 julia --project=. gpu/julia/export_state.jl CHECKPOINT.jld2 NEW_DIRECTORY
 julia --project=. gpu/julia/import_state.jl PORTABLE_DIRECTORY NEW_CHECKPOINT.jld2
-julia --project=. gpu/julia/prepare_initial.jl D SEED COUPLING NEW_DIRECTORY [SCALING]
+julia --project=. gpu/julia/prepare_initial.jl [--symmetry z2|none] D SEED COUPLING NEW_DIRECTORY [SCALING]
 julia --project=. gpu/julia/check_portable.jl [FIXTURES_DIRECTORY]
 ```
 
@@ -29,14 +29,17 @@ julia --project=. gpu/julia/check_portable.jl [FIXTURES_DIRECTORY]
   integration settings. Otherwise `e0` stays NaN, and the energy, gradient norm and settings
   that the directory has are appended to `info`, with a warning: an export of the checkpoint
   then carries no energy.
-- `prepare_initial.jl`: a random Z2 initial state reproducible in Julia (the matrices of
-  `RandomStateZ2(D; seed, scaling)`, scaling 1/sqrt(D) by default, with the stationary density
-  solved at tolerance 1e-13), for phi4 at the given coupling, as a format-1 directory for
-  `rcmps-gpu-optimize --initial`. Nothing is evaluated.
+- `prepare_initial.jl`: a random initial state reproducible in Julia (the matrices of
+  `RandomStateZ2(D; seed, scaling)`, or with `--symmetry none` of `RandomState(D; seed,
+  scaling)`, scaling 1/sqrt(D) by default, with the stationary density solved at tolerance
+  1e-13), for phi4 at the given coupling, as a format-1 directory with its `symmetry` for
+  `rcmps-gpu-optimize --initial` (with `--symmetry none` for a state without symmetry).
+  Nothing is evaluated.
 - `check_portable.jl`: export and import of the shared fixture `test/fixtures/phi4_g2_D16_z2_state.jld2`
   in a temporary directory: the export reproduces the committed `test/fixtures/phi4_g2_D16_z2_portable`
   (made by `export_state.jl` of RcmpsCore 0.2.0; only the version in `producer` may differ), and
-  importing either gives back the checkpoint exactly.
+  importing either gives back the checkpoint exactly; the optional keys `symmetry` and `phi` are
+  written and read back.
 
 `portable.jl`, included by the scripts, reads and writes format-1 directories and reads the
 research dialects as `rcmps_gpu.io.read_portable` does. None of the scripts overwrites an

@@ -46,7 +46,7 @@ project, and `using RcmpsCore` loads that copy; `JULIA_LOAD_PATH='@:@stdlib'` av
 | Package | Language, hardware | Scope | Role |
 |---|---|---|---|
 | `RcmpsCore` (`src/`) | Julia, CPU | all models | reference |
-| `rcmps_gpu` ([`gpu/`](gpu/README.md)) | Python with CuPy, CUDA, FP64; NVIDIA GPUs of compute capability 6.0 or later (FP64 tensor cores from 8.0), qualified on A100 and V100 | φ⁴ on Z₂-symmetric states, even D: optimizer and excitation solver | accelerator; excitations qualified to D=128 (A100) |
+| `rcmps_gpu` ([`gpu/`](gpu/README.md)) | Python with CuPy, CUDA, FP64; NVIDIA GPUs of compute capability 6.0 or later (FP64 tensor cores from 8.0), qualified on A100 and V100 | φ⁴: optimizer on Z₂-symmetric states (even D) and on states without symmetry (any D), excitation solver on Z₂-symmetric states | accelerator; excitations qualified to D=128 (A100) |
 
 They share one contract: `rcmps_store` checkpoints (JLD2 schema 1), the portable state
 directories of format 1 (Julia side in `gpu/julia/`), and the excitation levels of

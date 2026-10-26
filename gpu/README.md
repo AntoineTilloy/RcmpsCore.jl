@@ -1,8 +1,9 @@
 # rcmps_gpu
 
 CUDA implementations of two algorithms of RcmpsCore, in Python with CuPy, for the φ⁴
-model on Z2-symmetric relativistic continuous matrix product states (even bond dimension
-D). Everything is float64/complex128.
+model on relativistic continuous matrix product states: the ground-state optimizer for
+Z2-symmetric states (even bond dimension D) and for states without symmetry (any D), the
+excitation solver for Z2-symmetric states. Everything is float64/complex128.
 
 The Julia package RcmpsCore in the repository root is the reference implementation (CPU,
 every model) and is not modified by this one. This package accelerates its ground-state
@@ -17,13 +18,19 @@ full relative precision where those of the stored ρ that the Julia code uses ar
 - `rcmps_gpu.optimizer`: ground-state optimizer. One persistent cooperative CUDA kernel
   integrates the whole adaptive DOP853 trajectory of the quartic term in FP64, its matrix
   products on the tensor cores from compute capability 8.0 on and in scalar FMAs below;
-  L-BFGS on the manifold, as in the Julia code. The kernel is generated for each D (every
-  even D from 2 to 512, subject to the GPU holding the whole grid resident).
+  L-BFGS on the manifold, as in the Julia code. The kernel is generated for each D: on the
+  packed Z2 parity blocks (the default, every even D from 2 to 512) or, with
+  `--symmetry none`, on full complex R and K (every D from 1 to 256), subject to the GPU
+  holding the whole grid resident (see "Optimizer: states without Z2 symmetry").
 - `rcmps_gpu.excitations`: tangent-space excitation solver (matrix-free Hamiltonian
   action, Davidson, validation by the bilinear route), both parity sectors, any momentum.
   The action trajectory of a Z2 sector runs in one fused cooperative kernel.
 - `rcmps_gpu.io`: the state files of both: checkpoints of the Julia package and portable
   state directories.
+
+The optimizer records the one-point function ⟨φ⟩ of its states (its history, final
+validation and `optimized_state/`), with the normalization of RcmpsCore's
+`phi_monomial(s, 1)`.
 
 Status (details under "GPU qualification"): the package passed its qualification batch on
 an A100, with the FP64 tensor cores and with the scalar tiles, and on a V100, with the
@@ -139,31 +146,34 @@ that drives a display may have a kernel run-time limit that kills the persistent
 Sizes are limited by what the GPU holds resident: both kernels are cooperative and need
 their whole grid resident, which `--compile-only` (optimizer) and the start of an
 excitation run check, refusing a size that does not fit before any numerical launch. The
-grids (w = ceil(d/8), d = D/2):
+grids (w = ceil(d/8), d = D/2; without symmetry d = D):
 
 | Kernel | Threads per block | Thread blocks | Shared memory per block (bytes) |
 |---|---|---|---|
 | optimizer trajectory | 32 w | 10 w + 1 | 512 d + 16 w (dynamic from D = 192) |
+| optimizer trajectory, `--symmetry none` | 32 w | 7 w + 1 | 512 d + 16 w (dynamic from D = 96) |
 | excitation, action system | 32 w | 26 w | 768 d + 16 w |
 | excitation, pair system (validation) | 32 w | 20 w | 1024 d + 16 w |
 
-Largest even D whose grid is resident, estimated with the CUDA occupancy calculator from
-the register counts of NVRTC 12.8 for each target (the occupancy query of a run decides;
-CuPy's compilation can differ by a few registers, which moves a limit by one even D). The
-optimizer column includes its register caps; the excitation columns use the caps of
-`fused.REGISTER_CAPS`, and a run with validation needs both of its kernels:
+Largest even D whose grid is resident (any D without symmetry), estimated with the CUDA
+occupancy calculator from the register counts of NVRTC 12.8 for each target (the occupancy
+query of a run decides; CuPy's compilation can differ by a few registers, which moves a
+limit by one even D). The optimizer columns include its register caps (the kernel without
+symmetry has the registers of the packed kernel of the same matrix dimension: its column
+follows from the same model, which reproduces the Z2 column exactly); the excitation columns
+use the caps of `fused.REGISTER_CAPS`, and a run with validation needs both of its kernels:
 
-| GPU | Multiprocessors | Optimizer | Excitations: action kernel | pair kernel | run with validation |
-|---|---|---|---|---|---|
-| P100 | 56 | 126 | 64 | 62 | 62 |
-| V100 | 80 | 190 | 96 | 94 | 94 (96 with `--host-bilinear`) |
-| T4 | 40 | 112 | 56 | 62 | 56 |
-| A30 | 56 | 176 | 106 | 106 | 106 |
-| A100 | 108 | 256 | about 142 (208 of 216 blocks measured at D = 128) | 160 | 128 qualified, about 142 estimated |
-| RTX 3090 | 82 | 194 | 96 | 96 | 96 |
-| L4 | 58 | 176 | 84 | 80 | 80 |
-| RTX 4090 | 128 | 194 | 130 | 96 | 96 |
-| H100 SXM | 132 | 256 | 160 | 208 | 160 |
+| GPU | Multiprocessors | Optimizer: Z2 | no symmetry | Excitations: action kernel | pair kernel | run with validation |
+|---|---|---|---|---|---|---|
+| P100 | 56 | 126 | 63 | 64 | 62 | 62 |
+| V100 | 80 | 190 | 95 | 96 | 94 | 94 (96 with `--host-bilinear`) |
+| T4 | 40 | 112 | 63 | 56 | 62 | 56 |
+| A30 | 56 | 176 | 120 | 106 | 106 | 106 |
+| A100 | 108 | 256 | 128 | about 142 (208 of 216 blocks measured at D = 128) | 160 | 128 qualified, about 142 estimated |
+| RTX 3090 | 82 | 194 | 97 | 96 | 96 | 96 |
+| L4 | 58 | 176 | 97 | 84 | 80 | 80 |
+| RTX 4090 | 128 | 194 | 144 | 130 | 96 | 96 |
+| H100 SXM, H100 NVL | 132 | 256 | 144 | 160 | 208 | 160 |
 
 The occupancy queries of the qualification batch agree with the V100 and A100 rows at the
 sizes it checked: on the V100 the optimizer's grid is resident at D = 160 and refused at
@@ -186,16 +196,25 @@ rcmps-gpu-optimize --D 160 --emit-cuda D160.cu     # generated CUDA source, on t
 rcmps-gpu-optimize --D 160 --compile-only --run-gpu --output RUN   # compile and resource check
 rcmps-gpu-optimize --D 160 --seed 42 --coupling 2.7 --run-gpu --output RUN
 rcmps-gpu-optimize --D 160 --resume-from RUN/optimization.json --run-gpu --output RUN2
+rcmps-gpu-optimize --D 64 --symmetry none --seed 1 --coupling 3 --run-gpu --output RUN   # no symmetry
+rcmps-gpu-optimize --D 64 --symmetry none --initial STATE --run-gpu --output RUN
 ```
 
-Only `--D` changes between sizes. Output directories must be new. A run starts from a
-random Z2 state (`--seed`) or from `--initial DIR`, a portable state directory (see State
-files below): the `initial/` or `optimized_state/` of an earlier run, a checkpoint of the
-Julia package exported by `gpu/julia/export_state.jl`, or a random state of
-`gpu/julia/prepare_initial.jl`. The random start of `--seed` uses NumPy PCG64 complex
-Gaussian draws (scaling 1/sqrt(D)) and solves for the stationary density; it does not
-reproduce Julia's `RandomStateZ2`, whose draws `prepare_initial.jl` reproduces. Either way
-the run writes the state it starts from to `initial/`. If that state carries an energy (and
+Only `--D` changes between sizes. Output directories must be new. `--symmetry z2` (the
+default) optimizes Z2-symmetric states, R odd and K even under the parity with the first
+D/2 basis states even, on the packed parity blocks; `--symmetry none` optimizes states with
+full complex R and K (see "Optimizer: states without Z2 symmetry"); a resume keeps the
+symmetry of its checkpoint and must name it. A run starts from a random state (`--seed`: Z2,
+or without symmetry) or from `--initial DIR`, a portable state directory (see State files
+below): the `initial/` or `optimized_state/` of an earlier run, a checkpoint of the Julia
+package exported by `gpu/julia/export_state.jl`, or a random state of
+`gpu/julia/prepare_initial.jl`; a Z2 run refuses, when planning, an initial state whose R
+and K are not exactly odd and even (`--symmetry none` takes any state, a Z2 one included).
+The random start of `--seed` uses NumPy PCG64 complex Gaussian draws (scaling 1/sqrt(D))
+and solves for the stationary density; it does not reproduce Julia's `RandomStateZ2` or
+`RandomState`, whose draws `prepare_initial.jl` reproduces (`--symmetry none` for the
+latter). Either way the run writes the state it starts from to `initial/`, with its
+symmetry. If that state carries an energy (and
 a gradient), the first evaluation must reproduce them, the energy to 1e-8 and the gradient
 to 3e-6 in the metric norm, or the optimizer does not start.
 
@@ -304,6 +323,92 @@ the compiler, resource and PTX report, the initial qualification, the complete o
 history (JSON and NPZ), the final consistency report and, after a pass,
 `optimized_state/`. These are consistency checks, not an independent error certificate
 for the gradient, nor a guarantee that the target can be reached.
+
+## Optimizer: states without Z2 symmetry
+
+`--symmetry none` optimizes φ⁴ states with full complex R and K, any D from 1 to 256: the
+symmetry-broken states of the ordered phase, whose one-point function ⟨φ⟩ is not zero. The
+optimizer is the same (stationary density, kinetic resolvent with the cooperative Arnoldi,
+boundary Poisson problem, metric, preconditioner, retraction, L-BFGS and its controller,
+checkpoints, initial qualification, five-row validation), none of which assumes a symmetry;
+only the quartic trajectory changes. Its seven Hermitian channels (F1 to F3, from ρ, and
+the four adjoint channels, the fifth being I), which the Z2 kernel packs in ten blocks of
+dimension D/2, are integrated unpacked: seven D x D channels and the scalar accumulator, the
+equations of the host-driven `--reduced` objective of the research code
+(`ode_backend._ReducedQuarticRHS`). The kernel is the packed one with three changes, made by
+anchored rewrites of its source (`persistent_trajectory_backend.UNPACKED_REWRITES`): seven
+channels of row blocks, the gather offsets of the insertions (each channel takes the product
+with its own neighbour in the hierarchy), and the scalar, 4 j(t) Re tr(R F3 + F3 R†), which
+does not assume F3 Hermitian. The controller, dense output, tile products and resource checks
+are those of the Z2 kernel; the runtime drivers select the layout by their objective control
+`--reduced` in place of `--packed-z2`, so a checkpoint records it and a resume cannot change
+it. Per right-hand side the unpacked kernel computes 7 x 6 products of dimension D against
+10 x 6 of dimension D/2: 5.6 times the arithmetic of a Z2 state of the same D, on a grid of
+7 ceil(D/8) + 1 blocks, which sets the sizes of the table under "GPUs" (D = 128 on the A100,
+144 on the H100, 95 on the V100). The pullback is chunked from D = 128 (the packed one from
+D = 192), and the validation samples at the refined settings take 16 bytes for each of
+2049 nodes of 7 D² + 1 complex values), 3.8 GB at D = 128.
+
+The one-point function is that of RcmpsCore's `phi_monomial(s, 1)`: tr F1(a) for the first
+monomial, F0 = ρ and dF1 = 2|t| L(F1) dt + j(t) (R F0 + F0 R†) dt over the window [-W, W],
+which is exactly ⟨φ⟩ = c(W) tr(Rρ + ρR†) = 2 c(W) Re tr(ρR), since L preserves the trace;
+c(W), the integral of the source J over the window, is 2^-1/2 minus a tail of 2.3e-15 at
+W = 30 (`ode_backend.source_integral`). `ode_backend.phi_expectation` evaluates it; every
+accepted row of the history records it (`phi`, at the run's window) and the checkpoint the
+last one (`final_phi`); the validation records it for every row and, at the refined
+settings, also by the ODE of the first monomial (`phi_ode`, the route of `phi_monomial`,
+which agreed to 5e-15), and `optimized_state/` holds it as `phi` with `symmetry = "none"`.
+Its sign is that of the branch the optimizer reached: R and -R are the two broken states.
+
+Validation against RcmpsCore (`qualification/optimizer/check_nonz2.py`, Julia references of
+`qualification/optimizer/nonz2_references.jl`: `fg_phi4` at the optimizer's settings, window
+30, 512 quadrature nodes, 1e-13/1e-12, Krylov kinetic with 512 angular nodes, and
+`phi_monomial(s, 1)`), φ⁴ at g = 3, the GPU objective of a run (`worker.qualify`) with R, K
+and ρ as stored:
+
+| State (φ⁴, g = 3) | D | Julia gradient norm | GPU - Julia: energy | gradient (metric norm) | ⟨φ⟩ |
+|---|---|---|---|---|---|
+| `RandomState(D; seed=1, scaling=1/sqrt(D))` | 4 | 75 | +4.3e-14 | 9.7e-12 | +8.7e-15 |
+| | 5 | 12 | +2.1e-14 | 1.9e-12 | +8.3e-16 |
+| | 8 | 14 | -5.3e-14 | 2.4e-11 | -1.3e-15 |
+| | 16 | 11 | -1.9e-14 | 2.4e-11 | -9.1e-15 |
+| | 32 | 8.8 | -1.6e-13 | 2.6e-11 | +4.2e-16 |
+| iterates 5, 15, 25 of a Julia optimization | 8 | 0.81, 1.0, 0.51 | +1.8e-15, +9.6e-15, -2.3e-15 | 2.7e-11, 2.0e-10, 9.5e-11 | |
+| Julia minimum (216 iterations) | 8 | 7.4e-9 | -2.7e-14 | 1.5e-9 | -1.3e-14 |
+| Julia minimum (207 iterations) | 16 | 9.8e-8 | +7.9e-14 | 2.6e-9 | -6.5e-14 |
+
+These ran on an RTX 2070 (compute capability 7.5, scalar tiles) on 2026-10-26. Up to the
+minima the GPU is as close to Julia as the energy can be resolved, and its gradient
+agrees to 1e-11 relative. At the two minima the gradient difference, 1.5e-9 and 2.6e-9, is
+the floor of the two quartic integrations (Julia's Vern7 and the GPU's DOP853, both at
+1e-13/1e-12; 1024 kinetic nodes instead of 512 change Julia's gradient by 1.3e-12 and
+5.8e-12); the fast objective and the independent CuPy oracle of the qualification agree to
+3e-13 in energy and 6e-12 in gradient on every state. Julia's ⟨φ⟩ by the ODE of
+`phi_monomial` and its closed form agree to 7e-14.
+
+Optimizations, on the same GPU. From the start of a Julia optimization (D = 8,
+`RandomState(8; seed=4)`), the first iteration has Julia's energy to 12 digits; then the
+line searches differ (the GPU's bounded Armijo backtracking, Julia's Hager-Zhang search)
+and after 30 iterations the energies are -0.33751 (GPU) and -0.32314 (Julia). Julia
+re-evaluates the GPU's iterates 10, 20 and 30 within 5e-15, 4e-14 and 1.4e-14 of the
+energies the GPU recorded (a run is deterministic: the runs of 10 and 20 iterations repeat
+the first iterations of that of 30 bit for bit). From the start of the D = 16 Julia
+optimization (`RandomState(16; seed=3)`) the GPU stopped after 175 iterations (313 s) at
+numerical stagnation with gradient norm 3.8e-6 (target 1e-7, which Julia reached in 207):
+energy -0.388678942012248 (refined validation), 5.4e-12 above Julia's minimum
+-0.388678942017663, and ⟨φ⟩ = 0.6172540552 against Julia's 0.6172521147 (1.9e-6, the
+first-order effect of the residual gradient, while the energy is second order); Julia's
+evaluation of the GPU's state agrees with it to 3e-13 in energy and 9e-14 in ⟨φ⟩. The
+stagnation is that of the optimizer's controller, the same for Z2 states (see the D = 64
+runs under "GPU qualification"): near 1e-6 the L-BFGS steps need up to 13 backtracking trials.
+
+The CPU tests (`tests/optimizer/test_unpacked.py`) check the source rewrite (golden hashes
+in `tests/optimizer/golden_cuda_unpacked.json`), that the kernel's tables evaluate the host
+equations, that these equal the full ten-channel system built from the observable's
+specification (the route of RcmpsCore's `evaluate`) to 1e-12 and, on a Z2 state, the packed
+channels, the chunked pullback, ⟨φ⟩ against the ODE of the first monomial, the planner and
+the random start; with NVRTC, compilation, PTX audit and assembly for compute capability 6.0
+to 9.0; `tests/optimizer/test_worker_cpu.py` runs a D = 5 optimization end to end on the CPU.
 
 ## Excitation solver: differences from the Julia code
 
@@ -450,14 +555,16 @@ both subpackages and writes those of the optimizer:
 - `read_portable`, `write_portable`: a portable state directory, "rcmps-portable-state"
   format 1, the format exchanged with Julia in both directions. `metadata.toml` holds
   `format = "rcmps-portable-state"`, `format_version = 1`, `D`, `model`, `coupling` (real),
-  and optionally `mass` (default 1.0, and 1.0 for φ⁴), `energy`, `gradient_norm`,
-  `validation_passed`, `producer`, `source`, `info`, an `[integration]` table (`n_quad`,
+  and optionally `mass` (default 1.0, and 1.0 for φ⁴), `symmetry` (`"Z2"` or `"none"`: the
+  symmetry the producer imposed), `energy`, `gradient_norm`, `phi` (⟨φ⟩ as `phi_monomial(s,
+  1)` evaluates it), `validation_passed`, `producer`, `source`, `info`, an `[integration]` table (`n_quad`,
   `max_point`, `atol`, `rtol`, optional `maxiters`: the settings of the energy and
   gradient) and a `[manifold]` table (`metric_reg`, `precond_reg`, optional
   `precond_reg_prefactor`). `R.bin` and `K.bin` are required, `rho.bin` (recomputed when
   absent) and `gradient.bin` optional: each a headerless D x D complex128 matrix,
-  little-endian, column-major, exactly 16 D² bytes. Readers ignore other keys and files.
-  The module docstring is the specification.
+  little-endian, column-major, exactly 16 D² bytes. Readers ignore other keys and files, so
+  `symmetry` and `phi`, added after rcmps_gpu 0.1.0, leave the format version at 1. The
+  module docstring is the specification.
 
 `read_portable` also reads the unversioned directories of the research code (the
 optimizer's former `initial/` and `optimized_state/`, the Julia exports of the research
@@ -777,7 +884,9 @@ resume, end to end on the CPU (`tests/optimizer/test_worker_cpu.py`): the comman
 worker, qualification, optimization and validation run as written, with stand-ins for the
 GPU leaves only (`tests/optimizer/worker_on_cpu.py`: a NumPy-backed `cupy`, the CPU oracle
 of the trajectory kernel, the CPU kinetic solvers), on a stand-in device of compute
-capability 8.0 and, for the resume, 7.0 (scalar tiles, and a register cap from the ladder).
+capability 8.0 and, for the resume, 7.0 (scalar tiles, and a register cap from the ladder),
+and a run at D = 5 without symmetry. `tests/optimizer/test_unpacked.py` checks the kernel of
+states without symmetry (see "Optimizer: states without Z2 symmetry").
 `tests/optimizer/test_tiles.py` checks the scalar tile product bitwise against the chain of
 FMAs it implements, the selection rule, the PTX audit, and with NVRTC (no GPU) both tile
 paths of the kernel for compute capability 6.0 to 9.0, to PTX and, with ptxas, to a cubin,
@@ -806,7 +915,7 @@ repository root):
 
 ```bash
 cd gpu/tests/excitations && for t in test_*.py; do OPENBLAS_NUM_THREADS=1 python -m unittest ${t%.py}; done
-cd gpu/tests/optimizer && OPENBLAS_NUM_THREADS=1 python -m unittest test_generic test_portable test_worker_cpu test_tiles
+cd gpu/tests/optimizer && OPENBLAS_NUM_THREADS=1 python -m unittest test_generic test_portable test_worker_cpu test_tiles test_unpacked
 cd gpu/tests && OPENBLAS_NUM_THREADS=1 python -m unittest test_package test_io test_qualification
 ```
 

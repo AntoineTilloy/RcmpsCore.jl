@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "rcmps-gpu"
 dynamic = ["version"]   # rcmps_gpu.__version__, which plan.json records
-description = "CUDA implementations of RcmpsCore: FP64 ground-state optimizer and tangent-space excitation solver for Z2 RCMPS"
+description = "CUDA implementations of RcmpsCore: FP64 ground-state optimizer (Z2 or unsymmetric RCMPS) and tangent-space excitation solver (Z2 RCMPS)"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]   # a copy of the repository LICENSE
