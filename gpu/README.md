@@ -835,7 +835,16 @@ rows agree with the standard ones to 1e-13 in energy and 2e-9 in gradient, with 
 30,452 steps): along the descent directions of these stiff states the energy is resolved
 only for steps too small to make progress, the floor of the controller that the Z2 runs at
 large D met too (D = 128: 2.1e-4). The D = 64 state of this table is therefore not converged
-in the gradient; its energy and ⟨φ⟩ settle at the levels above.
+in the gradient; its energy and ⟨φ⟩ settle at the levels above. RcmpsCore evaluates it
+(`nonz2_references.jl reevaluate`, with the dense resolvent kinetic,
+`RCMPS_KINETIC_BACKEND=resolvent`, since its Krylov solves stop at a true residual of 9.5e-12
+on this state, above their tolerance 1e-12; 14 minutes on 4 threads): energy
+-0.38983410567748, 1.1e-13 above the GPU's standard row; gradient norm 2.97537e-4 (GPU
+2.97536e-4), the two gradients 1.05e-7 apart in the metric norm (against 2.6e-11 on the
+smaller states; not the quadrature, since the refined row moves the GPU's gradient by 2e-9,
+so most likely the GPU's kinetic solves, whose 1e-12 residual this slowly mixing state
+amplifies: an attribution by elimination); ⟨φ⟩ 0.60475981108728 by the ODE and 0.60475981108774 in closed
+form, against the GPU's 0.60475981108775.
 
 **Excitation solver, A100 PCIe 40 GB, 2026-10-13 and 14, up to D = 128.** The import commit
 of this package holds byte for byte the sources of the last batch of runs (see Provenance):
