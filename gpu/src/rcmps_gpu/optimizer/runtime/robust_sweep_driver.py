@@ -4,6 +4,8 @@
 scientific arrays and counters, clears L-BFGS pairs, and resets next_step to
 --initial-step. The unchanged sweep objective is used by the new isolated
 robust controller. All core, warm and robust sources are recorded separately.
+--line-search wolfe (with --wolfe-energy-atol) selects its Hager-Zhang search;
+robust_controls records the choice, which a resume or fork cannot change.
 """
 from __future__ import annotations
 import argparse
@@ -98,22 +100,41 @@ def main(argv=None):
     parser.add_argument("--reset-lbfgs", action="store_true")
     parser.add_argument("--secant-gradient-floor", type=float, default=1e-10)
     parser.add_argument("--max-recoveries", type=int, default=2)
+    parser.add_argument("--line-search", choices=robust_optimizer.LINE_SEARCHES)
+    parser.add_argument("--wolfe-energy-atol", type=float)
     cli, forwarded = parser.parse_known_args(argv)
-    robustness = robust_optimizer.RobustnessControls(
-        secant_gradient_floor=cli.secant_gradient_floor, max_recoveries=cli.max_recoveries)
     args = BASE_PARSE_ARGS(forwarded)
     if cli.reset_lbfgs and not cli.resume_from:
         raise ValueError("--reset-lbfgs requires --resume-from and a distinct fresh --output")
+    snapshot = None
     if cli.resume_from:
         snapshot = verify_checkpoint(cli.resume_from, args)
-        fork_checkpoint(snapshot, args.output, args, reset_lbfgs=cli.reset_lbfgs)
-        args.resume = True
     elif args.resume:
-        verify_checkpoint(args.output, args)
+        snapshot = verify_checkpoint(args.output, args)
     elif Path(args.output).exists() or Path(args.output).with_suffix(".npz").exists():
         raise ValueError("fresh robust run requires a new output")
+    # A resume keeps the line search of its checkpoint (Armijo for one that
+    # records none) and, unless given, its Wolfe energy tolerance.
+    prior = getattr(snapshot["args"], "robust_controls", {}) if snapshot else {}
+    line_search = prior.get("line_search", "armijo") if snapshot else cli.line_search or "armijo"
+    if cli.line_search not in (None, line_search):
+        raise ValueError(f"resume cannot change the line search (the checkpoint's is {line_search})")
+    if line_search == "armijo" and cli.wolfe_energy_atol is not None:
+        raise ValueError("--wolfe-energy-atol requires --line-search wolfe")
+    wolfe_energy_atol = None
+    if line_search == "wolfe":
+        wolfe_energy_atol = cli.wolfe_energy_atol if cli.wolfe_energy_atol is not None else \
+            prior.get("wolfe_energy_atol", robust_optimizer.WOLFE_ENERGY_ATOL)
+    robustness = robust_optimizer.RobustnessControls(
+        secant_gradient_floor=cli.secant_gradient_floor, max_recoveries=cli.max_recoveries,
+        line_search=line_search, wolfe_energy_atol=wolfe_energy_atol)
+    if cli.resume_from:
+        fork_checkpoint(snapshot, args.output, args, reset_lbfgs=cli.reset_lbfgs)
+        args.resume = True
     recorded = dict(asdict(robustness), refresh_curvatures=True,
                     resume_from=cli.resume_from, reset_lbfgs=cli.reset_lbfgs)
+    if line_search == "wolfe":
+        recorded["hager_zhang"] = asdict(robust_optimizer.HAGER_ZHANG)
 
     def parse(arguments=None):
         out = BASE_PARSE_ARGS(arguments)

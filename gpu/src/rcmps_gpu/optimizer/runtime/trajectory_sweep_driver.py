@@ -84,6 +84,7 @@ def _wrapper_options(argv):
     parser.add_argument('--controller',choices=('original','robust'),default='original')
     parser.add_argument('--resume-from');parser.add_argument('--reset-lbfgs',action='store_true')
     parser.add_argument('--secant-gradient-floor',type=float);parser.add_argument('--max-recoveries',type=int)
+    parser.add_argument('--line-search');parser.add_argument('--wolfe-energy-atol',type=float)
     return parser.parse_known_args(argv)
 
 

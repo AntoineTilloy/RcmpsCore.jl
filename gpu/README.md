@@ -203,6 +203,7 @@ rcmps-gpu-optimize --D 160 --seed 42 --coupling 2.7 --run-gpu --output RUN
 rcmps-gpu-optimize --D 160 --resume-from RUN/optimization.json --run-gpu --output RUN2
 rcmps-gpu-optimize --D 64 --symmetry none --seed 1 --coupling 3 --run-gpu --output RUN   # no symmetry
 rcmps-gpu-optimize --D 64 --symmetry none --initial STATE --run-gpu --output RUN
+rcmps-gpu-optimize --D 64 --symmetry none --initial STATE --line-search wolfe --run-gpu --output RUN
 ```
 
 Only `--D` changes between sizes. Output directories must be new. `--symmetry z2` (the
@@ -230,7 +231,10 @@ run. Reaching the target, the iteration limit, numerical stagnation, a numerical
 and the time limit are distinct recorded outcomes. `--resume-from` continues a stopped
 checkpoint of this runtime without resetting its L-BFGS pairs, next step, counters or
 history; the objective controls are inherited and cannot change, and the original files
-stay as they are.
+stay as they are. `--line-search wolfe` (opt-in; `armijo` is the default) selects the
+Hager-Zhang search of the Julia package instead of the bounded Armijo backtracking (see
+"Optimizer: line searches"); a resume keeps the line search of its checkpoint and refuses
+the other.
 
 Excitations (`rcmps-gpu-excitations`, or `python -m rcmps_gpu.excitations`):
 
@@ -417,6 +421,64 @@ specification (the route of RcmpsCore's `evaluate`) to 1e-12 and, on a Z2 state,
 channels, the chunked pullback, ⟨φ⟩ against the ODE of the first monomial, the planner and
 the random start; with NVRTC, compilation, PTX audit and assembly for compute capability 6.0
 to 9.0; `tests/optimizer/test_worker_cpu.py` runs a D = 5 optimization end to end on the CPU.
+
+## Optimizer: line searches
+
+The controller of a run (the robust L-BFGS controller, `runtime/robust_optimizer.py`) finds
+its steps by one of two line searches, chosen by `--line-search` and recorded in the plan
+and in the checkpoint (`controls.robust_controls.line_search`):
+
+- `armijo`, the default and the line search of every earlier run: bounded Armijo
+  backtracking (c1 = 1e-4, halving, at most 30 trials, from twice the last accepted step
+  and at most 1), which accepts a step on its energy alone and skips a trial whose expected
+  decrease is below ten times the energy resolution, max(1e-14, 64 eps |E|); after two clean
+  recoveries (history reset, then a steepest-descent direction) it stops at numerical
+  stagnation. Near stiff minima the energy changes along the descent directions fall below
+  what the objective resolves while the gradient is still accurate, and the runs stop there:
+  for φ⁴ at g = 3 without symmetry at gradient norm 3e-6 (D = 16), 1.7e-5 (D = 32) and 3e-4
+  (D = 64), and the Z2 runs at large D too.
+- `wolfe` (opt-in): the line search of the Julia package (`SafeguardedLineSearch` of
+  `src/optimization.jl`), OptimKit 0.5.1's Hager-Zhang search with c1 = 0.1, c2 = 0.9, at
+  most 10 iterations and 20 evaluations, and the energy tolerance ε of
+  `--wolfe-energy-atol` (default 1e-10, RcmpsCore's `energy_atol`). A trial at step α has
+  the energy E and the slope s, the metric product of its gradient with the direction (the
+  tangent of the retraction curve at every step), and satisfies the exact Wolfe conditions
+  if E ≤ E0 + c1 α s0 and s > c2 s0, the approximate ones if E ≤ E0 + ε and
+  c2 s0 ≤ s ≤ (2 c1 - 1) s0. The first trial (step 1, or the step bound below it) is
+  accepted if it satisfies either; otherwise the search brackets the step and refines it by
+  secants of the slope and bisections. As in Julia, a trial beyond the step bound
+  (0.5 max(1, |R|) / |direction|), a numerical failure, or a returned trial without either
+  condition ends the search, and the Armijo backtracking above runs from the same first
+  step (so does a trial below the step resolution, a guard of this controller). The
+  approximate conditions let the slope decide where energy differences are unresolved,
+  allowing an energy up to ε above the starting one. A step accepted in this mode gives an
+  L-BFGS pair when the step and the change of gradient are resolved, without requiring a
+  resolved energy decrease (the cautious condition decides, as in OptimKit), and each search
+  starts at step 1 (the worker passes `--warm-start-line-search` with `armijo` only).
+
+The checkpoint records every trial of the search (`trial_history`: `line_search` "wolfe",
+`stage` initial, bracket, update or bisect, the step, energy, `slope`, `initial_slope`,
+`exact_wolfe`, `approximate_wolfe`), one row per iteration with its outcome (`stage`
+"result": `wolfe_condition` exact, approximate or null, `armijo_fallback`, `reason`), the
+trials of the fallback (`line_search` "armijo"), and in every accepted row
+`wolfe_condition`, `wolfe_trials`, `wolfe_failure` and `armijo_fallback`;
+`robust_controls` holds the Hager-Zhang parameters. With `armijo` a run is the same as
+before this option, trial for trial and byte for byte (the CPU stand-in runs of
+`test_worker_cpu.py`, compared before and after the change); only `robust_controls` gains
+`line_search` and `wolfe_energy_atol` (null). A resume keeps the line search of its
+checkpoint (one that records none ran `armijo`) and refuses the other, in the planner and
+in the drivers, and keeps its ε unless `--wolfe-energy-atol` is given. A checkpoint of an
+earlier runtime cannot be resumed (see "Command line"); to continue one with the Wolfe
+search, start from its `optimized_state/` with `--initial` (its L-BFGS pairs are lost, the
+preconditioner regularization comes from its `[manifold]`).
+
+`tests/optimizer/test_line_search.py` checks the search against OptimKit: on ten
+one-dimensional functions it takes Julia's trial steps exactly
+(`qualification/optimizer/hager_zhang_references.jl` prints them; every branch of the
+search is reached), and the acceptance rule; on a synthetic objective whose energy carries
+an evaluation noise of 1e-11 and whose gradient is exact, the Armijo controller stops at
+numerical stagnation with gradient norm above 1e-7 and the Wolfe one reaches 1e-10;
+the planner and the drivers refuse a change of line search on resume.
 
 ## Excitation solver: differences from the Julia code
 
@@ -962,8 +1024,11 @@ worker, qualification, optimization and validation run as written, with stand-in
 GPU leaves only (`tests/optimizer/worker_on_cpu.py`: a NumPy-backed `cupy`, the CPU oracle
 of the trajectory kernel, the CPU kinetic solvers), on a stand-in device of compute
 capability 8.0 and, for the resume, 7.0 (scalar tiles, and a register cap from the ladder),
-and a run at D = 5 without symmetry. `tests/optimizer/test_unpacked.py` checks the kernel of
-states without symmetry (see "Optimizer: states without Z2 symmetry").
+a run at D = 5 without symmetry, and one with the Wolfe line search. `tests/optimizer/test_unpacked.py`
+checks the kernel of states without symmetry (see "Optimizer: states without Z2 symmetry"),
+`tests/optimizer/test_line_search.py` the Hager-Zhang search against the trial steps of
+OptimKit, its acceptance rule, the controller on a synthetic objective and the resume rules
+(see "Optimizer: line searches").
 `tests/optimizer/test_tiles.py` checks the scalar tile product bitwise against the chain of
 FMAs it implements, the selection rule, the PTX audit, and with NVRTC (no GPU) both tile
 paths of the kernel for compute capability 6.0 to 9.0, to PTX and, with ptxas, to a cubin,
@@ -992,7 +1057,7 @@ repository root):
 
 ```bash
 cd gpu/tests/excitations && for t in test_*.py; do OPENBLAS_NUM_THREADS=1 python -m unittest ${t%.py}; done
-cd gpu/tests/optimizer && OPENBLAS_NUM_THREADS=1 python -m unittest test_generic test_portable test_worker_cpu test_tiles test_unpacked
+cd gpu/tests/optimizer && OPENBLAS_NUM_THREADS=1 python -m unittest test_generic test_portable test_worker_cpu test_tiles test_unpacked test_line_search
 cd gpu/tests && OPENBLAS_NUM_THREADS=1 python -m unittest test_package test_io test_qualification
 ```
 
@@ -1044,7 +1109,9 @@ never reaches (old evaluators, the CUDA-graph integrator and the driver-library 
 needed, the research benchmark command lines) and renamed the quartic backend label of the
 run to `persistent_trajectory`, a commit that rewords comments still describing CUDA graph
 capture, and the portability commits, which add the scalar tile path and the selection of
-the tiles by device, then the register caps, and correct the register range in a docstring.
+the tiles by device, then the register caps, and correct the register range in a docstring,
+then the commit of the states without Z2 symmetry (the unpacked channels) and that of the
+opt-in Wolfe line search of the robust controller.
 The optimizer command line reverts those edits in memory when it plans a run, and the
 worker again before and after the run: a runtime that is not the imported one with its
 recorded edits is refused, as the research launcher refused one that was not derived from

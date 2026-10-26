@@ -15,6 +15,10 @@ unpacked channels (the trajectory oracle, the CuPy oracle of the qualification a
 validation and optimized_state/ record <phi>; a Z2 run refuses its state (test_generic.py checks
 the other refusals of the planner).
 
+Line search: a D = 5 run with --line-search wolfe (the Hager-Zhang search of the robust
+controller, Armijo backtracking when it fails), whose checkpoint records the choice, its
+parameters and every search, each started at step 1; a resume keeps it and refuses the other.
+
 Tiles: the first run is on a device of compute capability 8.0, where --tiles auto selects the
 tensor-core tiles; the resume is on a device of compute capability 7.0, where it selects the
 scalar tiles, which the checkpoint records for that run and the validation inherits; and
@@ -68,7 +72,7 @@ class WorkerOnCPU(unittest.TestCase):
         self.assertEqual(status["iteration"], iterations)
         self.assertEqual((status["compile"]["numerical_launch_performed"], status["compile"]["actual_GPU_qualified"]),
                          (False, False))
-        self.assertEqual((plan["schema_version"], plan["tiles"], plan["layout"]["tiles_requested"]), (5, "auto", "auto"))
+        self.assertEqual((plan["schema_version"], plan["tiles"], plan["layout"]["tiles_requested"]), (6, "auto", "auto"))
         self.assertEqual((plan["symmetry"], status["compile"]["symmetry"], status["compile"]["PTX"]["unpacked"]),
                          (symmetry, symmetry, symmetry == "none"))
         self.assertEqual(load(run / "compile.json"), status["compile"])
@@ -92,6 +96,11 @@ class WorkerOnCPU(unittest.TestCase):
         self.assertEqual(checkpoint["runs"][-1]["controls"]["trajectory_controls"]["tiles"], tiles)
         self.assertEqual(checkpoint["runs"][-1]["controls"]["trajectory_controls"]["register_cap"], cap)
         self.assertEqual(checkpoint["runs"][-1]["source_sha256"], plan["runtime_source_sha256"])
+        # The Wolfe search starts at step 1, the Armijo backtracking at twice the last accepted step.
+        self.assertEqual((checkpoint["controls"]["robust_controls"]["line_search"],
+                          checkpoint["controls"]["robust_controls"]["wolfe_energy_atol"],
+                          checkpoint["controls"]["warm_start_line_search"]),
+                         (plan["line_search"], plan["wolfe_energy_atol"], plan["line_search"] == "armijo"))
         self.assertEqual(len(plan["runtime_source_sha256"]), 22)
         validation = load(run / "final_validation.json")
         self.assertTrue(validation["passed"])
@@ -147,6 +156,39 @@ class WorkerOnCPU(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(refused.exists())
         self.assertIn("the packed Z2 implementation requires an even integer D >= 2", result.stderr)
+
+    def test_the_Wolfe_line_search(self):
+        run = self.root / "wolfe"
+        result = optimize(run, "--D", "5", "--symmetry", "none", "--seed", "4", "--coupling", "3.0",
+                          "--max-iterations", "4", "--line-search", "wolfe")
+        self.assertEqual(result.returncode, 0, result.stdout[-3000:] + result.stderr[-5000:])
+        plan, checkpoint = self.check_run(run, 4, "mma", D=5, symmetry="none")
+        self.assertEqual((plan["line_search"], plan["wolfe_energy_atol"]), ("wolfe", 1e-10))
+        self.assertEqual(checkpoint["controls"]["robust_controls"]["hager_zhang"],
+                         dict(c1=0.1, c2=0.9, theta=0.5, gamma=2 / 3, rho=5.0, max_iterations=10, max_evaluations=20))
+        history, trials = checkpoint["history"], checkpoint["trial_history"]
+        self.assertEqual({row["line_search"] for row in history}, {"wolfe"})
+        self.assertTrue({row["wolfe_condition"] for row in history} & {"exact", "approximate"})
+        self.assertEqual(len([row for row in trials if row.get("stage") == "result"]), len(history))
+        self.assertTrue({"initial", "bracket"} <= {row.get("stage") for row in trials})
+        # Each search starts at step 1, or at the step bound below it.
+        first = [row["alpha"] for row in trials if row.get("stage") == "initial"]
+        self.assertEqual(len(first), len(history))
+        self.assertIn(1.0, first)
+        self.assertLessEqual(max(first), 1.0)
+        self.assertEqual(checkpoint["objective_evaluations"], sum("energy" in row for row in trials) + 1)
+        # A resume keeps the line search; the other one is refused when planning.
+        from rcmps_gpu.optimizer import cli
+        resumed = cli.prepare(cli.parser().parse_args(["--D", "5", "--symmetry", "none", "--resume-from",
+                                                       str(run / "optimization.json")]), cli.runtime_source_sha256())
+        self.assertEqual((resumed["line_search"], resumed["wolfe_energy_atol"]), ("wolfe", 1e-10))
+        refused = self.root / "refused"
+        result = optimize(refused, "--D", "5", "--symmetry", "none", "--resume-from", str(run / "optimization.json"),
+                          "--line-search", "armijo")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(refused.exists())
+        self.assertIn("cannot resume an optimizer with another --line-search (the checkpoint's is wolfe)",
+                      result.stderr)
 
     def test_tensor_core_tiles_are_refused_below_compute_capability_8(self):
         refused = self.root / "refused"

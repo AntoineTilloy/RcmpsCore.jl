@@ -203,9 +203,9 @@ def main(argv=None):
     plan_path = Path((argv or sys.argv[1:])[0])
     plan = json.loads(plan_path.read_bytes())
     output = Path(plan["output"])
-    if plan["schema_version"] != 5 or Path(plan["runtime"]) != RUNTIME:
+    if plan["schema_version"] != 6 or Path(plan["runtime"]) != RUNTIME:
         raise ValueError(f"plan written by another launcher version or installation: schema "
-                         f"{plan['schema_version']}, runtime {plan['runtime']}; this worker is schema 5, runtime {RUNTIME}")
+                         f"{plan['schema_version']}, runtime {plan['runtime']}; this worker is schema 6, runtime {RUNTIME}")
     if runtime_source_sha256() != plan["runtime_source_sha256"]:
         raise ValueError("runtime changed after planning")
     launcher = launcher_source_sha256()
@@ -258,9 +258,13 @@ def main(argv=None):
             if any(v.shape != (plan["D"], plan["D"]) or v.dtype != np.complex128 or
                    not np.isfinite(v).all() for v in (r, k, rho)):
                 raise ValueError("initial state requires finite complex128 matrices with the requested D")
+            # The Wolfe search starts every iteration at step 1, as OptimKit's L-BFGS; the Armijo
+            # backtracking at twice the last accepted step (at most 1).
+            wolfe = plan["line_search"] == "wolfe"
             options = [str(reference), "--backend", "cupy", "--mode", "hybrid", layout,
                 "--quartic-backend", "persistent_trajectory", "--arnoldi", "gpu", "--projection", "hessenberg_gpu",
-                "--kinetic", "cooperative", "--controller", "robust", "--warm-start-line-search",
+                "--kinetic", "cooperative", "--controller", "robust", "--line-search", plan["line_search"],
+                *(("--wolfe-energy-atol", repr(plan["wolfe_energy_atol"])) if wolfe else ("--warm-start-line-search",)),
                 "--gradient-tolerance", str(plan["gradient_target"]), "--max-device-seconds", str(plan["max_device_seconds"]),
                 "--tiles", tiles, *(("--register-cap", str(cap)) if cap is not None else ()),
                 "--iterations", str(plan["max_iterations"] + (int(snapshot["state"]["iteration"]) if snapshot else 0)),

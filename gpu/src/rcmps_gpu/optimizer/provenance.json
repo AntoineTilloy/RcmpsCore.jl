@@ -3798,6 +3798,543 @@
      ]
     ]
    }
+  },
+  {
+   "commit_subject": "Optimizer: opt-in Hager-Zhang Wolfe line search",
+   "change": "opt-in Wolfe line search: robust_optimizer.RobustnessControls gains line_search, \"armijo\" (the default; its runs are unchanged, trial for trial and byte for byte) or \"wolfe\", and wolfe_energy_atol (None for armijo; WOLFE_ENERGY_ATOL = 1e-10, the energy_atol of RcmpsCore). With \"wolfe\" each iteration first runs hager_zhang, the Hager-Zhang search of OptimKit 0.5.1 as the SafeguardedLineSearch of RcmpsCore builds it (HAGER_ZHANG: c1 0.1, c2 0.9, theta 1/2, gamma 2/3, rho 5, 10 iterations, 20 evaluations; the first trial accepted on either condition, as OptimKit's L-BFGS sets acceptfirst), on the slope metric(rho, g, direction) of each trial along the retraction; wolfe_conditions are OptimKit's exact and approximate Wolfe conditions and wolfe_acceptance the check SafeguardedLineSearch makes of the returned trial. A trial beyond the step bound, below the step resolution or failing numerically, or a returned trial without either condition, ends the search, and the existing Armijo backtracking runs from the same first step (its rows then carry line_search \"armijo\"). A step accepted in this mode resolves its secant by the step and the gradient change, not by the energy decrease (the cautious condition decides). Trial rows of the search record its stage, slope and conditions, one result row per iteration its outcome, and accepted rows wolfe_condition, wolfe_trials, wolfe_failure and armijo_fallback. robust_sweep_driver: --line-search and --wolfe-energy-atol, resolved against the checkpoint of a resume or fork (one that records none ran the Armijo search), whose line search cannot change (refused before the fork is written), recorded in robust_controls with the Hager-Zhang parameters; overlap_sweep_driver passes them to the robust controller and refuses them with the original one; trajectory_sweep_driver keeps them out of the base arguments. The generated CUDA is unchanged (tests/optimizer/golden_cuda*.json).",
+   "hunks": {
+    "overlap_sweep_driver.py": [
+     [
+      245,
+      [],
+      [
+       "    parser.add_argument(\"--line-search\", choices=robust.robust_optimizer.LINE_SEARCHES)",
+       "    parser.add_argument(\"--wolfe-energy-atol\", type=float)"
+      ]
+     ],
+     [
+      252,
+      [
+       "    if cli.controller == \"original\" and (cli.secant_gradient_floor is not None or cli.max_recoveries is not None):"
+      ],
+      [
+       "    if cli.controller == \"original\" and any(value is not None for value in (",
+       "            cli.secant_gradient_floor, cli.max_recoveries, cli.line_search, cli.wolfe_energy_atol)):"
+      ]
+     ],
+     [
+      291,
+      [],
+      [
+       "            # The robust wrapper resolves these against the checkpoint itself.",
+       "            for key in (\"line_search\", \"wolfe_energy_atol\"):",
+       "                if getattr(cli, key) is not None:",
+       "                    robust_argv += [\"--\"+key.replace(\"_\", \"-\"), str(getattr(cli, key))]"
+      ]
+     ]
+    ],
+    "robust_optimizer.py": [
+     [
+      8,
+      [],
+      [
+       "",
+       "line_search=\"wolfe\" (opt-in; \"armijo\", the bounded backtracking, is the",
+       "default) first runs the Hager-Zhang search of RcmpsCore's SafeguardedLineSearch,",
+       "which accepts exact or approximate Wolfe steps from the slope along the",
+       "retraction, then the same Armijo backtracking if that search fails."
+      ]
+     ],
+     [
+      23,
+      [],
+      [
+       "LINE_SEARCHES = (\"armijo\", \"wolfe\")",
+       "# energy_atol of RcmpsCore's SafeguardedLineSearch: the energy increase an",
+       "# approximate Wolfe step may show (the epsilon of the Hager-Zhang search).",
+       "WOLFE_ENERGY_ATOL = 1e-10",
+       "",
+       ""
+      ]
+     ],
+     [
+      36,
+      [],
+      [
+       "    line_search: str = \"armijo\"",
+       "    wolfe_energy_atol: float | None = None"
+      ]
+     ],
+     [
+      46,
+      [],
+      [
+       "        # The Wolfe search takes its energy tolerance explicitly; the Armijo one has none.",
+       "        if (self.line_search not in LINE_SEARCHES or",
+       "                (self.line_search == \"armijo\") != (self.wolfe_energy_atol is None) or",
+       "                self.wolfe_energy_atol is not None and",
+       "                (not np.isfinite(self.wolfe_energy_atol) or self.wolfe_energy_atol < 0)):",
+       "            raise ValueError(\"invalid line search controls\")",
+       "",
+       "",
+       "@dataclass(frozen=True)",
+       "class HagerZhangControls:",
+       "    \"\"\"OptimKit 0.5.1's HagerZhangLineSearch as RcmpsCore's SafeguardedLineSearch",
+       "    constructs it: the defaults c1, c2, theta, gamma and rho, and the iteration",
+       "    and evaluation limits LS_MAXITER = 10 and LS_MAXFG = 20 it reads then.\"\"\"",
+       "    c1: float = 0.1",
+       "    c2: float = 0.9",
+       "    theta: float = 0.5",
+       "    gamma: float = 2/3",
+       "    rho: float = 5.",
+       "    max_iterations: int = 10",
+       "    max_evaluations: int = 20",
+       "",
+       "",
+       "HAGER_ZHANG = HagerZhangControls()",
+       "",
+       "",
+       "@dataclass(frozen=True)",
+       "class LinePoint:",
+       "    \"\"\"A line search trial: step, energy, slope along the retraction curve",
+       "    (metric(rho, g, direction) at the trial, whose tangent is the direction)",
+       "    and what the controller keeps of an accepted trial.\"\"\"",
+       "    alpha: float",
+       "    energy: float",
+       "    slope: float",
+       "    data: tuple | None = None",
+       "",
+       "",
+       "class LineSearchFailure(Exception):",
+       "    \"\"\"Ends a Hager-Zhang search; the Armijo backtracking runs instead, as in",
+       "    SafeguardedLineSearch on a SolverFailure.\"\"\"",
+       "",
+       "",
+       "class _OutOfTime(Exception):",
+       "    pass",
+       "",
+       "",
+       "def wolfe_conditions(point, origin, epsilon, hz=HAGER_ZHANG):",
+       "    \"\"\"OptimKit's checkexactwolfe and checkapproxwolfe of a trial from origin.\"\"\"",
+       "    exact = (point.energy <= origin.energy+hz.c1*point.alpha*origin.slope and",
+       "             point.slope > hz.c2*origin.slope)",
+       "    approximate = (point.energy <= origin.energy+epsilon and",
+       "                   (2*hz.c1-1)*origin.slope >= point.slope >= hz.c2*origin.slope)",
+       "    return bool(exact), bool(approximate)",
+       "",
+       "",
+       "def wolfe_acceptance(point, origin, epsilon, hz=HAGER_ZHANG):",
+       "    \"\"\"SafeguardedLineSearch's check of the trial the search returns (OptimKit",
+       "    also returns its last trial after exhausting its limits): \"exact\",",
+       "    \"approximate\", or None, for which the Armijo backtracking runs.\"\"\"",
+       "    if not (np.isfinite(point.energy) and np.isfinite(point.slope) and point.alpha > 0):",
+       "        return None",
+       "    if (point.energy-origin.energy <= hz.c1*point.alpha*origin.slope and",
+       "            point.slope >= hz.c2*origin.slope):",
+       "        return \"exact\"",
+       "    if (point.energy <= origin.energy+epsilon and",
+       "            hz.c2*origin.slope <= point.slope <= (2*hz.c1-1)*origin.slope):",
+       "        return \"approximate\"",
+       "    return None",
+       "",
+       "",
+       "def hager_zhang(take, origin, alpha, epsilon, hz=HAGER_ZHANG):",
+       "    \"\"\"Generator of OptimKit 0.5.1's Hager-Zhang search (Algorithm 851, CG_DESCENT)",
+       "    from origin (step 0) with first trial alpha, which it accepts if it satisfies",
+       "    either Wolfe condition (acceptfirst, as OptimKit's L-BFGS sets it).",
+       "",
+       "    ``take(alpha, stage)`` is a generator returning the LinePoint of that step;",
+       "    its events pass through, and its exceptions end the search. Returns the",
+       "    point the search ends at, as OptimKit, also when its limits stopped it.",
+       "    \"\"\"",
+       "    eps = np.finfo(float).eps",
+       "    fmax = origin.energy+epsilon",
+       "",
+       "    def wolfe(c):",
+       "        return any(wolfe_conditions(c, origin, epsilon, hz))",
+       "",
+       "    def secant(a, b):",
+       "        # Julia's division by zero gives a step outside every bracket, as NaN does.",
+       "        if b.slope == a.slope:",
+       "            return np.nan",
+       "        return (a.alpha*b.slope-b.alpha*a.slope)/(b.slope-a.slope)",
+       "",
+       "    def bisect(a, b):",
+       "        # Applied when a has slope < 0 and energy <= fmax, b slope < 0 and energy > fmax.",
+       "        count = 0",
+       "        while True:",
+       "            if b.alpha-a.alpha <= eps**0.75 or count >= hz.max_evaluations:",
+       "                return a, b, count",
+       "            d = yield from take((1-hz.theta)*a.alpha+hz.theta*b.alpha, \"bisect\")",
+       "            count += 1",
+       "            if wolfe(d):",
+       "                return d, d, count",
+       "            if d.slope >= 0:",
+       "                return a, d, count",
+       "            if d.energy <= fmax:",
+       "                a = d",
+       "            else:",
+       "                b = d",
+       "",
+       "    def update(a, b, alpha):",
+       "        if not a.alpha < alpha < b.alpha:",
+       "            return a, b, 0",
+       "        c = yield from take(alpha, \"update\")",
+       "        if not np.isfinite(c.energy):",
+       "            raise LineSearchFailure(f\"nonfinite energy at step {alpha}\")",
+       "        if wolfe(c):",
+       "            return c, c, 1",
+       "        if c.slope >= 0:",
+       "            return a, c, 1",
+       "        if c.energy <= fmax:",
+       "            return c, b, 1",
+       "        a, b, count = yield from bisect(a, c)",
+       "        return a, b, count+1",
+       "",
+       "    def bracket(c):",
+       "        count, a, alpha = 0, origin, c.alpha",
+       "        while True:",
+       "            while not (np.isfinite(c.energy) and np.isfinite(c.slope)) and count < hz.max_evaluations:",
+       "                alpha = (a.alpha+alpha)/2",
+       "                c = yield from take(alpha, \"bracket\")",
+       "                count += 1",
+       "            if not (np.isfinite(c.energy) and np.isfinite(c.slope)):",
+       "                return a, a, count",
+       "            if c.slope >= 0:",
+       "                return a, c, count",
+       "            if c.energy > fmax:",
+       "                # OptimKit bisects from the origin here, not from the last a.",
+       "                a, b, more = yield from bisect(origin, c)",
+       "                return a, b, count+more",
+       "            a = c",
+       "            if count >= hz.max_evaluations:",
+       "                return a, a, count",
+       "            alpha *= hz.rho",
+       "            c = yield from take(alpha, \"bracket\")",
+       "            count += 1",
+       "",
+       "    c = yield from take(alpha, \"initial\")",
+       "    if wolfe(c):",
+       "        return c",
+       "    a, b, evaluations = yield from bracket(c)",
+       "    evaluations += 1",
+       "    iteration = 1",
+       "    while a.alpha != b.alpha and b.alpha-a.alpha >= eps:",
+       "        if iteration >= hz.max_iterations or evaluations >= hz.max_evaluations:",
+       "            break",
+       "        # secant2, then a bisection if the bracket shrank by less than gamma.",
+       "        width = b.alpha-a.alpha",
+       "        alpha = secant(a, b)",
+       "        A, B, count = yield from update(a, b, alpha)",
+       "        evaluations += count",
+       "        if A.alpha == B.alpha:",
+       "            return A",
+       "        if alpha == B.alpha:",
+       "            a, b, count = yield from update(A, B, secant(b, B))",
+       "            evaluations += count",
+       "        elif alpha == A.alpha:",
+       "            a, b, count = yield from update(A, B, secant(a, A))",
+       "            evaluations += count",
+       "        else:",
+       "            a, b = A, B",
+       "        if a.alpha != b.alpha and b.alpha-a.alpha > hz.gamma*width:",
+       "            a, b, count = yield from update(a, b, (a.alpha+b.alpha)/2)",
+       "            evaluations += count",
+       "        iteration += 1",
+       "    return a"
+      ]
+     ],
+     [
+      325,
+      [
+       "        for trial in range(1, p.line_search_trials+1):",
+       "            if over_budget():"
+      ],
+      [
+       "        wolfe = robustness.line_search == \"wolfe\"",
+       "        searched = {}",
+       "        if wolfe:",
+       "            origin = LinePoint(0., energy, float(slope))",
+       "            wolfe_trials = 0",
+       "",
+       "            def take(step, stage):",
+       "                nonlocal evaluations, wolfe_trials",
+       "                if over_budget():",
+       "                    raise _OutOfTime",
+       "                # RcmpsCore bounds the trials of the search, not the retraction curve.",
+       "                if step > alpha_max:",
+       "                    raise LineSearchFailure(f\"trial step {step:.3e} exceeds the step bound {alpha_max:.3e}\")",
+       "                if step*np.linalg.norm(direction) <= step_resolution:",
+       "                    raise LineSearchFailure(f\"trial step {step:.3e} is below the step resolution\")",
+       "                wolfe_trials += 1",
+       "                rr, kk = retract(r, k, direction, step)",
+       "                qq = -1j*kk-rr.conj().T@rr/2",
+       "                try:",
+       "                    rhonew, stationary_stats = optimizer.stationary_state(qq, rr, tolerance=p.stationary_tolerance)",
+       "                    evaluations += 1",
+       "                    enew, gnew, newstats = objective_callable(rr, kk, rhonew)",
+       "                    enew = float(enew)",
+       "                    gnew = np.asarray(gnew, dtype=np.complex128)",
+       "                    if not np.isfinite(enew) or not np.isfinite(gnew).all() or gnew.shape != r.shape:",
+       "                        raise SolverFailure(\"trial returned nonfinite or invalid objective/gradient\")",
+       "                    point = LinePoint(float(step), enew, metric(rhonew, gnew, direction, p.metric_reg),",
+       "                                      (rr, kk, rhonew, gnew, newstats, stationary_stats))",
+       "                except (SolverFailure, RuntimeError) as error:",
+       "                    detail = str(error)",
+       "                    failures.append(detail)",
+       "                    yield dict(type=\"trial\", event=\"trial\", iteration=iteration+1, trial=wolfe_trials,",
+       "                               line_search=\"wolfe\", stage=stage, alpha=float(step), accepted=False,",
+       "                               error=detail, evaluations=evaluations)",
+       "                    raise LineSearchFailure(detail) from None",
+       "                exact, approximate = wolfe_conditions(point, origin, robustness.wolfe_energy_atol)",
+       "                yield dict(type=\"trial\", event=\"trial\", iteration=iteration+1, trial=wolfe_trials,",
+       "                           line_search=\"wolfe\", stage=stage, alpha=point.alpha, energy=enew,",
+       "                           slope=point.slope, initial_slope=origin.slope, exact_wolfe=exact,",
+       "                           approximate_wolfe=approximate, accepted=False, stats=newstats,",
+       "                           stationary=stationary_stats, evaluations=evaluations)",
+       "                return point",
+       "",
+       "            condition = failure = None",
+       "            try:",
+       "                point = yield from hager_zhang(take, origin, alpha, robustness.wolfe_energy_atol)",
+       "                condition = wolfe_acceptance(point, origin, robustness.wolfe_energy_atol)",
+       "                if condition is None:",
+       "                    failure = f\"the search ended at step {point.alpha:.3e} without the Wolfe conditions\"",
+       "            except LineSearchFailure as error:",
+       "                failure = str(error)",
+       "            except _OutOfTime:"
+      ]
+     ],
+     [
+      380,
+      [
+       "            expected_decrease = -alpha*slope",
+       "            nominal_step_norm = float(alpha*np.linalg.norm(direction))",
+       "            if (expected_decrease <= robustness.predicted_decrease_factor*energy_resolution or",
+       "                    nominal_step_norm <= step_resolution):",
+       "                unresolved_trial = True",
+       "                yield dict(type=\"trial\", event=\"trial\", iteration=iteration+1, trial=trial,",
+       "                    alpha=float(alpha), accepted=False, robust_skipped_unresolved=True,",
+       "                    expected_decrease=float(expected_decrease), energy_resolution=float(energy_resolution),",
+       "                    nominal_step_norm=nominal_step_norm, step_resolution=float(step_resolution),",
+       "                    recovery_mode=recovery_mode, evaluations=evaluations)",
+       "                break",
+       "            rr, kk = retract(r, k, direction, alpha)",
+       "            qq = -1j*kk-rr.conj().T@rr/2",
+       "            try:",
+       "                rhonew, stationary_stats = optimizer.stationary_state(qq, rr, tolerance=p.stationary_tolerance)",
+       "                evaluations += 1",
+       "                enew, gnew, newstats = objective_callable(rr, kk, rhonew)",
+       "                enew = float(enew)",
+       "                gnew = np.asarray(gnew, dtype=np.complex128)",
+       "                if not np.isfinite(enew) or not np.isfinite(gnew).all() or gnew.shape != r.shape:",
+       "                    raise SolverFailure(\"trial returned nonfinite or invalid objective/gradient\")",
+       "                bound = energy+p.armijo_c1*alpha*slope+p.energy_atol",
+       "                # alpha can become a NumPy scalar after the relative-step cap;",
+       "                # comparison then returns np.bool_, which JSON cannot encode.",
+       "                accepted = bool(enew <= bound)",
+       "                yield dict(type=\"trial\", event=\"trial\", iteration=iteration+1, trial=trial,",
+       "                           alpha=float(alpha), energy=enew, armijo_bound=float(bound),",
+       "                           accepted=accepted, stats=newstats, stationary=stationary_stats,",
+       "                           evaluations=evaluations)",
+       "                if accepted:"
+      ],
+      [
+       "            yield dict(type=\"trial\", event=\"trial\", iteration=iteration+1, trial=wolfe_trials,",
+       "                       line_search=\"wolfe\", stage=\"result\", alpha=point.alpha if condition else None,",
+       "                       accepted=condition is not None, wolfe_condition=condition,",
+       "                       armijo_fallback=condition is None, reason=failure, evaluations=evaluations)",
+       "            searched = dict(line_search=\"wolfe\", wolfe_condition=condition, wolfe_trials=wolfe_trials,",
+       "                            wolfe_failure=failure, armijo_fallback=condition is None)",
+       "            if condition is not None:",
+       "                rr, kk, rhonew, gnew, newstats, stationary_stats = point.data",
+       "                alpha, enew, accepted, trial = point.alpha, point.energy, True, wolfe_trials",
+       "                expected_decrease = -alpha*slope",
+       "        fallback = dict(line_search=\"armijo\") if wolfe else {}",
+       "        if not accepted:",
+       "            for trial in range(1, p.line_search_trials+1):",
+       "                if over_budget():",
+       "                    yield stopped(\"optimization time budget reached during line search\",",
+       "                                  numerical_failures=failures)",
+       "                    return",
+       "                expected_decrease = -alpha*slope",
+       "                nominal_step_norm = float(alpha*np.linalg.norm(direction))",
+       "                if (expected_decrease <= robustness.predicted_decrease_factor*energy_resolution or",
+       "                        nominal_step_norm <= step_resolution):",
+       "                    unresolved_trial = True",
+       "                    yield dict(type=\"trial\", event=\"trial\", iteration=iteration+1, trial=trial,",
+       "                        alpha=float(alpha), accepted=False, robust_skipped_unresolved=True,",
+       "                        expected_decrease=float(expected_decrease), energy_resolution=float(energy_resolution),",
+       "                        nominal_step_norm=nominal_step_norm, step_resolution=float(step_resolution),",
+       "                        recovery_mode=recovery_mode, evaluations=evaluations, **fallback)"
+      ]
+     ],
+     [
+      408,
+      [
+       "            except (SolverFailure, RuntimeError) as error:",
+       "                detail = str(error)",
+       "                failures.append(detail)",
+       "                yield dict(type=\"trial\", event=\"trial\", iteration=iteration+1, trial=trial,",
+       "                           alpha=float(alpha), accepted=False, error=detail, evaluations=evaluations)",
+       "            alpha *= p.shrink"
+      ],
+      [
+       "                rr, kk = retract(r, k, direction, alpha)",
+       "                qq = -1j*kk-rr.conj().T@rr/2",
+       "                try:",
+       "                    rhonew, stationary_stats = optimizer.stationary_state(qq, rr, tolerance=p.stationary_tolerance)",
+       "                    evaluations += 1",
+       "                    enew, gnew, newstats = objective_callable(rr, kk, rhonew)",
+       "                    enew = float(enew)",
+       "                    gnew = np.asarray(gnew, dtype=np.complex128)",
+       "                    if not np.isfinite(enew) or not np.isfinite(gnew).all() or gnew.shape != r.shape:",
+       "                        raise SolverFailure(\"trial returned nonfinite or invalid objective/gradient\")",
+       "                    bound = energy+p.armijo_c1*alpha*slope+p.energy_atol",
+       "                    # alpha can become a NumPy scalar after the relative-step cap;",
+       "                    # comparison then returns np.bool_, which JSON cannot encode.",
+       "                    accepted = bool(enew <= bound)",
+       "                    yield dict(type=\"trial\", event=\"trial\", iteration=iteration+1, trial=trial,",
+       "                               alpha=float(alpha), energy=enew, armijo_bound=float(bound),",
+       "                               accepted=accepted, stats=newstats, stationary=stationary_stats,",
+       "                               evaluations=evaluations, **fallback)",
+       "                    if accepted:",
+       "                        break",
+       "                except (SolverFailure, RuntimeError) as error:",
+       "                    detail = str(error)",
+       "                    failures.append(detail)",
+       "                    yield dict(type=\"trial\", event=\"trial\", iteration=iteration+1, trial=trial,",
+       "                               alpha=float(alpha), accepted=False, error=detail, evaluations=evaluations,",
+       "                               **fallback)",
+       "                alpha *= p.shrink",
+       "            if wolfe:",
+       "                trial += wolfe_trials"
+      ]
+     ],
+     [
+      451,
+      [
+       "            yield stopped(\"Armijo line search exhausted; last accepted state retained\","
+      ],
+      [
+       "            yield stopped((\"Wolfe search and Armijo backtracking\" if wolfe else \"Armijo line search\")",
+       "                          + \" exhausted; last accepted state retained\","
+      ]
+     ],
+     [
+      466,
+      [],
+      [
+       "        if wolfe:",
+       "            # The gradient resolves the secant where the energy cannot; the",
+       "            # cautious condition below decides, as for OptimKit's L-BFGS.",
+       "            secant_resolved = (actual_step_norm > step_resolution and",
+       "                               gradient_change_norm > robustness.secant_gradient_floor)"
+      ]
+     ],
+     [
+      506,
+      [
+       "                   energy_resolution=float(energy_resolution), recovery_mode=recovery_mode)"
+      ],
+      [
+       "                   energy_resolution=float(energy_resolution), recovery_mode=recovery_mode,",
+       "                   **searched)"
+      ]
+     ]
+    ],
+    "robust_sweep_driver.py": [
+     [
+      7,
+      [],
+      [
+       "--line-search wolfe (with --wolfe-energy-atol) selects its Hager-Zhang search;",
+       "robust_controls records the choice, which a resume or fork cannot change."
+      ]
+     ],
+     [
+      103,
+      [],
+      [
+       "    parser.add_argument(\"--line-search\", choices=robust_optimizer.LINE_SEARCHES)",
+       "    parser.add_argument(\"--wolfe-energy-atol\", type=float)"
+      ]
+     ],
+     [
+      106,
+      [
+       "    robustness = robust_optimizer.RobustnessControls(",
+       "        secant_gradient_floor=cli.secant_gradient_floor, max_recoveries=cli.max_recoveries)"
+      ],
+      []
+     ],
+     [
+      109,
+      [],
+      [
+       "    snapshot = None"
+      ]
+     ],
+     [
+      112,
+      [
+       "        fork_checkpoint(snapshot, args.output, args, reset_lbfgs=cli.reset_lbfgs)",
+       "        args.resume = True"
+      ],
+      []
+     ],
+     [
+      113,
+      [
+       "        verify_checkpoint(args.output, args)"
+      ],
+      [
+       "        snapshot = verify_checkpoint(args.output, args)"
+      ]
+     ],
+     [
+      116,
+      [],
+      [
+       "    # A resume keeps the line search of its checkpoint (Armijo for one that",
+       "    # records none) and, unless given, its Wolfe energy tolerance.",
+       "    prior = getattr(snapshot[\"args\"], \"robust_controls\", {}) if snapshot else {}",
+       "    line_search = prior.get(\"line_search\", \"armijo\") if snapshot else cli.line_search or \"armijo\"",
+       "    if cli.line_search not in (None, line_search):",
+       "        raise ValueError(f\"resume cannot change the line search (the checkpoint's is {line_search})\")",
+       "    if line_search == \"armijo\" and cli.wolfe_energy_atol is not None:",
+       "        raise ValueError(\"--wolfe-energy-atol requires --line-search wolfe\")",
+       "    wolfe_energy_atol = None",
+       "    if line_search == \"wolfe\":",
+       "        wolfe_energy_atol = cli.wolfe_energy_atol if cli.wolfe_energy_atol is not None else \\",
+       "            prior.get(\"wolfe_energy_atol\", robust_optimizer.WOLFE_ENERGY_ATOL)",
+       "    robustness = robust_optimizer.RobustnessControls(",
+       "        secant_gradient_floor=cli.secant_gradient_floor, max_recoveries=cli.max_recoveries,",
+       "        line_search=line_search, wolfe_energy_atol=wolfe_energy_atol)",
+       "    if cli.resume_from:",
+       "        fork_checkpoint(snapshot, args.output, args, reset_lbfgs=cli.reset_lbfgs)",
+       "        args.resume = True"
+      ]
+     ],
+     [
+      136,
+      [],
+      [
+       "    if line_search == \"wolfe\":",
+       "        recorded[\"hager_zhang\"] = asdict(robust_optimizer.HAGER_ZHANG)"
+      ]
+     ]
+    ],
+    "trajectory_sweep_driver.py": [
+     [
+      87,
+      [],
+      [
+       "    parser.add_argument('--line-search');parser.add_argument('--wolfe-energy-atol',type=float)"
+      ]
+     ]
+    ]
+   }
   }
  ]
 }

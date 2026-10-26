@@ -242,12 +242,15 @@ def main(argv=None):
     parser.add_argument("--reset-lbfgs", action="store_true")
     parser.add_argument("--secant-gradient-floor", type=float)
     parser.add_argument("--max-recoveries", type=int)
+    parser.add_argument("--line-search", choices=robust.robust_optimizer.LINE_SEARCHES)
+    parser.add_argument("--wolfe-energy-atol", type=float)
     cli, forwarded = parser.parse_known_args(argv)
     base_args = BASE_PARSE_ARGS(forwarded)
     validate_overlap_arguments(base_args)
     if cli.reset_lbfgs and not cli.resume_from:
         raise ValueError("--reset-lbfgs requires --resume-from and a distinct fresh --output")
-    if cli.controller == "original" and (cli.secant_gradient_floor is not None or cli.max_recoveries is not None):
+    if cli.controller == "original" and any(value is not None for value in (
+            cli.secant_gradient_floor, cli.max_recoveries, cli.line_search, cli.wolfe_energy_atol)):
         raise ValueError("robust controls require --controller robust")
     snapshot = None
     if cli.resume_from or base_args.resume:
@@ -285,6 +288,10 @@ def main(argv=None):
                 if value is None:
                     value = prior.get(key, 1e-10 if key == "secant_gradient_floor" else 2)
                 robust_argv += ["--"+key.replace("_", "-"), str(value)]
+            # The robust wrapper resolves these against the checkpoint itself.
+            for key in ("line_search", "wolfe_energy_atol"):
+                if getattr(cli, key) is not None:
+                    robust_argv += ["--"+key.replace("_", "-"), str(getattr(cli, key))]
             with binding(robust, "BASE_PARSE_ARGS", parse), binding(robust, "source_hashes", source_hashes), \
                     binding(robust, "verify_checkpoint", verify_checkpoint):
                 return robust.main(robust_argv)

@@ -269,7 +269,7 @@ class Planning(unittest.TestCase):
     def test_plans_with_and_without_symmetry(self):
         plan = self.plan("--D", "5", "--symmetry", "none")
         self.assertEqual((plan["schema_version"], plan["symmetry"], plan["layout"]["layout"], plan["layout"]["blocks"]),
-                         (5, "none", "unpacked", 8))
+                         (6, "none", "unpacked", 8))
         self.assertEqual(self.plan("--D", "8")["symmetry"], "z2")
         with self.assertRaisesRegex(ValueError, "even integer D >= 2"):
             layout.describe(5)

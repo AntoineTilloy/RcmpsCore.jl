@@ -40,6 +40,10 @@ DEFAULTS = dict(window=30., quadrature=512, nodes=512, atol=1e-13, rtol=1e-12,
                 maxdim=1024, metric_reg=1e-3, krylov_tolerance=1e-12,
                 stationary_tolerance=1e-13, max_steps=1_000_000,
                 line_search_energy_atol=1e-14)
+# The controller's line searches (runtime/robust_optimizer.py LINE_SEARCHES): the bounded Armijo
+# backtracking, or RcmpsCore's Hager-Zhang search with energy tolerance WOLFE_ENERGY_ATOL.
+LINE_SEARCHES = ("armijo", "wolfe")
+WOLFE_ENERGY_ATOL = 1e-10
 
 
 def digest(path):
@@ -149,6 +153,19 @@ def prepare(args, runtime_sha256):
         expected = previous["runs"][-1]["source_sha256"]
         if not expected or any(runtime_sha256.get(n) != h for n, h in expected.items()):
             raise ValueError("resume requires this exact generic runtime; sealed historical runs remain unchanged")
+    # A checkpoint that records no line search ran the Armijo backtracking.
+    prior_search = (previous["controls"].get("robust_controls") or {}) if previous else {}
+    line_search = prior_search.get("line_search", "armijo") if previous else args.line_search or "armijo"
+    if args.line_search not in (None, line_search):
+        raise ValueError(f"cannot resume an optimizer with another --line-search (the checkpoint's is {line_search})")
+    if line_search == "armijo" and args.wolfe_energy_atol is not None:
+        raise ValueError("--wolfe-energy-atol requires --line-search wolfe")
+    wolfe_energy_atol = None
+    if line_search == "wolfe":
+        wolfe_energy_atol = (args.wolfe_energy_atol if args.wolfe_energy_atol is not None
+                             else prior_search.get("wolfe_energy_atol", WOLFE_ENERGY_ATOL))
+        if not math.isfinite(wolfe_energy_atol) or wolfe_energy_atol < 0:
+            raise ValueError("--wolfe-energy-atol must be finite and nonnegative")
     controls = {}
     for name, default in DEFAULTS.items():
         value = getattr(args, name)
@@ -181,7 +198,8 @@ def prepare(args, runtime_sha256):
         coupling = read_portable(initial, arrays=False).coupling
         if not math.isfinite(coupling) or coupling < 0:
             raise ValueError("invalid initial coupling")
-    plan = dict(schema_version=5, D=args.D, symmetry=args.symmetry, coupling=coupling, seed=args.seed, tiles=args.tiles,
+    plan = dict(schema_version=6, D=args.D, symmetry=args.symmetry, coupling=coupling, seed=args.seed, tiles=args.tiles,
+                line_search=line_search, wolfe_energy_atol=wolfe_energy_atol,
                 package=package_identity(),
                 runtime=str(RUNTIME), runtime_source_sha256=dict(runtime_sha256),
                 runtime_provenance=verify_runtime(),
@@ -221,6 +239,14 @@ def parser():
     p.add_argument("--max-iterations", type=int, default=20000, help="additional iterations for a resumed invocation")
     p.add_argument("--max-seconds", type=float, help="optional invocation limit; no wall-time cap by default")
     p.add_argument("--gradient-target", type=float, default=1e-7)
+    p.add_argument("--line-search", choices=LINE_SEARCHES,
+                   help="armijo (the default for a new run): bounded Armijo backtracking, which accepts on energy "
+                        "differences only; wolfe: the Hager-Zhang search of RcmpsCore's SafeguardedLineSearch (exact "
+                        "or approximate Wolfe conditions, from the slope along the step), then the Armijo backtracking "
+                        "if it fails. A resume keeps its checkpoint's choice and refuses the other")
+    p.add_argument("--wolfe-energy-atol", type=float,
+                   help=f"with --line-search wolfe: the energy increase an approximate Wolfe step may show "
+                        f"(default {WOLFE_ENERGY_ATOL:g}, RcmpsCore's energy_atol; a resume keeps its checkpoint's)")
     p.add_argument("--max-device-seconds", type=float, default=300., help="one trajectory's device watchdog, not run wall time")
     p.add_argument("--tiles", choices=TILE_CHOICES, default="auto",
                    help="tile product of the trajectory kernel: mma (FP64 tensor cores, compute capability >= 8.0), "
