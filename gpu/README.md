@@ -43,8 +43,12 @@ runtime of the research campaign: for the sizes that runtime supported (packed d
 {2, 3, 4, 8, 16, 32, 48, 64, 128}) it generates the same CUDA source and compiler options,
 bit for bit. The generic runtime itself ran short optimizations (3 and 30 iterations) at
 D = 8 to 128 on both GPUs, with both tile paths on the A100, but no optimization to
-convergence. Both kernels choose their tile product by device, for NVIDIA GPUs with or
-without FP64 tensor cores (see "GPUs"); no other GPU has run this package.
+convergence. The optimizer on states without symmetry (`--symmetry none`) passed its checks
+on an H100 NVL with both tile paths (2026-10-26: trajectories, residency, runs at D = 8 to
+64, the energy, gradient and ⟨φ⟩ of RcmpsCore at D = 4 to 32 to 2e-13, 3e-11 and 1e-14, and
+optimizations at D = 16, 32 and 64), and its kernel ran on an RTX 2070. Both kernels choose
+their tile product by device, for NVIDIA GPUs with or without FP64 tensor cores (see
+"GPUs"); no other GPU has run this package.
 
 ## Installation
 
@@ -120,11 +124,12 @@ time), and 1.3 to 1.5 times for the reference levels at D = 16 and 32.
 
 | GPU | Compute capability | Tiles (`auto`) | Status |
 |---|---|---|---|
-| H100 | 9.0 | mma | the research runtime this one derives from ran the optimizer (D = 32 to 256); this package has not run there |
+| H100 | 9.0 | mma | the research runtime this one derives from ran the optimizer (D = 32 to 256); this package ran the optimizer on states without symmetry on an H100 NVL (2026-10-26, both tile paths; grid resident up to D = 144, refused at 152), not the Z2 optimizer or the excitation solver |
 | A100 | 8.0 | mma | qualified with both tile paths (2026-10-15), which gave identical results: optimizer runs at D = 8 to 128 (3 and 30 iterations), grids compiled and resident up to D = 256; excitation kernels resident up to D = 128, reference levels at D = 16 and 32, a solve at D = 64; earlier, the excitation solver up to D = 128 (tensor cores, imported and earlier sources) and the research optimizer runtimes (D = 32 to 128) |
 | A30, A10, RTX 30, L4, L40, RTX 40 | 8.0, 8.6, 8.9 | mma | compiled only (the tests compile for compute_80 and 86; compute_89 was checked once); FP64 at 1/64 of FP32 except the A30 |
 | V100 | 7.0 | scalar | qualified with the scalar tiles (2026-10-15): optimizer runs at D = 8 to 128 (3 and 30 iterations), grid resident up to D = 160 and refused at 192 and 256; excitation action kernel resident up to D = 96 and refused at 128, pair kernel resident at D = 64 and refused at 96 (its limit estimated at 94 in the table below), reference levels at D = 16 and 32; `--tiles mma` refused |
-| T4, RTX 20 | 7.5 | scalar | compiled only; FP64 at 1/32 of FP32 |
+| RTX 2070 | 7.5 | scalar | the optimizer on states without symmetry: its trajectories, the comparison with RcmpsCore and optimizations at D = 8 and 16 (2026-10-26) |
+| T4, other RTX 20 | 7.5 | scalar | compiled only; FP64 at 1/32 of FP32 |
 | P100 | 6.0 | scalar | compiled only |
 
 "Compiled only" means: NVRTC 12.8 compiles both kernels to PTX for that target, both tile
@@ -357,7 +362,8 @@ W = 30 (`ode_backend.source_integral`). `ode_backend.phi_expectation` evaluates 
 accepted row of the history records it (`phi`, at the run's window) and the checkpoint the
 last one (`final_phi`); the validation records it for every row and, at the refined
 settings, also by the ODE of the first monomial (`phi_ode`, the route of `phi_monomial`,
-which agreed to 5e-15), and `optimized_state/` holds it as `phi` with `symmetry = "none"`.
+host-driven: 24 s on the H100 at D = 32; it agreed to 3e-13 or better), and
+`optimized_state/` holds it as `phi` with `symmetry = "none"`.
 Its sign is that of the branch the optimizer reached: R and -R are the two broken states.
 
 Validation against RcmpsCore (`qualification/optimizer/check_nonz2.py`, Julia references of
@@ -377,7 +383,9 @@ and ρ as stored:
 | Julia minimum (216 iterations) | 8 | 7.4e-9 | -2.7e-14 | 1.5e-9 | -1.3e-14 |
 | Julia minimum (207 iterations) | 16 | 9.8e-8 | +7.9e-14 | 2.6e-9 | -6.5e-14 |
 
-These ran on an RTX 2070 (compute capability 7.5, scalar tiles) on 2026-10-26. Up to the
+These ran on an RTX 2070 (compute capability 7.5, scalar tiles) on 2026-10-26; on an H100
+NVL (tensor cores) the differences are the same, at most 1.6e-13, 2.6e-11 and 1.3e-14 on the
+random states and iterates, 2.9e-13 and 2.6e-9 at the minima. Up to the
 minima the GPU is as close to Julia as the energy can be resolved, and its gradient
 agrees to 1e-11 relative. At the two minima the gradient difference, 1.5e-9 and 2.6e-9, is
 the floor of the two quartic integrations (Julia's Vern7 and the GPU's DOP853, both at
@@ -765,11 +773,61 @@ The three tests added since are two NVRTC tests and a CPU test of
 `gpu_optimizer_check.py`.
 
 Not qualified: any other GPU (the P100, the T4 and RTX 20 cards, the A30, the 8.6 and 8.9
-cards of the table under "GPUs", and the H100, where only the research runtime ran); the
-optimizer of this package beyond D = 128 (D = 160 to 256 were compiled and checked for
-residency, not run) and to convergence (the batch runs 3 and 30 iterations); the excitation
+cards of the table under "GPUs", and the H100, where only the research runtime ran, and this
+package's optimizer on states without symmetry, below); the Z2 optimizer of this package
+beyond D = 128 (D = 160 to 256 were compiled and checked for residency, not run) and to
+convergence (the batch runs 3 and 30 iterations); the optimizer on states without symmetry
+on the A100 and V100 (whose limits, 128 and 95, are estimates) and beyond D = 64; the excitation
 solver of this package beyond D = 64 on the A100 and D = 32 on the V100 (the D = 96 and 128
 solves below used the imported and earlier sources, with the tensor cores).
+
+**Optimizer on states without symmetry, H100 NVL, 2026-10-26.** One H100 NVL (compute
+capability 9.0, 132 multiprocessors, 94 GB; Grid'5000 Sophia `musa`, driver for CUDA 13.0),
+Python 3.13.5, NumPy 2.5.4, SciPy 1.17.1, CuPy 14.2.0 with the CUDA 12.9 libraries of the
+wheels, the package at the commit "Qualification batch: the optimizer on states without
+symmetry" (copied, not a checkout: the plans record no commit). `gpu_optimizer_check.py
+--symmetry none` with the tensor cores and the scalar tiles forced (seed 0, g = 3): the tile
+product equals the chain of FMAs; at D = 8 to 64 the two paths take the same steps and give
+the same samples, byte for byte, a repeated launch the same bytes, and at D = 8 the host
+oracle takes the same 465 attempts, its samples within 2.4e-15; the runs of 3 iterations at
+D = 8, 16, 32 and 64 pass their initial qualification (fast - oracle: energy at most 1.4e-14,
+gradient 7.7e-14) and validation, and the two paths give the same first gradient, history
+and final state. Device time per trajectory of the random state (ms; registers per thread,
+resident blocks against the grid's):
+
+| D | Steps (accepted, rejected) | Tensor cores | Scalar tiles | Scalar / tensor cores | Registers, resident / blocks (tensor cores) |
+|---|---|---|---|---|---|
+| 8 | 460, 5 | 46 | 88 | 1.87 | 154, 1584 / 8 |
+| 16 | 352, 4 | 48 | 90 | 1.86 | 128, 1056 / 15 |
+| 32 | 365, 4 | 72 | 160 | 2.22 | 128, 528 / 29 |
+| 64 | 341, 3 | 120 | 348 | 2.90 | 130, 132 / 57 |
+
+Compilation and residency (`--compile-only`, tensor cores): resident at D = 96, 112 and 128
+(64 registers, the cap of D > 64; 264 blocks resident) and at 136 and 144 (132 resident, for
+120 and 127 blocks); refused at D = 152 ("D=152 requires 134 resident blocks; this GPU can
+hold 132"), 160, 176, 192, 224 and 256, as the table under "GPUs" estimates. The
+comparison with RcmpsCore (`check_nonz2.py`, the states of the table under "Optimizer:
+states without Z2 symmetry"): the differences of the RTX 2070 within rounding. The
+optimizations (tensor cores, φ⁴ at g = 3, target 1e-7, the defaults otherwise):
+
+| D | Start | Iterations (evaluations) | Seconds per iteration (median) | Stop: gradient norm | Energy (refined validation) | ⟨φ⟩ |
+|---|---|---|---|---|---|---|
+| 16 | the start of the Julia minimum | 177 (214) | 0.33 | stagnation: 3.0e-6 | -0.3886789420167186 (Julia's minimum -0.388678942017663) | 0.6172532155 (Julia 0.6172521147) |
+| 32 | random (`--seed 1`) | 418 (466) | 1.07 | stagnation: 1.7e-5 | -0.3897114771313478 | -0.6075901266 |
+| 64 | random (`--seed 1`), one job | 675 (676) | 3.8 (0.26 at the start, 8.5 at the end) | time budget (2700 s): 1.6e-4 | -0.3898340978399881 | 0.6047528105 |
+
+The time of an iteration is that of the trajectory: optimized states make the quartic
+integration stability limited, 6077 accepted steps (1.0 s) at iteration 200 of the D = 32
+run against 365 at its random start, while the kinetic resolvent took 0.19 s on the other
+stream and the CPU boundary and metric solves 0.01 s. The explicit integrator's steps along
+the imaginary axis are bounded by the spread of the spectrum of K, which the minima develop
+on almost unpopulated directions: 21 at D = 8 and 62 at D = 16 (the Julia minima; the
+GPU's D = 16 state has the same spread, smallest Schmidt value 3.6e-8 and condition number
+2.8e7 of ρ), 305 at the end of the D = 32 run (ρ condition number 7e9), and at D = 64 from
+5.6 at the random start to 1290 after 675 iterations, still growing (smallest eigenvalue of
+ρ 4.7e-13), with 29,517 steps (8.5 s) per trajectory. At D = 64 the optimizer therefore
+needs hours to converge; ⟨φ⟩ moved by 1e-5 over the last 100 of those iterations and the
+energy by 2e-8.
 
 **Excitation solver, A100 PCIe 40 GB, 2026-10-13 and 14, up to D = 128.** The import commit
 of this package holds byte for byte the sources of the last batch of runs (see Provenance):
