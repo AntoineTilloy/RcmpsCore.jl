@@ -20,7 +20,7 @@ import numpy as np
 
 from .numerics import (load_reference, adj, finish_gradient, metric, retract,
                       precondition, stationary_state, SolverFailure)
-from .ode_backend import evaluate_phi4, evaluate_quartic
+from .ode_backend import evaluate_phi4, evaluate_quartic, phi_expectation
 from .kinetic_backend import kinetic_raw
 from .optimizer import OptimizationControls
 from .sweep_stopping import optimize_with_progress, ProgressControls
@@ -45,18 +45,19 @@ def validate_arguments(args):
     if args.quartic_backend == "persistent_trajectory":
         args.device_controller = True
     if args.quartic_backend != "cuda":
-        if args.backend != "cupy" or args.mode != "hybrid" or not args.packed_z2:
+        # --packed-z2: the packed Z2 channels; --reduced: the unpacked ones (any state).
+        if args.backend != "cupy" or args.mode != "hybrid" or args.packed_z2 == args.reduced:
             raise ValueError(f"--quartic-backend {args.quartic_backend} requires "
-                             "--backend cupy --mode hybrid --packed-z2")
+                             "--backend cupy --mode hybrid and one of --packed-z2, --reduced")
     if args.graph or args.dense_graph:
         raise ValueError("--graph and --dense-graph: the CUDA-graph integrator was removed")
     if args.device_controller:
         if (args.backend != "cupy" or args.mode != "hybrid" or
-                args.quartic_backend != "persistent_trajectory" or not args.packed_z2):
+                args.quartic_backend != "persistent_trajectory" or args.packed_z2 == args.reduced):
             raise ValueError("--device-controller requires --backend cupy --mode hybrid "
-                             "--quartic-backend persistent_trajectory --packed-z2")
-        if args.reduced or args.fused_rhs:
-            raise ValueError("--device-controller is incompatible with --reduced and --fused-rhs")
+                             "--quartic-backend persistent_trajectory and one of --packed-z2, --reduced")
+        if args.fused_rhs:
+            raise ValueError("--device-controller is incompatible with --fused-rhs")
         if not 0 < args.window <= 40:
             raise ValueError("--device-controller requires 0 < --window <= 40 for the FP64 source")
 
@@ -324,6 +325,7 @@ def main(argv=None):
         elif event["type"]=="accepted":
             state=event["state"]
             row={key:value for key,value in event.items() if key not in ("state","type","event")}
+            row["phi"]=phi_expectation(state["R"],state["rho"],args.window)
             report["history"].append(row)
             report["objective_evaluations"]=evaluation_offset+state["evaluations"]
             save_state(state)
@@ -335,6 +337,7 @@ def main(argv=None):
             report["converged"]=event["converged"]
             report["final_energy"]=state["energy"]
             report["final_gradient_norm"]=state["gradient_norm"]
+            report["final_phi"]=phi_expectation(state["R"],state["rho"],args.window)
             report["objective_evaluations"]=evaluation_offset+state["evaluations"]
             save_state(state)
             save()

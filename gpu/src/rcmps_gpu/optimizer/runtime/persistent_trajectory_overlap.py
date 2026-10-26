@@ -19,7 +19,7 @@ from . import overlap_sweep_driver as overlap_driver
 from . import overlap_benchmark as overlap
 from .warm_sweep_driver import binding
 from .numerics import metric
-from .ode_backend import _PackedZ2QuarticRHS,_packed_z2_pullback,quadrature
+from .ode_backend import _PackedZ2QuarticRHS,_UnpackedQuarticRHS,_packed_z2_pullback,_unpacked_pullback,quadrature
 from .persistent_trajectory_backend import PersistentTrajectoryDOP853
 
 ORIGINAL_PREPARED=overlap.PreparedQuartic
@@ -27,12 +27,14 @@ ORIGINAL_KINETIC=overlap.kinetic_raw
 
 
 class PreparedTrajectoryQuartic(overlap.PreparedQuartic):
-    """Same run/pullback/scaling as PreparedQuartic; new one-kernel solver."""
+    """Same run/pullback/scaling as PreparedQuartic; new one-kernel solver. args.reduced
+    selects the unpacked channels (states without Z2 symmetry), else the packed Z2 ones."""
     def __init__(self,cp,inputs,coupling,args,*,max_device_seconds=30.,tiles='mma',register_cap=None):
         q,r,rho=inputs;self.cp,self.q,self.r,self.coupling=cp,q,r,float(coupling)
-        self.pullback=_packed_z2_pullback;started=time.perf_counter()
+        unpacked=bool(getattr(args,'reduced',False))
+        self.pullback=_unpacked_pullback if unpacked else _packed_z2_pullback;started=time.perf_counter()
         self.points,self.weights=quadrature(args.window,args.quadrature)
-        self.rhs=_PackedZ2QuarticRHS(q,r,rho,cp)
+        self.rhs=(_UnpackedQuarticRHS if unpacked else _PackedZ2QuarticRHS)(q,r,rho,cp)
         self.solver=PersistentTrajectoryDOP853(self.rhs,np.r_[self.points,math.sqrt(args.window)],
             atol=args.atol,rtol=args.rtol,max_steps=args.max_steps,max_device_seconds=max_device_seconds,tiles=tiles,
             register_cap=register_cap)

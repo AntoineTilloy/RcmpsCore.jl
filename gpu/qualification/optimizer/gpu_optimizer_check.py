@@ -1,7 +1,7 @@
 """Qualification of the GPU optimizer on one NVIDIA GPU: tile products, compilation, runs.
 
     python gpu_optimizer_check.py --output NEW_DIR [--stages unit trajectory compile run]
-        [--D 8 16 32 64] [--tiles auto [scalar]] [--iterations 3] [--device 0]
+        [--D 8 16 32 64] [--tiles auto [scalar]] [--iterations 3] [--device 0] [--symmetry z2|none]
 
 Stages (all by default), each for every D and every tile path of --tiles (auto, mma,
 scalar; auto is what the device selects: mma from compute capability 8.0 on, scalar below):
@@ -13,8 +13,9 @@ scalar; auto is what the device selects: mma from compute capability 8.0 on, sca
               chain_model (FMAs in k order, correctly rounded) and with each other. Whether this
               GPU's FP64 tensor cores compute that chain decides whether the two paths can give
               bitwise identical trajectories.
-  trajectory  PersistentTrajectoryDOP853, the kernel of a run, on the random Z2 state of the
-              optimizer (seed --seed) for each tile path: steps and samples of two launches
+  trajectory  PersistentTrajectoryDOP853, the kernel of a run, on the random state of the
+              optimizer (seed --seed; Z2, or with --symmetry none a state without symmetry on
+              the unpacked channels) for each tile path: steps and samples of two launches
               (determinism), bitwise comparison of the paths, and at D <= 8 the host oracle
               integrate_trajectory_numpy; device time per trajectory. A grid that is not
               resident at any register cap of the worker is a result ("refused"), as in the
@@ -30,8 +31,9 @@ scalar; auto is what the device selects: mma from compute capability 8.0 on, sca
 The compile and run stages start the command line of the package in a child process (its
 run directory under NEW_DIR/<stage>/D<D>_<tiles>, its output in <directory>.log), with the
 model and integration settings of this script (--coupling, --window, --quadrature, --atol,
---rtol; the defaults are those of the command line) and its --seed, --device and
---max-device-seconds; nothing here re-implements the numerics. Every result is one JSON line on stdout; the exit status is
+--rtol; the defaults are those of the command line) and its --seed, --device, --symmetry and
+--max-device-seconds; nothing here re-implements the numerics. With --symmetry none the run
+directories are NEW_DIR/<stage>/D<D>_<tiles>_none. Every result is one JSON line on stdout; the exit status is
 1 if a check failed (a refused size or a refused --tiles mma below 8.0 is not a failure).
 """
 from __future__ import annotations
@@ -165,26 +167,29 @@ def stage_unit(cp, args, capability):
 
 
 def random_state(args, D, directory):
-    """The random Z2 initial state of a run with --seed (worker.random_reference)."""
+    """The random initial state of a run with --seed and --symmetry (worker.random_reference)."""
     from rcmps_gpu.optimizer import cli, worker
     from rcmps_gpu.optimizer.runtime import numerics
     controls = dict(cli.DEFAULTS, quadrature=args.quadrature, window=args.window)
-    worker.random_reference(dict(D=D, seed=args.seed, coupling=args.coupling, controls=controls), directory)
+    worker.random_reference(dict(D=D, seed=args.seed, coupling=args.coupling, controls=controls,
+                                 symmetry=args.symmetry), directory)
     matrices, _ = numerics.load_reference(directory)
     r, k, rho = (matrices[name] for name in ("R", "K", "rho"))
     return -1j * k - r.conj().T @ r / 2, r, rho
 
 
 def stage_trajectory(cp, args, capability, D, paths):
-    from rcmps_gpu.optimizer.runtime.ode_backend import _PackedZ2QuarticRHS, quadrature
+    from rcmps_gpu.optimizer.runtime.ode_backend import _PackedZ2QuarticRHS, _UnpackedQuarticRHS, quadrature
     from rcmps_gpu.optimizer.runtime import persistent_trajectory_backend as backend
     from rcmps_gpu.optimizer.runtime.generic_layout import register_caps, select_tiles
-    q, r, rho = random_state(args, D, Path(args.output) / "trajectory" / f"D{D}_initial")
+    q, r, rho = random_state(args, D, Path(args.output) / "trajectory" / f"D{D}{suffix(args)}_initial")
+    unpacked = args.symmetry == "none"
+    layout, d = (_UnpackedQuarticRHS, D) if unpacked else (_PackedZ2QuarticRHS, D // 2)
     points, _ = quadrature(args.window, args.quadrature)
     nodes = np.r_[points, math.sqrt(args.window)]
     samples = {}
     for requested in paths:
-        row = dict(stage="trajectory", D=D, tiles_requested=requested)
+        row = dict(stage="trajectory", D=D, symmetry=args.symmetry, tiles_requested=requested)
         try:
             tiles = select_tiles(requested, *capability)
         except ValueError as error:
@@ -195,16 +200,16 @@ def stage_trajectory(cp, args, capability, D, paths):
             emit(**row, same_as_previous_path=True)
             continue
         try:
-            rhs = _PackedZ2QuarticRHS(cp.asarray(q), cp.asarray(r), cp.asarray(rho), cp)
+            rhs = layout(cp.asarray(q), cp.asarray(r), cp.asarray(rho), cp)
             # The register caps of the worker, in its order: the first whose grid is resident.
-            for cap in register_caps(D // 2):
+            for cap in register_caps(d):
                 try:
                     solver = backend.PersistentTrajectoryDOP853(rhs, nodes, atol=args.atol, rtol=args.rtol,
                                                                 max_device_seconds=args.max_device_seconds,
                                                                 tiles=tiles, register_cap=cap)
                     break
                 except RuntimeError as error:
-                    if "unsafe cooperative trajectory grid" not in str(error) or cap == register_caps(D // 2)[-1]:
+                    if "unsafe cooperative trajectory grid" not in str(error) or cap == register_caps(d)[-1]:
                         raise
             row["register_cap"] = cap
             with solver:
@@ -219,7 +224,7 @@ def stage_trajectory(cp, args, capability, D, paths):
                        resident_capacity=stats["occupancy"]["resident_capacity"], blocks=stats["occupancy"]["blocks"],
                        repeat_bitwise=bitwise(first, again))
             if D <= 8:
-                host = _PackedZ2QuarticRHS(q, r, rho, np)
+                host = layout(q, r, rho, np)
                 oracle, counts = backend.integrate_trajectory_numpy(host, nodes, atol=args.atol, rtol=args.rtol)
                 row.update(oracle_attempts=counts["attempts"], oracle_same_steps=counts["attempts"] == stats["attempts"],
                            oracle_relative_difference=float(np.abs(first - oracle).max() / np.abs(oracle).max()))
@@ -231,22 +236,26 @@ def stage_trajectory(cp, args, capability, D, paths):
         emit(**row)
     if len(samples) == 2:
         (a, sa), (b, sb) = samples["mma"], samples["scalar"]
-        emit(stage="trajectory_paths", D=D, same_steps=(sa["attempts"], sa["accepted"]) == (sb["attempts"], sb["accepted"]),
+        emit(stage="trajectory_paths", D=D, symmetry=args.symmetry, same_steps=(sa["attempts"], sa["accepted"]) == (sb["attempts"], sb["accepted"]),
              samples_bitwise=bitwise(a, b),
              max_relative_difference=float(np.abs(a - b).max() / np.abs(a).max()) if a.shape == b.shape else None,
              speed_ratio_scalar_over_mma=sb["device_milliseconds"] / sa["device_milliseconds"])
 
 
+def suffix(args):
+    return "_none" if args.symmetry == "none" else ""
+
+
 def optimize(args, stage, D, tiles, *options):
     """rcmps-gpu-optimize in a child process: (run directory, exit status, seconds)."""
-    directory = Path(args.output) / stage / f"D{D}_{tiles}"
+    directory = Path(args.output) / stage / f"D{D}_{tiles}{suffix(args)}"
     command = [sys.executable, "-m", "rcmps_gpu.optimizer", "--D", str(D), "--run-gpu", "--output", str(directory),
-               "--tiles", tiles, "--device", str(args.device), "--seed", str(args.seed),
+               "--symmetry", args.symmetry, "--tiles", tiles, "--device", str(args.device), "--seed", str(args.seed),
                "--coupling", repr(args.coupling), "--window", repr(args.window), "--quadrature", str(args.quadrature),
                "--atol", repr(args.atol), "--rtol", repr(args.rtol),
                "--max-device-seconds", repr(args.max_device_seconds), *options]
     started = time.perf_counter()
-    with (Path(args.output) / stage / f"D{D}_{tiles}.log").open("w") as log:
+    with (Path(args.output) / stage / f"D{D}_{tiles}{suffix(args)}.log").open("w") as log:
         status = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT).returncode
     return directory, status, time.perf_counter() - started
 
@@ -283,7 +292,7 @@ def stage_compile(args, D, paths):
     for tiles in paths:
         directory, code, seconds = optimize(args, "compile", D, tiles, "--compile-only")
         status = load(directory / "status.json")
-        row = dict(stage="compile", D=D, tiles_requested=tiles, exit_status=code, seconds=seconds)
+        row = dict(stage="compile", D=D, symmetry=args.symmetry, tiles_requested=tiles, exit_status=code, seconds=seconds)
         if status and status.get("state") == "compiled_without_numerical_launch":
             emit(**row, resident=True, **compile_summary(status["compile"]), ok=True)
         elif refusal(status):
@@ -298,7 +307,8 @@ def stage_run(args, D, paths):
         directory, code, seconds = optimize(args, "run", D, tiles, "--max-iterations", str(args.iterations),
                                             *(("--max-seconds", str(args.max_seconds)) if args.max_seconds else ()))
         status = load(directory / "status.json") or {}
-        row = dict(stage="run", D=D, tiles_requested=tiles, exit_status=code, seconds=seconds, state=status.get("state"))
+        row = dict(stage="run", D=D, symmetry=args.symmetry, tiles_requested=tiles, exit_status=code, seconds=seconds,
+                   state=status.get("state"))
         if refusal(status):
             emit(**row, refused=refusal(status), ok=True)
             continue
@@ -314,6 +324,7 @@ def stage_run(args, D, paths):
                    metric_gradient_difference=qualification.get("metric_gradient_difference"),
                    iterations=len(history), stop_reason=checkpoint.get("stop_reason"),
                    final_energy=checkpoint.get("final_energy"), final_gradient_norm=checkpoint.get("final_gradient_norm"),
+                   final_phi=checkpoint.get("final_phi"),
                    validation_passed=validation.get("passed"), error=status.get("error"),
                    ok=status.get("state") == "completed" and bool(validation.get("passed")))
         emit(**row)
@@ -350,6 +361,8 @@ def parser():
                         default=["unit", "trajectory", "compile", "run"])
     parser.add_argument("--D", type=int, nargs="+", default=[8, 16, 32, 64])
     parser.add_argument("--tiles", nargs="+", choices=("auto", "mma", "scalar"), default=["auto"])
+    parser.add_argument("--symmetry", choices=("z2", "none"), default="z2",
+                        help="z2: the packed Z2 channels (the default); none: the unpacked channels")
     parser.add_argument("--iterations", type=int, default=3, help="accepted iterations of a run")
     parser.add_argument("--max-seconds", type=float, default=None, help="wall-time limit of a run")
     parser.add_argument("--max-device-seconds", type=float, default=300.0)

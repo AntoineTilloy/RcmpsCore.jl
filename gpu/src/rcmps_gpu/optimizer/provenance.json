@@ -3312,6 +3312,492 @@
      ]
     ]
    }
+  },
+  {
+   "commit_subject": "Optimizer: states without Z2 symmetry, on the unpacked channels",
+   "change": "symmetry none: the trajectory kernel integrates the seven unpacked D x D channels of _ReducedQuarticRHS, selected in the drivers by --quartic-backend persistent_trajectory --reduced (already an objective control of the checkpoints, as --packed-z2; exactly one of the two). ode_backend: _UnpackedQuarticRHS (_ReducedQuarticRHS with the kernel's tables: coefficients, gather indices, a = b = r; the host call drops the imaginary part of the accumulator, as the kernel), _unpacked_pullback (_reduced_quartic_pullback, chunked from D = 128 as the packed one from D = 192), source_integral and phi_expectation (the one-point function as phi_monomial(s, 1) of RcmpsCore). persistent_trajectory_backend: unpacked_trajectory_source (trajectory_source rewritten at the anchors of UNPACKED_REWRITES: 7 channels, gather offsets 7 and 14, the scalar of channel 2 with factor 4 and a = b = r), PersistentTrajectoryDOP853 takes its geometry and source from the RHS (attribute unpacked), evaluate_quartic_persistent_trajectory and trajectory_ptx_report take unpacked, integrate_trajectory_numpy is limited by the physical D <= 8 of either layout. generic_layout, still the byte copy of optimizer/layout.py: unpacked_geometry (7 ceil(D/8) + 1 blocks, the panels of packed_geometry(D)), which configure_shared_memory accepts, and bond_geometry and describe take symmetry (z2, the default and the former results, or none: any D from 1 to 256). persistent_trajectory_overlap: PreparedTrajectoryQuartic chooses by args.reduced, which OverlapObjective passes. sweep_driver and overlap_sweep_driver accept --reduced (not --fused-rhs) with the persistent trajectory, and sweep_driver records <phi> (phi_expectation at the run's window) in every accepted history row and as final_phi. The packed Z2 path, its CUDA source, options and geometry are unchanged (tests/optimizer/golden_cuda.json).",
+   "hunks": {
+    "generic_layout.py": [
+     [
+      1,
+      [
+       "\"\"\"One shape/resource policy for the persistent FP64 Z2 kernel."
+      ],
+      [
+       "\"\"\"One shape/resource policy for the persistent FP64 kernel, Z2 (packed) or unpacked."
+      ]
+     ],
+     [
+      3,
+      [
+       "D is the full bond dimension; d is the packed parity-block dimension."
+      ],
+      [
+       "D is the full bond dimension; d is the matrix dimension of the kernel: the packed",
+       "parity-block dimension D/2 for Z2 states, D for the unpacked channels (symmetry none)."
+      ]
+     ],
+     [
+      18,
+      [],
+      [
+       "SYMMETRIES = (\"z2\", \"none\")"
+      ]
+     ],
+     [
+      47,
+      [
+       "def bond_geometry(D):"
+      ],
+      [
+       "def unpacked_geometry(D):",
+       "    \"\"\"The grid of the kernel on the seven unpacked D x D channels (states without Z2",
+       "    symmetry, any D up to MAX_PACKED_D): the row panels of packed_geometry(D), seven",
+       "    channels of row blocks and the scalar block.\"\"\"",
+       "    info = packed_geometry(D)",
+       "    return dict(info, blocks=7 * info[\"warps\"] + 1, layout=\"unpacked\")",
+       "",
+       "",
+       "def bond_geometry(D, symmetry=\"z2\"):",
+       "    if symmetry not in SYMMETRIES:",
+       "        raise ValueError(f\"symmetry must be one of {', '.join(SYMMETRIES)}, not {symmetry!r}\")",
+       "    if symmetry == \"none\":",
+       "        if isinstance(D, bool) or not isinstance(D, Integral) or not 1 <= D <= MAX_PACKED_D:",
+       "            raise ValueError(f\"the unpacked implementation requires an integer D in [1, {MAX_PACKED_D}]\")",
+       "        return dict(D=int(D), **unpacked_geometry(D))"
+      ]
+     ],
+     [
+      94,
+      [
+       "    if info != packed_geometry(info[\"d\"]):"
+      ],
+      [
+       "    if info != (unpacked_geometry if info.get(\"layout\") == \"unpacked\" else packed_geometry)(info[\"d\"]):"
+      ]
+     ],
+     [
+      118,
+      [
+       "def describe(D, quadrature=512, tiles=\"auto\"):",
+       "    info = bond_geometry(D)"
+      ],
+      [
+       "def describe(D, quadrature=512, tiles=\"auto\", symmetry=\"z2\"):",
+       "    \"\"\"The plan's layout record. For symmetry none it has the keys symmetry and layout",
+       "    besides; packed_sample_bytes is then the size of the unpacked samples.\"\"\"",
+       "    info = bond_geometry(D, symmetry)"
+      ]
+     ],
+     [
+      125,
+      [
+       "    samples = (2 * int(quadrature) + 1) * (10 * info[\"d\"] ** 2 + 1) * 16"
+      ],
+      [
+       "    channels = 7 if symmetry == \"none\" else 10",
+       "    samples = (2 * int(quadrature) + 1) * (channels * info[\"d\"] ** 2 + 1) * 16"
+      ]
+     ],
+     [
+      136,
+      [
+       "                historical_shape=info[\"d\"] in HISTORICAL_PACKED,",
+       "                generic_runtime_actual_GPU_qualified=False)"
+      ],
+      [
+       "                historical_shape=symmetry == \"z2\" and info[\"d\"] in HISTORICAL_PACKED,",
+       "                generic_runtime_actual_GPU_qualified=False,",
+       "                **(dict(symmetry=\"none\") if symmetry == \"none\" else {}))"
+      ]
+     ]
+    ],
+    "ode_backend.py": [
+     [
+      22,
+      [],
+      [
+       "from scipy.integrate import quad as _quad"
+      ]
+     ],
+     [
+      718,
+      [],
+      [
+       "class _UnpackedQuarticRHS(_ReducedQuarticRHS):",
+       "    \"\"\"The seven D\u00d7D channels of _ReducedQuarticRHS, with the tables of the trajectory kernel.",
+       "",
+       "    For states without Z2 symmetry (any D). Channels 0-2 are F1-F3, 3-6 the adjoint",
+       "    channels; the kernel computes for channel c jac*(ql X + X qright + rl X rright) +",
+       "    source*(coefficients[c]*(ol Y + Y oright) + fixed[c]), X = y[c], Y = y[indices[7+c]]",
+       "    (= y[indices[14+c]]): ol, oright are rl, rright as in the parent, and channels 0 and 6",
+       "    have coefficient zero (fixed sources only). The scalar accumulates",
+       "    4*source*Re tr(r F3 + F3 r\u2020), which the kernel's trace evaluates as",
+       "    Re sum(a conj(F3)) + Re sum(b F3\u1d40) with a = b = r; F3 need not be Hermitian. The",
+       "    host call is the parent's with the accumulator's imaginary part dropped, as in the",
+       "    kernel. Nothing is checked or projected: a Z2 state gives the packed results.",
+       "    \"\"\"",
+       "    unpacked = True",
+       "",
+       "    def __init__(self, q, r, rho, xp):",
+       "        super().__init__(q, r, rho, xp)",
+       "        self.full_d = self.d",
+       "        self.a = self.b = xp.ascontiguousarray(r)",
+       "        self.coefficients = xp.asarray([0., 2., 3., 1., 2., 3., 0.])",
+       "        insertion = [0, 0, 1, 4, 5, 6, 6]   # channels 0 and 6: their own, times zero",
+       "        self.gather_indices = np.asarray([list(range(7)), insertion, insertion], dtype=np.int32)",
+       "        self.gather_adjoint = np.zeros((3, 7), dtype=np.int32)",
+       "        self.device_indices = xp.asarray(self.gather_indices)",
+       "        self.device_adjoint = xp.asarray(self.gather_adjoint)",
+       "",
+       "    def __call__(self, t, y):",
+       "        out = super().__call__(t, y)",
+       "        out[-1] = out[-1].real",
+       "        return out",
+       "",
+       "",
+       "def _unpacked_pullback(q, r, rhs, samples, points, weights):",
+       "    if rhs.full_d >= 128:",
+       "        return _unpacked_pullback_chunked(q, r, rhs, samples, points, weights)",
+       "    return _reduced_quartic_pullback(q, r, rhs, samples, points, weights)",
+       "",
+       "",
+       "def _unpacked_pullback_chunked(q, r, rhs, samples, points, weights, chunk_size=64):",
+       "    \"\"\"_reduced_quartic_pullback in fixed-memory chunks, as _packed_z2_pullback_chunked.\"\"\"",
+       "    if not isinstance(chunk_size, (int, np.integer)) or chunk_size < 1:",
+       "        raise ValueError('pullback chunk_size must be a positive integer')",
+       "    xp, d, n = rhs.xp, rhs.d, len(points)",
+       "    if len(weights) != n or len(samples) != n+1:",
+       "        raise ValueError('unpacked pullback requires all quadrature nodes and endpoint')",
+       "    matrices = samples[:, :rhs.matrix_size].reshape(len(samples), 7, d, d)",
+       "    covector, correction = xp.zeros_like(r), xp.zeros_like(r)",
+       "    identity = xp.eye(d, dtype=xp.complex128)",
+       "    interface = type('QuarticChannelInterface', (), {'xp': xp, 'offsets': [0], 'half': 5})()",
+       "    endpoint = matrices[-1, 3]",
+       "    for lo in range(0, n, int(chunk_size)):",
+       "        hi = min(n, lo+int(chunk_size)); width = hi-lo",
+       "        full = xp.zeros((width+1, 10, d, d), dtype=xp.complex128)",
+       "        full[:width, 0] = rhs.rho; full[:width, 1:4] = matrices[lo:hi, :3]",
+       "        full[:width, 5:9] = matrices[n-hi:n-lo, 3:]; full[:width, 9] = identity",
+       "        full[-1, 5] = endpoint",
+       "        (_, chunk_covector, _), = _pullback(q, r, [_QUARTIC], interface, full, points[lo:hi], weights[lo:hi])",
+       "        adjusted = chunk_covector-correction; updated = covector+adjusted",
+       "        correction = (updated-covector)-adjusted; covector = updated",
+       "    environment = (endpoint+_adj(endpoint))/2",
+       "    value = _scalar(samples[-1, -1].real)",
+       "    return [(value, covector, environment)]",
+       "",
+       "",
+       "def source_integral(half_window):",
+       "    \"\"\"The integral of the source J over [-W, W]: 2^-1/2, its integral over the line, minus",
+       "    twice the tail beyond W (adaptive quadrature; the tail is 2.3e-15 at W = 30, so its own",
+       "    relative error, that of kv, does not matter).\"\"\"",
+       "    if not half_window > 0:",
+       "        raise ValueError(\"positive half_window required\")",
+       "    tail = _quad(lambda x: kv(0.25, x) / x**0.25, half_window, np.inf, epsabs=0, epsrel=1e-12, limit=200)[0]",
+       "    return 2**-0.5 - 2 * tail / (2**2.25 * math.sqrt(math.pi) * gamma(1.25))",
+       "",
+       "",
+       "def phi_expectation(R, rho, half_window):",
+       "    \"\"\"The one-point function <phi> as RcmpsCore's phi_monomial(s, 1) evaluates it on the",
+       "    window W = half_window: tr F1(a) = source_integral(W) tr(R rho + rho R\u2020), exactly, since",
+       "    the Lindbladian preserves the trace; tr(R rho + rho R\u2020) = 2 Re tr(rho R).\"\"\"",
+       "    R, rho = np.asarray(R), np.asarray(rho)",
+       "    return 2 * source_integral(half_window) * float(np.real(np.trace(rho @ R)))",
+       "",
+       ""
+      ]
+     ]
+    ],
+    "overlap_sweep_driver.py": [
+     [
+      50,
+      [
+       "    if (args.backend != \"cupy\" or args.mode != \"hybrid\" or not args.packed_z2 or"
+      ],
+      [
+       "    if (args.backend != \"cupy\" or args.mode != \"hybrid\" or args.packed_z2 == args.reduced or"
+      ]
+     ],
+     [
+      52,
+      [
+       "        raise ValueError(\"overlap requires CuPy hybrid packed Z2 and persistent_trajectory\")"
+      ],
+      [
+       "        raise ValueError(\"overlap requires CuPy hybrid persistent_trajectory with packed Z2 or reduced channels\")"
+      ]
+     ],
+     [
+      57,
+      [
+       "    if args.reduced or args.fused_rhs:",
+       "        raise ValueError(\"overlap cannot change the packed cached objective layout\")"
+      ],
+      [
+       "    if args.fused_rhs:",
+       "        raise ValueError(\"overlap cannot change the cached objective layout\")"
+      ]
+     ],
+     [
+      157,
+      [
+       "                atol=args.atol, rtol=args.rtol, max_steps=args.max_steps)"
+      ],
+      [
+       "                atol=args.atol, rtol=args.rtol, max_steps=args.max_steps, reduced=args.reduced)"
+      ]
+     ]
+    ],
+    "persistent_trajectory_backend.py": [
+     [
+      23,
+      [
+       "from .ode_backend import _PackedZ2QuarticRHS, _packed_z2_pullback, quadrature"
+      ],
+      [
+       "from .ode_backend import (_PackedZ2QuarticRHS, _UnpackedQuarticRHS, _packed_z2_pullback, _unpacked_pullback,",
+       "                          quadrature)"
+      ]
+     ],
+     [
+      28,
+      [
+       "    compilation_options, configure_shared_memory, TILES, select_tiles)"
+      ],
+      [
+       "    compilation_options, configure_shared_memory, TILES, select_tiles, unpacked_geometry)"
+      ]
+     ],
+     [
+      296,
+      [],
+      [
+       "# The rewrites of trajectory_source(D) into the kernel of the seven unpacked D x D channels of",
+       "# ode_backend._UnpackedQuarticRHS (states without Z2 symmetry): (anchor, replacement, count).",
+       "UNPACKED_REWRITES = (",
+       "    (\"matrix_blocks=10*tiles\", \"matrix_blocks=7*tiles\", 2),",
+       "    (\"total=10*d*d+1\", \"total=7*d*d+1\", 2),",
+       "    (\"indices[10+channel],adjoints[10+channel]\", \"indices[7+channel],adjoints[7+channel]\", 1),",
+       "    (\"indices[20+channel],adjoints[20+channel]\", \"indices[14+channel],adjoints[14+channel]\", 1),",
+       "    # The scalar: Re tr(r F3\u2020) + Re tr(r F3) of channel 2, with a = b = r.",
+       "    (\"v=stage[3*d*d+i],vt=stage[3*d*d+col*d+row]\", \"v=stage[2*d*d+i],vt=stage[2*d*d+col*d+row]\", 1),",
+       "    (\"make_double2(8.*source*trace,0.)\", \"make_double2(4.*source*trace,0.)\", 1),",
+       ")",
+       "",
+       "",
+       "def unpacked_trajectory_source(D, tiles=\"mma\"):",
+       "    \"\"\"CUDA source of the trajectory kernel for the seven unpacked D x D channels (any D up to",
+       "    256): trajectory_source(D, tiles) with the channel count, gather offsets and scalar of",
+       "    UNPACKED_REWRITES; every other line, the controller and the tile product included, is",
+       "    the packed kernel's.\"\"\"",
+       "    source = trajectory_source(D, tiles)",
+       "    for old, new, count in UNPACKED_REWRITES:",
+       "        if source.count(old) != count:",
+       "            raise RuntimeError(f\"unpacked trajectory anchor changed: {old!r}\")",
+       "        source = source.replace(old, new)",
+       "    return \"// Unpacked layout: seven D x D channels (ode_backend._UnpackedQuarticRHS).\\n\" + source",
+       "",
+       ""
+      ]
+     ],
+     [
+      356,
+      [
+       "        self.cp,self.rhs,self.info,self.closed = cp,rhs,geometry(rhs.d),False"
+      ],
+      [
+       "        # The unpacked channels (states without Z2 symmetry) have their own grid and source.",
+       "        self.unpacked = bool(getattr(rhs, 'unpacked', False))",
+       "        layout, source = (unpacked_geometry, unpacked_trajectory_source) if self.unpacked else (geometry, trajectory_source)",
+       "        self.cp,self.rhs,self.info,self.closed = cp,rhs,layout(rhs.d),False"
+      ]
+     ],
+     [
+      373,
+      [
+       "        self.kernel=cp.RawKernel(trajectory_source(rhs.d,self.tiles),'persistent_trajectory',"
+      ],
+      [
+       "        self.kernel=cp.RawKernel(source(rhs.d,self.tiles),'persistent_trajectory',"
+      ]
+     ],
+     [
+      441,
+      [
+       "        tiles='mma',register_cap=None):"
+      ],
+      [
+       "        tiles='mma',register_cap=None,unpacked=False):"
+      ]
+     ],
+     [
+      449,
+      [
+       "    rhs=_PackedZ2QuarticRHS(q,r,rho,xp)"
+      ],
+      [
+       "    rhs=(_UnpackedQuarticRHS if unpacked else _PackedZ2QuarticRHS)(q,r,rho,xp)"
+      ]
+     ],
+     [
+      455,
+      [
+       "        ((value,covector,environment),)=_packed_z2_pullback(q,r,rhs,samples,points,weights)"
+      ],
+      [
+       "        ((value,covector,environment),)=(_unpacked_pullback if unpacked else _packed_z2_pullback)(q,r,rhs,samples,points,weights)"
+      ]
+     ],
+     [
+      491,
+      [
+       "def trajectory_ptx_report(d,cp,directory=None,tiles='mma',register_cap=None):",
+       "    \"\"\"Gated CUDA NVRTC audit of the tile products and scalar instruction types.\"\"\""
+      ],
+      [
+       "def trajectory_ptx_report(d,cp,directory=None,tiles='mma',register_cap=None,unpacked=False):",
+       "    \"\"\"Gated CUDA NVRTC audit of the tile products and scalar instruction types; unpacked:",
+       "    of unpacked_trajectory_source(d), the kernel of the unpacked channels.\"\"\""
+      ]
+     ],
+     [
+      505,
+      [
+       "    program=compiler._NVRTCProgram(trajectory_source(d,tiles),'persistent_trajectory_audit.cu',method='ptx')"
+      ],
+      [
+       "    program=compiler._NVRTCProgram((unpacked_trajectory_source if unpacked else trajectory_source)(d,tiles),",
+       "                                   'persistent_trajectory_audit.cu',method='ptx')"
+      ]
+     ],
+     [
+      513,
+      [
+       "        (target/(f'persistent_trajectory_d{d}.ptx' if tiles=='mma' else f'persistent_trajectory_d{d}_scalar.ptx')).write_text(ptx)"
+      ],
+      [
+       "        name=f\"persistent_trajectory_{'unpacked_D' if unpacked else 'd'}{d}{'' if tiles=='mma' else '_scalar'}.ptx\"",
+       "        (target/name).write_text(ptx)"
+      ]
+     ],
+     [
+      520,
+      [
+       "    if rhs.xp is not np or rhs.d>4:raise ValueError('CPU trajectory oracle is limited to physical D<=8')"
+      ],
+      [
+       "    if rhs.xp is not np or rhs.full_d>8:raise ValueError('CPU trajectory oracle is limited to physical D<=8')"
+      ]
+     ]
+    ],
+    "persistent_trajectory_overlap.py": [
+     [
+      22,
+      [
+       "from .ode_backend import _PackedZ2QuarticRHS,_packed_z2_pullback,quadrature"
+      ],
+      [
+       "from .ode_backend import _PackedZ2QuarticRHS,_UnpackedQuarticRHS,_packed_z2_pullback,_unpacked_pullback,quadrature"
+      ]
+     ],
+     [
+      30,
+      [
+       "    \"\"\"Same run/pullback/scaling as PreparedQuartic; new one-kernel solver.\"\"\""
+      ],
+      [
+       "    \"\"\"Same run/pullback/scaling as PreparedQuartic; new one-kernel solver. args.reduced",
+       "    selects the unpacked channels (states without Z2 symmetry), else the packed Z2 ones.\"\"\""
+      ]
+     ],
+     [
+      34,
+      [
+       "        self.pullback=_packed_z2_pullback;started=time.perf_counter()"
+      ],
+      [
+       "        unpacked=bool(getattr(args,'reduced',False))",
+       "        self.pullback=_unpacked_pullback if unpacked else _packed_z2_pullback;started=time.perf_counter()"
+      ]
+     ],
+     [
+      37,
+      [
+       "        self.rhs=_PackedZ2QuarticRHS(q,r,rho,cp)"
+      ],
+      [
+       "        self.rhs=(_UnpackedQuarticRHS if unpacked else _PackedZ2QuarticRHS)(q,r,rho,cp)"
+      ]
+     ]
+    ],
+    "sweep_driver.py": [
+     [
+      23,
+      [
+       "from .ode_backend import evaluate_phi4, evaluate_quartic"
+      ],
+      [
+       "from .ode_backend import evaluate_phi4, evaluate_quartic, phi_expectation"
+      ]
+     ],
+     [
+      48,
+      [
+       "        if args.backend != \"cupy\" or args.mode != \"hybrid\" or not args.packed_z2:"
+      ],
+      [
+       "        # --packed-z2: the packed Z2 channels; --reduced: the unpacked ones (any state).",
+       "        if args.backend != \"cupy\" or args.mode != \"hybrid\" or args.packed_z2 == args.reduced:"
+      ]
+     ],
+     [
+      51,
+      [
+       "                             \"--backend cupy --mode hybrid --packed-z2\")"
+      ],
+      [
+       "                             \"--backend cupy --mode hybrid and one of --packed-z2, --reduced\")"
+      ]
+     ],
+     [
+      56,
+      [
+       "                args.quartic_backend != \"persistent_trajectory\" or not args.packed_z2):"
+      ],
+      [
+       "                args.quartic_backend != \"persistent_trajectory\" or args.packed_z2 == args.reduced):"
+      ]
+     ],
+     [
+      58,
+      [
+       "                             \"--quartic-backend persistent_trajectory --packed-z2\")",
+       "        if args.reduced or args.fused_rhs:",
+       "            raise ValueError(\"--device-controller is incompatible with --reduced and --fused-rhs\")"
+      ],
+      [
+       "                             \"--quartic-backend persistent_trajectory and one of --packed-z2, --reduced\")",
+       "        if args.fused_rhs:",
+       "            raise ValueError(\"--device-controller is incompatible with --fused-rhs\")"
+      ]
+     ],
+     [
+      328,
+      [],
+      [
+       "            row[\"phi\"]=phi_expectation(state[\"R\"],state[\"rho\"],args.window)"
+      ]
+     ],
+     [
+      340,
+      [],
+      [
+       "            report[\"final_phi\"]=phi_expectation(state[\"R\"],state[\"rho\"],args.window)"
+      ]
+     ]
+    ]
+   }
   }
  ]
 }

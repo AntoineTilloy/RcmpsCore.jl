@@ -24,9 +24,19 @@ gpu/julia/export_state.jl, read by read_portable and by gpu/julia/import_state.j
       mass = 1.0                        optional, real, default 1.0; model "phi4" has no
                                         mass parameter (its normal-ordering mass is 1)
                                         and requires 1.0
+      symmetry = "none"                 optional: the symmetry of the parametrization that
+                                        the producer imposed, "Z2" (R odd and K even under
+                                        the parity diag(1, ..., 1, -1, ..., -1) with D/2
+                                        even states first, as RandomStateZ2 and the packed
+                                        Z2 optimizer of rcmps_gpu) or "none"; absent: not
+                                        stated (the matrices may still have a symmetry)
       energy = -0.156                   optional, real: energy density at [integration]
       gradient_norm = 6.4e-6            optional, real: sqrt(metric(g, g)) of the gradient,
                                         with metric_reg of [manifold]
+      phi = 0.41                        optional, real: the one-point function <phi>, as
+                                        phi_monomial(s, 1) of RcmpsCore evaluates it at
+                                        [integration] (the window max_point enters only
+                                        through the factor int_{-W}^{W} J = 2^-1/2 - O(e^-W))
       validation_passed = true          optional: set by a producer that validated the state
       producer = "..."                  optional: program and version that wrote the directory
       source = "..."                    optional: where the state comes from (a file name or
@@ -46,7 +56,9 @@ gpu/julia/export_state.jl, read by read_portable and by gpu/julia/import_state.j
     Every .bin file is a headerless D x D complex128 matrix, little-endian, column-major
     (what Julia's write(io, Matrix{ComplexF64}) writes on a little-endian machine), of
     exactly 16 D^2 bytes. Readers ignore other keys and files; writers may add keys, and
-    .bin files that are D x D complex128 matrices too.
+    .bin files that are D x D complex128 matrices too. The optional keys symmetry and phi
+    were added to format 1 after rcmps_gpu 0.1.0; readers that predate them ignore them,
+    as any other key, so the format version is unchanged.
 
 read_portable also reads the unversioned directories of the research code (metadata.toml
 without `format`): initial/ and optimized_state/ of the GPU optimizer before format 1, and
@@ -79,14 +91,15 @@ import tomllib
 
 import numpy as np
 
-__all__ = ["FORMAT", "FORMAT_VERSION", "Integration", "Manifold", "StateRecord",
+__all__ = ["FORMAT", "FORMAT_VERSION", "SYMMETRIES", "Integration", "Manifold", "StateRecord",
            "read_jld2", "read_portable", "write_portable"]
 
 FORMAT = "rcmps-portable-state"
 FORMAT_VERSION = 1
 # The keys of format 1, in the order write_portable writes them.
-KEYS = ("format", "format_version", "D", "model", "coupling", "mass", "energy", "gradient_norm",
-        "validation_passed", "producer", "source", "info", "integration", "manifold")
+KEYS = ("format", "format_version", "D", "model", "coupling", "mass", "symmetry", "energy", "gradient_norm",
+        "phi", "validation_passed", "producer", "source", "info", "integration", "manifold")
+SYMMETRIES = ("Z2", "none")
 MATRICES = ("R", "K", "rho", "gradient")
 
 
@@ -112,7 +125,7 @@ class Manifold:
 @dataclass(frozen=True, eq=False)
 class StateRecord:
     """A state as stored. Matrices are C-ordered complex128 (D, D) arrays, or None when
-    absent (and R, K when read with arrays=False); energy, gradient_norm,
+    absent (and R, K when read with arrays=False); symmetry, energy, gradient_norm, phi,
     validation_passed, integration, manifold, producer, source and info are None when
     absent. `origin` is "jld2", "portable" (format 1) or "portable-legacy"; `files`
     lists the files of a portable directory that the record was read from, and
@@ -127,6 +140,8 @@ class StateRecord:
     gradient: np.ndarray | None = None
     energy: float | None = None
     gradient_norm: float | None = None
+    symmetry: str | None = None
+    phi: float | None = None
     validation_passed: bool | None = None
     integration: Integration | None = None
     manifold: Manifold | None = None
@@ -166,6 +181,12 @@ def _flag(value, name):
     if not isinstance(value, (bool, np.bool_)):
         raise ValueError(f"{name} must be true or false, not {value!r}")
     return bool(value)
+
+
+def _symmetry(value, name):
+    if value not in SYMMETRIES:
+        raise ValueError(f"{name} must be one of {', '.join(map(repr, SYMMETRIES))}, not {value!r}")
+    return value
 
 
 def _optional(convert, value, name, **options):
@@ -292,6 +313,7 @@ def _format1(metadata):
         coupling=_real(get("coupling"), "coupling"), mass=_real(get("mass", 1.0), "mass"),
         energy=_optional(_real, get("energy"), "energy"),
         gradient_norm=_optional(_real, get("gradient_norm"), "gradient_norm", nonnegative=True),
+        symmetry=_optional(_symmetry, get("symmetry"), "symmetry"), phi=_optional(_real, get("phi"), "phi"),
         validation_passed=_optional(_flag, get("validation_passed"), "validation_passed"),
         producer=_optional(_text, get("producer"), "producer"),
         source=_optional(_text, get("source"), "source"),
@@ -413,8 +435,10 @@ def write_portable(directory, record, *, extra=None, extra_matrices=None):
     _check_model(model, mass)
     head = dict(format=FORMAT, format_version=FORMAT_VERSION, D=d, model=model,
                 coupling=_real(record.coupling, "coupling"), mass=mass,
+                symmetry=_optional(_symmetry, record.symmetry, "symmetry"),
                 energy=_optional(_real, record.energy, "energy"),
                 gradient_norm=_optional(_real, record.gradient_norm, "gradient_norm", nonnegative=True),
+                phi=_optional(_real, record.phi, "phi"),
                 validation_passed=_optional(_flag, record.validation_passed, "validation_passed"),
                 producer=_optional(_text, record.producer, "producer"),
                 source=_optional(_text, record.source, "source"), info=_optional(_text, record.info, "info"))

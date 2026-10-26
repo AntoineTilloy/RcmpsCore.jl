@@ -1,7 +1,9 @@
 """GPU-only accuracy refinement of a stopped dimension-sweep checkpoint.
 
 Requires a stopped JSON/NPZ generation; accuracy and convergence are distinct. Never runs a CPU objective
-or optimizer, and does not overwrite the accepted state or its L-BFGS history.
+or optimizer, and does not overwrite the accepted state or its L-BFGS history. Every row records the
+one-point function <phi> (ode_backend.phi_expectation, at the row's window); the report adds <phi> by
+the route of RcmpsCore's phi_monomial(s, 1), the ODE of the first monomial, at the refined settings.
 """
 import argparse
 import hashlib
@@ -13,8 +15,20 @@ import numpy as np
 
 from .. import __version__
 from ..io import Integration, Manifold, StateRecord, read_portable, write_portable
-from .runtime.numerics import metric
+from .runtime.numerics import adj, metric
+from .runtime import ode_backend
 from .runtime import sweep_driver as driver
+
+
+def phi_by_ode(r, k, rho, controls, xp):
+    """<phi> as phi_monomial(s, 1) of RcmpsCore computes it: tr F1(a) of the monomial channels
+    F0 = rho, dF1 = 2|t| L(F1) dt + j(t) (R F0 + F0 R†) dt (ode_backend._evaluate, the
+    host-driven DOP853, which also integrates the adjoint channels of the gradient)."""
+    spec = ode_backend._Spec(2, ((0, 1, True, 1.), (0, 1, False, 1.)))
+    result = ode_backend._evaluate(r, -1j*k-adj(r)@r/2, rho, [spec], [1.], xp=xp, half_window=controls.window,
+                                   n_quad=controls.quadrature, atol=controls.atol, rtol=controls.rtol,
+                                   initial_step=None, max_steps=controls.max_steps, use_graph=False, progress=None)
+    return float(result["value"]), result["stats"]
 
 
 def main():
@@ -86,6 +100,7 @@ def main():
         row = dict(name=name, controls={key: vars(controls)[key] for key in
                    ("nodes", "window", "quadrature", "atol", "rtol")}, seconds=seconds,
                    energy=energy, gradient_norm=float(np.sqrt(max(0., metric(rho, gradient, gradient, args.metric_reg)))),
+                   phi=ode_backend.phi_expectation(r, rho, controls.window),
                    energy_difference_standard=abs(energy-standard_energy),
                    energy_difference_cached=abs(energy-float(state["energy"])),
                    energy_difference_saved_cpu=abs(energy-comparison.energy) if comparison and comparison.energy is not None else None,
@@ -106,18 +121,23 @@ def main():
         print(json.dumps({key: value for key, value in row.items() if key != "stats"}), flush=True)
     validation["standard_warm_median_seconds"] = float(np.median(
         [x["seconds"] for x in validation["evaluations"] if x["name"].startswith("standard_warm")]))
+    final = validation["evaluations"][-1]
+    phi, phi_stats = phi_by_ode(r, k, rho, argparse.Namespace(**{**vars(args), **final["controls"]}), cp)
+    validation.update(symmetry="none" if args.reduced else "Z2", phi=final["phi"], phi_ode=phi,
+                      phi_ode_difference=abs(phi-final["phi"]),
+                      phi_ode_stats={key: phi_stats[key] for key in ("accepted_steps", "rejected_steps", "total_seconds")})
     output.write_text(json.dumps(validation, indent=2)+"\n")
     if not validation["passed"]:
         raise RuntimeError("Final GPU accuracy refinement failed; inspect the saved report")
     # Portable state, format 1 of rcmps_gpu.io: gpu/julia/import_state.jl imports it into Julia
     # (no NPZ dependency is added to the CPU package), and it is a valid --initial.
     export = output.parent / "optimized_state"
-    final = validation["evaluations"][-1]
     refined = final["controls"]
     reached = bool(final["gradient_target_reached"])
     write_portable(export, StateRecord(
         D=len(r), model="phi4", coupling=initial.coupling, R=r, K=k, rho=rho, gradient=gradients[final["name"]],
-        energy=final["energy"], gradient_norm=final["gradient_norm"], validation_passed=True,
+        energy=final["energy"], gradient_norm=final["gradient_norm"], phi=final["phi"],
+        symmetry=validation["symmetry"], validation_passed=True,
         integration=Integration(refined["quadrature"], refined["window"], refined["atol"], refined["rtol"]),
         manifold=Manifold(args.metric_reg, float(state["precond_reg"])),
         producer=f"rcmps_gpu {__version__}, optimizer validate_sweep",

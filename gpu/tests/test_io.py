@@ -29,7 +29,7 @@ def full_record(d=6, seed=3):
     return io.StateRecord(
         D=d, model="phi4", coupling=2.7, R=complex_matrix(rng, d), K=complex_matrix(rng, d),
         rho=complex_matrix(rng, d), gradient=complex_matrix(rng, d), energy=-0.30228143199435653,
-        gradient_norm=2.900325420717565e-05, validation_passed=True,
+        gradient_norm=2.900325420717565e-05, symmetry="none", phi=-0.6459077121091302, validation_passed=True,
         integration=io.Integration(1024, 40.0, 1e-14, 1e-13, 1_000_000),
         manifold=io.Manifold(1e-3, 8.41190161973086e-12, 1e-2),
         producer="test", source='a "quoted" \\ source\nwith a newline, a tab\t and é', info="info")
@@ -93,14 +93,16 @@ class Format1(unittest.TestCase):
         for name in io.MATRICES:
             self.assertEqual(getattr(back, name).tobytes(), getattr(record, name).tobytes(), name)
             self.assertTrue(getattr(back, name).flags.c_contiguous)
-        for name in ("D", "model", "coupling", "mass", "energy", "gradient_norm", "validation_passed",
-                     "integration", "manifold", "producer", "source", "info"):
+        for name in ("D", "model", "coupling", "mass", "symmetry", "energy", "gradient_norm", "phi",
+                     "validation_passed", "integration", "manifold", "producer", "source", "info"):
             self.assertEqual(getattr(back, name), getattr(record, name), name)
         self.assertEqual(back.origin, "portable")
         self.assertEqual(back.files, ("metadata.toml", "R.bin", "K.bin", "rho.bin", "gradient.bin"))
         self.assertEqual((back.metadata["gradient_target"], back.metadata["note"]), (3e-5, "x"))
         text = (directory / "metadata.toml").read_text(encoding="utf-8")
-        self.assertTrue(text.startswith('format = "rcmps-portable-state"\nformat_version = 1\nD = 6\n'))
+        self.assertTrue(text.startswith('format = "rcmps-portable-state"\nformat_version = 1\nD = 6\nmodel = "phi4"\n'
+                                        'coupling = 2.7\nmass = 1.0\nsymmetry = "none"\nenergy = -0.30228143199435653\n'
+                                        'gradient_norm = 2.900325420717565e-05\nphi = -0.6459077121091302\n'))
         self.assertEqual(sorted(p.name for p in directory.iterdir()),
                          ["K.bin", "R.bin", "extra.bin", "gradient.bin", "metadata.toml", "rho.bin"])
         again = io.write_portable(self.root / "again", back)
@@ -112,8 +114,8 @@ class Format1(unittest.TestCase):
         minimal = io.StateRecord(D=6, model="phi4", coupling=2, R=record.R, K=record.K)
         back = io.read_portable(io.write_portable(self.root / "state", minimal))
         self.assertEqual((back.rho, back.gradient, back.energy, back.gradient_norm, back.validation_passed,
-                          back.integration, back.manifold, back.producer, back.source, back.info),
-                         (None,) * 10)
+                          back.integration, back.manifold, back.producer, back.source, back.info, back.symmetry,
+                          back.phi), (None,) * 12)
         self.assertEqual((back.mass, back.coupling, type(back.coupling)), (1.0, 2.0, float))
         self.assertEqual(back.files, ("metadata.toml", "R.bin", "K.bin"))
         metadata = io.read_portable(self.root / "state", arrays=False)
@@ -186,6 +188,9 @@ class Format1(unittest.TestCase):
             ("n_quad = 1024", "n_quad = 0", r"\[integration\].n_quad must be an integer >= 1"),
             ("metric_reg = 0.001\n", "", r"\[manifold\] has no metric_reg"),
             ("mass = 1.0", "mass = 0.5", "model phi4 has no mass parameter"),
+            ('symmetry = "none"', 'symmetry = "z2"', "symmetry must be one of 'Z2', 'none', not 'z2'"),
+            ('symmetry = "none"', "symmetry = 2", "symmetry must be one of"),
+            ("phi = -0.6459077121091302", "phi = inf", "phi must be finite"),
         ]
         for old, new, message in cases:
             with self.subTest(new=new):
@@ -206,6 +211,9 @@ class Format1(unittest.TestCase):
             (replace(record, integration=io.Integration(0, 40.0, 1e-14, 1e-13)), {}, "integration.n_quad"),
             (record, dict(extra=dict(energy=1.0)), "extra metadata key 'energy' is not allowed"),
             (record, dict(extra=dict(integration=1.0)), "extra metadata key 'integration' is not allowed"),
+            (replace(record, symmetry="Z3"), {}, "symmetry must be one of 'Z2', 'none'"),
+            (replace(record, phi=math.nan), {}, "phi must be finite"),
+            (record, dict(extra=dict(symmetry="Z2")), "extra metadata key 'symmetry' is not allowed"),
             (record, dict(extra_matrices=dict(rho=record.R)), "extra matrix name 'rho' is not allowed"),
             (record, dict(extra_matrices=dict(Q=record.R[:2, :2])), "Q must be a 6x6 matrix"),
         ]

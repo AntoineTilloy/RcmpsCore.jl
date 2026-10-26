@@ -20,11 +20,12 @@ from .persistent_rows_cached import cached_row_source
 from .device_control_backend import (FLOAT_NAMES, INT_NAMES, STATUS, DeviceControlFailure,
                                     clipped_step, controller_factor)
 from .jax_source import COEFFICIENTS, MAXIMUM, SEGMENTS, DEGREE, source_numpy
-from .ode_backend import _PackedZ2QuarticRHS, _packed_z2_pullback, quadrature
+from .ode_backend import (_PackedZ2QuarticRHS, _UnpackedQuarticRHS, _packed_z2_pullback, _unpacked_pullback,
+                          quadrature)
 
 SUPPORTED_PACKED = tuple(range(1, 257))
 from .generic_layout import (packed_geometry, dynamic_shared_bytes,
-    compilation_options, configure_shared_memory, TILES, select_tiles)
+    compilation_options, configure_shared_memory, TILES, select_tiles, unpacked_geometry)
 TIMEOUT_STATUS = 6
 
 
@@ -292,6 +293,32 @@ extern "C" __global__ void persistent_trajectory(
     return definitions+header+SCALARS+rhs_signature+COORDINATES+rhs+"\n}\n"+kernel
 
 
+# The rewrites of trajectory_source(D) into the kernel of the seven unpacked D x D channels of
+# ode_backend._UnpackedQuarticRHS (states without Z2 symmetry): (anchor, replacement, count).
+UNPACKED_REWRITES = (
+    ("matrix_blocks=10*tiles", "matrix_blocks=7*tiles", 2),
+    ("total=10*d*d+1", "total=7*d*d+1", 2),
+    ("indices[10+channel],adjoints[10+channel]", "indices[7+channel],adjoints[7+channel]", 1),
+    ("indices[20+channel],adjoints[20+channel]", "indices[14+channel],adjoints[14+channel]", 1),
+    # The scalar: Re tr(r F3†) + Re tr(r F3) of channel 2, with a = b = r.
+    ("v=stage[3*d*d+i],vt=stage[3*d*d+col*d+row]", "v=stage[2*d*d+i],vt=stage[2*d*d+col*d+row]", 1),
+    ("make_double2(8.*source*trace,0.)", "make_double2(4.*source*trace,0.)", 1),
+)
+
+
+def unpacked_trajectory_source(D, tiles="mma"):
+    """CUDA source of the trajectory kernel for the seven unpacked D x D channels (any D up to
+    256): trajectory_source(D, tiles) with the channel count, gather offsets and scalar of
+    UNPACKED_REWRITES; every other line, the controller and the tile product included, is
+    the packed kernel's."""
+    source = trajectory_source(D, tiles)
+    for old, new, count in UNPACKED_REWRITES:
+        if source.count(old) != count:
+            raise RuntimeError(f"unpacked trajectory anchor changed: {old!r}")
+        source = source.replace(old, new)
+    return "// Unpacked layout: seven D x D channels (ode_backend._UnpackedQuarticRHS).\n" + source
+
+
 def _controls(points, atol, rtol, initial_step, max_steps, max_device_seconds):
     points = np.asarray(points, dtype=np.float64)
     if (points.ndim != 1 or not len(points) or not np.all(np.isfinite(points)) or
@@ -326,7 +353,10 @@ class PersistentTrajectoryDOP853:
             setattr(rhs,name,cp.ascontiguousarray(value))
         points, self.endpoint, self.initial_h = _controls(points,atol,rtol,initial_step,max_steps,max_device_seconds)
         started = time.perf_counter()
-        self.cp,self.rhs,self.info,self.closed = cp,rhs,geometry(rhs.d),False
+        # The unpacked channels (states without Z2 symmetry) have their own grid and source.
+        self.unpacked = bool(getattr(rhs, 'unpacked', False))
+        layout, source = (unpacked_geometry, unpacked_trajectory_source) if self.unpacked else (geometry, trajectory_source)
+        self.cp,self.rhs,self.info,self.closed = cp,rhs,layout(rhs.d),False
         self.atol,self.rtol,self.max_steps = float(atol),float(rtol),int(max_steps)
         self.max_device_seconds = float(max_device_seconds)
         props = cp.cuda.runtime.getDeviceProperties(cp.cuda.Device().id)
@@ -340,7 +370,7 @@ class PersistentTrajectoryDOP853:
         # register_cap: the cap the worker selected (generic_layout.register_caps); this
         # solver compiles with it once and refuses a grid that is not resident.
         self.register_cap=register_cap
-        self.kernel=cp.RawKernel(trajectory_source(rhs.d,self.tiles),'persistent_trajectory',
+        self.kernel=cp.RawKernel(source(rhs.d,self.tiles),'persistent_trajectory',
             options=compilation_options(rhs.d,register_cap),enable_cooperative_groups=True)
         self.kernel.compile()
         self.dynamic_shared_bytes=configure_shared_memory(self.kernel,props,self.info,self.tiles)
@@ -408,7 +438,7 @@ class PersistentTrajectoryDOP853:
 
 def evaluate_quartic_persistent_trajectory(R,Q,rho,g=1.,*,xp,half_window=30.,n_quad=512,
         atol=1e-13,rtol=1e-12,initial_step=None,max_steps=1_000_000,max_device_seconds=30.,return_samples=False,
-        tiles='mma',register_cap=None):
+        tiles='mma',register_cap=None,unpacked=False):
     start=time.perf_counter()
     if xp.__name__!='cupy':raise ValueError('persistent trajectory evaluator is GPU-only')
     if any(x.dtype!=xp.complex128 for x in (R,Q,rho)):raise TypeError('input matrices require complex128')
@@ -416,13 +446,13 @@ def evaluate_quartic_persistent_trajectory(R,Q,rho,g=1.,*,xp,half_window=30.,n_q
             any(not bool(xp.isfinite(x).all().item()) for x in (R,Q,rho))):
         raise ValueError('input matrices require equally shaped finite square complex128 arrays')
     r,q,rho=(xp.asarray(x) for x in (R,Q,rho))
-    rhs=_PackedZ2QuarticRHS(q,r,rho,xp)
+    rhs=(_UnpackedQuarticRHS if unpacked else _PackedZ2QuarticRHS)(q,r,rho,xp)
     points,weights=quadrature(half_window,n_quad)
     with PersistentTrajectoryDOP853(rhs,np.r_[points,math.sqrt(half_window)],atol=atol,rtol=rtol,
             initial_step=initial_step,max_steps=max_steps,max_device_seconds=max_device_seconds,tiles=tiles,
             register_cap=register_cap) as solver:
         samples,stats=solver.run();begin=time.perf_counter()
-        ((value,covector,environment),)=_packed_z2_pullback(q,r,rhs,samples,points,weights)
+        ((value,covector,environment),)=(_unpacked_pullback if unpacked else _packed_z2_pullback)(q,r,rhs,samples,points,weights)
         xp.cuda.get_current_stream().synchronize()
         stats.update(contraction_seconds=time.perf_counter()-begin,total_seconds=time.perf_counter()-start)
         result=dict(value=float(g)*value,energy=float(g)*value,covector=float(g)*covector,
@@ -458,8 +488,9 @@ def audit_trajectory_ptx(ptx,tiles):
                 fp32_arithmetic_instructions=fp32,shfl_sync_idx_instructions=shuffles,fma_rn_f64_instructions=fmas)
 
 
-def trajectory_ptx_report(d,cp,directory=None,tiles='mma',register_cap=None):
-    """Gated CUDA NVRTC audit of the tile products and scalar instruction types."""
+def trajectory_ptx_report(d,cp,directory=None,tiles='mma',register_cap=None,unpacked=False):
+    """Gated CUDA NVRTC audit of the tile products and scalar instruction types; unpacked:
+    of unpacked_trajectory_source(d), the kernel of the unpacked channels."""
     import importlib.util
     from pathlib import Path
     from cupy.cuda import compiler
@@ -471,20 +502,22 @@ def trajectory_ptx_report(d,cp,directory=None,tiles='mma',register_cap=None):
     includes=tuple('-I'+str(path) for path in directories if path.is_dir())
     includes+=tuple(core._get_cccl_include_options())
     arch=cp.cuda.Device().compute_capability
-    program=compiler._NVRTCProgram(trajectory_source(d,tiles),'persistent_trajectory_audit.cu',method='ptx')
+    program=compiler._NVRTCProgram((unpacked_trajectory_source if unpacked else trajectory_source)(d,tiles),
+                                   'persistent_trajectory_audit.cu',method='ptx')
     binary,_=program.compile(('--std=c++17','--device-c','--device-as-default-execution-space',
                              '-arch=compute_'+arch)+compilation_options(d,register_cap)[1:]+includes)
     ptx=binary.decode()
     audit=audit_trajectory_ptx(ptx,tiles)
     if directory:
         target=Path(directory);target.mkdir(parents=True,exist_ok=True)
-        (target/(f'persistent_trajectory_d{d}.ptx' if tiles=='mma' else f'persistent_trajectory_d{d}_scalar.ptx')).write_text(ptx)
+        name=f"persistent_trajectory_{'unpacked_D' if unpacked else 'd'}{d}{'' if tiles=='mma' else '_scalar'}.ptx"
+        (target/name).write_text(ptx)
     return dict(audit,arch=arch,controller_uses_explicit_round_to_nearest_intrinsics=True)
 
 
 def integrate_trajectory_numpy(rhs,points,*,atol=1e-13,rtol=1e-12,initial_step=None,max_steps=1_000_000):
     """Bounded small-D science oracle for the new explicit loop/interpolation."""
-    if rhs.xp is not np or rhs.d>4:raise ValueError('CPU trajectory oracle is limited to physical D<=8')
+    if rhs.xp is not np or rhs.full_d>8:raise ValueError('CPU trajectory oracle is limited to physical D<=8')
     points,a,h=_controls(points,atol,rtol,initial_step,max_steps,30.)
     y=rhs.initial.copy();k=np.empty((16,)+y.shape,dtype=np.complex128)
     samples=np.empty((len(points),)+y.shape,dtype=np.complex128)

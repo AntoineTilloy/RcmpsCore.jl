@@ -7,7 +7,8 @@
 # manifold parameters, e0, gradient and info, all exactly. Directories that rcmps_gpu.io
 # refuses (a format_version that is not an integer, an empty model name) are refused too.
 # Without its gradient or [integration], the energy of the export is not imported as e0
-# (which a checkpoint holds only with both) but recorded in info. Prints one line per check.
+# (which a checkpoint holds only with both) but recorded in info. The optional keys symmetry
+# and phi are written and read back, and an unknown symmetry is refused. Prints one line per check.
 #
 # Usage: julia --project=PATH/TO/RcmpsCore.jl check_portable.jl [FIXTURES_DIRECTORY]
 include(joinpath(@__DIR__, "export_state.jl"))
@@ -66,6 +67,18 @@ function check_portable(fixtures::AbstractString)
         check("an empty model name is not written", refused(() -> write_portable(joinpath(tmp, "unwritten");
               R=original.R, K=original.K, model="", coupling=2.0), "the model name is empty") &&
               !ispath(joinpath(tmp, "unwritten")))
+        # The optional keys symmetry and phi (added to format 1 after rcmps_gpu 0.1.0).
+        keyed = write_portable(joinpath(tmp, "keyed"); R=original.R, K=original.K, model="phi4", coupling=2.0,
+                               symmetry="none", phi=-0.25)
+        p = read_portable(keyed)
+        check("symmetry and phi are written and read back", p.symmetry == "none" && p.phi === -0.25 &&
+              occursin("mass = 1.0\nsymmetry = \"none\"\n", read(joinpath(keyed, "metadata.toml"), String)))
+        check("a directory without them reads nothing", isnothing(read_portable(committed).symmetry) &&
+              isnothing(read_portable(committed).phi))
+        check("an unknown symmetry is refused", refused(() -> read_portable(edited("symmetry",
+              "mass = 1.0\n", "mass = 1.0\nsymmetry = \"z2\"\n")), "symmetry must be one of \"Z2\", \"none\"") &&
+              refused(() -> write_portable(joinpath(tmp, "unknown"); R=original.R, K=original.K, model="phi4",
+                                           coupling=2.0, symmetry="Z3"), "symmetry must be one of"))
         # An energy is imported as e0 only with its gradient and [integration]; otherwise e0
         # stays NaN and info records what the directory had, and an export carries no energy.
         energy, gnorm = repr(original.e0), repr(read_portable(committed).gradient_norm)

@@ -8,8 +8,10 @@ using RcmpsCore, LinearAlgebra, TOML
 const PORTABLE_FORMAT = "rcmps-portable-state"
 const PORTABLE_FORMAT_VERSION = 1
 # Order of the format-1 keys in metadata.toml; other keys follow, sorted.
-const PORTABLE_KEYS = ["format","format_version","D","model","coupling","mass","energy","gradient_norm",
-                       "validation_passed","producer","source","info"]
+const PORTABLE_KEYS = ["format","format_version","D","model","coupling","mass","symmetry","energy","gradient_norm",
+                       "phi","validation_passed","producer","source","info"]
+# Values of the optional key symmetry (added to format 1 after rcmps_gpu 0.1.0).
+const PORTABLE_SYMMETRIES = ("Z2", "none")
 
 Base.ENDIAN_BOM == 0x04030201 || error("portable state files are little-endian; this machine is big-endian")
 
@@ -52,6 +54,10 @@ end
 portable_optional(f, value, name; options...) = isnothing(value) ? nothing : f(value, name; options...)
 function portable_text(value, name)
     value isa AbstractString || error("$name must be a string, not $(repr(value))")
+    return String(value)
+end
+function portable_symmetry(value, name)
+    value in PORTABLE_SYMMETRIES || error("$name must be one of $(join(repr.(PORTABLE_SYMMETRIES), ", ")), not $(repr(value))")
     return String(value)
 end
 function portable_flag(value, name)
@@ -106,9 +112,12 @@ function read_portable(directory::AbstractString)
         manifold = portable_optional(portable_manifold, get(metadata, "manifold", nothing), "[manifold]")
         producer = portable_optional(portable_text, get(metadata, "producer", nothing), "producer")
         info = portable_optional(portable_text, get(metadata, "info", nothing), "info")
+        symmetry = portable_optional(portable_symmetry, get(metadata, "symmetry", nothing), "symmetry")
+        phi = portable_optional(portable_real, get(metadata, "phi", nothing), "phi")
         legacy = false
     else
         model, mass, producer, info, legacy = "phi4", 1.0, nothing, nothing, true
+        symmetry, phi = nothing, nothing
         saved = false   # whether a value comes from the saved_* keys
         energy = get(metadata, "energy", nothing)
         if isnothing(energy) && haskey(metadata, "saved_energy") && portable_available(metadata, "saved_energy_available")
@@ -151,6 +160,7 @@ function read_portable(directory::AbstractString)
             gradient=isnothing(gradient) ? nothing : matrix(gradient),
             energy=portable_optional(portable_real, energy, "energy"),
             gradient_norm=portable_optional(portable_real, gnorm, "gradient_norm"; nonnegative=true),
+            symmetry=symmetry, phi=phi,
             validation_passed=portable_optional(portable_flag, get(metadata, "validation_passed", nothing), "validation_passed"),
             integration=integration, manifold=manifold, producer=producer,
             source=portable_optional(portable_text, get(metadata, "source", nothing), "source"), info=info,
@@ -159,18 +169,22 @@ end
 
 """Write a format-1 directory, which must not exist. `R`, `K`, `rho`, `gradient`: matrices or
 `nothing`; `integration`, `manifold`: NamedTuples (fields as in the format) or `nothing`;
-`extra`: further top-level keys. The .bin files are written first, metadata.toml last."""
+`symmetry`: "Z2", "none" or `nothing`; `extra`: further top-level keys. The .bin files are
+written first, metadata.toml last."""
 function write_portable(directory::AbstractString; R, K, model, coupling, mass=1.0, rho=nothing, gradient=nothing,
-                        energy=nothing, gradient_norm=nothing, validation_passed=nothing, producer=nothing,
-                        source=nothing, info=nothing, integration=nothing, manifold=nothing, extra=Dict{String,Any}())
+                        energy=nothing, gradient_norm=nothing, symmetry=nothing, phi=nothing, validation_passed=nothing,
+                        producer=nothing, source=nothing, info=nothing, integration=nothing, manifold=nothing,
+                        extra=Dict{String,Any}())
     ispath(directory) && error("Refusing to overwrite $directory: choose a new directory")
     d = size(R, 1)
     portable_check_model(model, mass)
     imag(coupling) == 0 || error("model coupling must be real")
     metadata = Dict{String,Any}("format"=>PORTABLE_FORMAT, "format_version"=>PORTABLE_FORMAT_VERSION, "D"=>d,
         "model"=>String(model), "coupling"=>portable_real(real(coupling), "coupling"), "mass"=>portable_real(mass, "mass"))
-    for (key, value) in (("energy", energy), ("gradient_norm", gradient_norm), ("validation_passed", validation_passed),
-                         ("producer", producer), ("source", source), ("info", info))
+    isnothing(symmetry) || (metadata["symmetry"] = portable_symmetry(symmetry, "symmetry"))
+    for (key, value) in (("energy", energy), ("gradient_norm", gradient_norm), ("phi", phi),
+                         ("validation_passed", validation_passed), ("producer", producer), ("source", source),
+                         ("info", info))
         isnothing(value) || (metadata[key] = value isa Real && !(value isa Bool) ? portable_real(value, key) : value)
     end
     for (key, value) in extra

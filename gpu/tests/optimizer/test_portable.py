@@ -75,7 +75,9 @@ def objective(r, k, rho, coupling, controls, cp):
     calls.append((controls.nodes, controls.window, controls.quadrature, controls.atol, controls.rtol, coupling))
     return energy, gradient, dict(kinetic=dict(maximum_relative_residual=0.0, fallback_solves=0))
 argv = ["validate_sweep", str(run / "optimization.json"), str(reference), "--output", str(run / "final_validation.json")]
-with mock.patch.object(driver, "objective", objective), mock.patch.object(sys, "argv", argv):
+phi_by_ode = validate_sweep.phi_by_ode   # on the CPU here: the stand-in cupy has no arrays
+with mock.patch.object(driver, "objective", objective), mock.patch.object(sys, "argv", argv), \
+        mock.patch.object(validate_sweep, "phi_by_ode", lambda r, k, rho, controls, xp: phi_by_ode(r, k, rho, controls, np)):
     validate_sweep.main()
 print(json.dumps(dict(calls=calls, gradient=[[[z.real, z.imag] for z in row] for row in gradient.tolist()])))
 '''

@@ -1,6 +1,7 @@
-"""One shape/resource policy for the persistent FP64 Z2 kernel.
+"""One shape/resource policy for the persistent FP64 kernel, Z2 (packed) or unpacked.
 
-D is the full bond dimension; d is the packed parity-block dimension.
+D is the full bond dimension; d is the matrix dimension of the kernel: the packed
+parity-block dimension D/2 for Z2 states, D for the unpacked channels (symmetry none).
 The CUDA row mapping assigns one warp to each eight-column tile. Its current
 one-row-per-CTA design therefore has a finite 1024-thread block limit.
 No CUDA imports, devices, allocations, numerical solves or network calls.
@@ -14,6 +15,7 @@ STATIC_SHARED_LIMIT = 48 * 1024
 HISTORICAL_PACKED = (2, 3, 4, 8, 16, 32, 48, 64, 128)
 TILES = ("mma", "scalar")
 TILE_CHOICES = ("auto",) + TILES
+SYMMETRIES = ("z2", "none")
 
 
 def select_tiles(requested, major, minor):
@@ -42,7 +44,21 @@ def packed_geometry(d):
                 shared_bytes=4 * 8 * d * 16 + 2 * warps * 8)
 
 
-def bond_geometry(D):
+def unpacked_geometry(D):
+    """The grid of the kernel on the seven unpacked D x D channels (states without Z2
+    symmetry, any D up to MAX_PACKED_D): the row panels of packed_geometry(D), seven
+    channels of row blocks and the scalar block."""
+    info = packed_geometry(D)
+    return dict(info, blocks=7 * info["warps"] + 1, layout="unpacked")
+
+
+def bond_geometry(D, symmetry="z2"):
+    if symmetry not in SYMMETRIES:
+        raise ValueError(f"symmetry must be one of {', '.join(SYMMETRIES)}, not {symmetry!r}")
+    if symmetry == "none":
+        if isinstance(D, bool) or not isinstance(D, Integral) or not 1 <= D <= MAX_PACKED_D:
+            raise ValueError(f"the unpacked implementation requires an integer D in [1, {MAX_PACKED_D}]")
+        return dict(D=int(D), **unpacked_geometry(D))
     if isinstance(D, bool) or not isinstance(D, Integral) or D < 2 or D % 2:
         raise ValueError("the packed Z2 implementation requires an even integer D >= 2")
     return dict(D=int(D), **packed_geometry(D // 2))
@@ -75,7 +91,7 @@ def register_caps(d):
 
 
 def configure_shared_memory(kernel, props, info, tiles="mma"):
-    if info != packed_geometry(info["d"]):
+    if info != (unpacked_geometry if info.get("layout") == "unpacked" else packed_geometry)(info["d"]):
         raise ValueError("kernel geometry differs from the dimension policy")
     if tiles not in TILES:
         raise ValueError(f"a compiled kernel has tiles {' or '.join(TILES)}, not {tiles!r}")
@@ -99,12 +115,15 @@ def configure_shared_memory(kernel, props, info, tiles="mma"):
     return dynamic
 
 
-def describe(D, quadrature=512, tiles="auto"):
-    info = bond_geometry(D)
+def describe(D, quadrature=512, tiles="auto", symmetry="z2"):
+    """The plan's layout record. For symmetry none it has the keys symmetry and layout
+    besides; packed_sample_bytes is then the size of the unpacked samples."""
+    info = bond_geometry(D, symmetry)
     if isinstance(quadrature, bool) or not isinstance(quadrature, Integral) or quadrature < 8:
         raise ValueError("quadrature must be an integer >= 8")
     select_tiles(tiles, 8, 0)
-    samples = (2 * int(quadrature) + 1) * (10 * info["d"] ** 2 + 1) * 16
+    channels = 7 if symmetry == "none" else 10
+    samples = (2 * int(quadrature) + 1) * (channels * info["d"] ** 2 + 1) * 16
     return dict(**info, compiler_options=list(compilation_options(info["d"])),
                 dynamic_shared_bytes=dynamic_shared_bytes(info["d"]),
                 packed_sample_bytes=samples,
@@ -114,5 +133,6 @@ def describe(D, quadrature=512, tiles="auto"):
                 tiles_requested=tiles,
                 tile_rule="auto: mma for compute capability >= 8.0, scalar below; mma below 8.0 is refused",
                 full_grid_residency_requires_actual_device_query=True,
-                historical_shape=info["d"] in HISTORICAL_PACKED,
-                generic_runtime_actual_GPU_qualified=False)
+                historical_shape=symmetry == "z2" and info["d"] in HISTORICAL_PACKED,
+                generic_runtime_actual_GPU_qualified=False,
+                **(dict(symmetry="none") if symmetry == "none" else {}))

@@ -14,24 +14,29 @@ from .cli import RUNTIME, digest, launcher_source_sha256, runtime_source_sha256,
 PRODUCER = f"rcmps_gpu {__version__}, optimizer worker"
 
 
-def compile_dimension(D, cp, directory=None, tiles="auto"):
-    """Compile the trajectory kernel of D with the tile product `tiles` resolved for this
-    device (generic_layout.select_tiles: auto is mma from compute capability 8.0 on, scalar
-    below; mma below 8.0 is refused before anything is compiled), with the first register
-    cap of generic_layout.register_caps (None: the historical options) for which the whole
-    cooperative grid is resident, refuse the size if there is none, and audit the PTX."""
+def compile_dimension(D, cp, directory=None, tiles="auto", symmetry="z2"):
+    """Compile the trajectory kernel of D (packed Z2 channels of dimension D/2, or with
+    symmetry none the unpacked channels of dimension D) with the tile product `tiles`
+    resolved for this device (generic_layout.select_tiles: auto is mma from compute
+    capability 8.0 on, scalar below; mma below 8.0 is refused before anything is compiled),
+    with the first register cap of generic_layout.register_caps (None: the historical
+    options) for which the whole cooperative grid is resident, refuse the size if there is
+    none, and audit the PTX."""
     from .runtime.persistent_trajectory_backend import (MATRIX_ARITHMETIC, trajectory_source, geometry,
-                                                        trajectory_ptx_report)
-    from .runtime.generic_layout import compilation_options, configure_shared_memory, register_caps, select_tiles
-    info = geometry(D // 2)
+                                                        trajectory_ptx_report, unpacked_trajectory_source)
+    from .runtime.generic_layout import (compilation_options, configure_shared_memory, register_caps, select_tiles,
+                                         unpacked_geometry)
+    unpacked = symmetry == "none"
+    d = D if unpacked else D // 2
+    info = unpacked_geometry(d) if unpacked else geometry(d)
     props = cp.cuda.runtime.getDeviceProperties(cp.cuda.Device().id)
     if not props.get("cooperativeLaunch", False):
         raise ValueError("the one-kernel trajectory requires a GPU with cooperative launch")
     resolved = select_tiles(tiles, props["major"], props["minor"])
-    source, tried = trajectory_source(D // 2, resolved), []
-    for cap in register_caps(D // 2):
+    source, tried = (unpacked_trajectory_source if unpacked else trajectory_source)(d, resolved), []
+    for cap in register_caps(d):
         kernel = cp.RawKernel(source, "persistent_trajectory",
-                              options=compilation_options(D // 2, cap), enable_cooperative_groups=True)
+                              options=compilation_options(d, cap), enable_cooperative_groups=True)
         kernel.compile()
         dynamic = configure_shared_memory(kernel, props, info, resolved)
         resident = int(cp.cuda.driver.occupancyMaxActiveBlocksPerMultiprocessor(
@@ -47,12 +52,12 @@ def compile_dimension(D, cp, directory=None, tiles="auto"):
                               if len(tried) > 1 else "")
                            + ". The current one-kernel row layout cannot run safely at this size.")
     name = props["name"]
-    ptx = trajectory_ptx_report(D // 2, cp, directory, resolved, cap)
-    return dict(**info, GPU=name.decode() if isinstance(name, bytes) else name,
+    ptx = trajectory_ptx_report(d, cp, directory, resolved, cap, unpacked=unpacked)
+    return dict(**info, symmetry=symmetry, GPU=name.decode() if isinstance(name, bytes) else name,
                 SM=[int(props["major"]), int(props["minor"])],
                 tiles=dict(requested=tiles, resolved=resolved,
                            rule="auto: mma for compute capability >= 8.0, scalar below; mma below 8.0 is refused"),
-                matrix_arithmetic=MATRIX_ARITHMETIC[resolved], compiler_options=list(compilation_options(D // 2, cap)),
+                matrix_arithmetic=MATRIX_ARITHMETIC[resolved], compiler_options=list(compilation_options(d, cap)),
                 register_cap=cap, register_caps_tried=tried,
                 kernel_run_time_limit=bool(props.get("kernelExecTimeoutEnabled", False)),
                 registers=int(kernel.num_regs), local_bytes=int(kernel.local_size_bytes),
@@ -88,21 +93,30 @@ def write_reference(directory, record, plan, **extra):
 
 
 def random_reference(plan, directory):
+    """The random initial state of seed plan["seed"]: complex standard normal draws (NumPy
+    PCG64) scaled by 1/sqrt(D), R odd and K even in parity blocks for symmetry z2, full R
+    and K (K drawn first, as in Julia's RandomState) for symmetry none."""
     import numpy as np
     from .runtime.numerics import stationary_state
-    d, n = plan["D"], plan["D"] // 2
+    d, z2 = plan["D"], plan["symmetry"] == "z2"
+    n = d // 2 if z2 else d
     rng = np.random.default_rng(plan["seed"])
     def draw():
         return (rng.standard_normal((n, n)) + 1j * rng.standard_normal((n, n))) / math.sqrt(2)
-    k1, k2 = draw(), draw()
-    zero = np.zeros((n, n), dtype=np.complex128)
-    r = np.block([[zero, draw()], [draw(), zero]]) / math.sqrt(d)
-    k = np.block([[k1 + k1.conj().T, zero], [zero, k2 + k2.conj().T]]) / math.sqrt(d)
+    if z2:
+        k1, k2 = draw(), draw()
+        zero = np.zeros((n, n), dtype=np.complex128)
+        r = np.block([[zero, draw()], [draw(), zero]]) / math.sqrt(d)
+        k = np.block([[k1 + k1.conj().T, zero], [zero, k2 + k2.conj().T]]) / math.sqrt(d)
+    else:
+        k1 = draw()
+        r, k = draw() / math.sqrt(d), (k1 + k1.conj().T) / math.sqrt(d)
     q = -1j * k - r.conj().T @ r / 2
     rho, stats = stationary_state(q, r, tolerance=plan["controls"]["stationary_tolerance"])
     write_reference(directory, StateRecord(D=d, model="phi4", coupling=plan["coupling"], R=r, K=k, rho=rho,
-                                           producer=PRODUCER, source=f"random Z2 state, seed {plan['seed']}"),
-                    plan, seed=plan["seed"], symmetry="Z2",
+                                           symmetry="Z2" if z2 else "none", producer=PRODUCER,
+                                           source=f"random {'Z2 ' if z2 else ''}state, seed {plan['seed']}"),
+                    plan, seed=plan["seed"],
                     random_generator="NumPy PCG64; complex standard normal; scaled by 1/sqrt(D)")
     return stats
 
@@ -120,13 +134,16 @@ def initial_reference(plan, directory):
         q = -1j * record.K - record.R.conj().T @ record.R / 2
         rho, stats = stationary_state(q, record.R, tolerance=plan["controls"]["stationary_tolerance"])
         record = replace(record, rho=rho)
-    write_reference(directory, replace(record, producer=PRODUCER, source=record.source or path.name), plan)
+    write_reference(directory, replace(record, symmetry="none" if plan["symmetry"] == "none" else "Z2",
+                                       producer=PRODUCER, source=record.source or path.name), plan)
     return stats
 
 
 def qualify(r, k, rho, coupling, args, cp, timeout, directory, tiles="mma", register_cap=None):
     """Compare complete fast E/g, with the trajectory kernel's tile product `tiles` and
-    register cap, with independent CuPy propagation and kinetic."""
+    register cap, with independent CuPy propagation and kinetic: the host-driven integrator
+    of the packed Z2 channels, or of the unpacked ones (_ReducedQuarticRHS) when
+    args.reduced."""
     import numpy as np
     from .runtime import overlap_sweep_driver as driver
     from .runtime import persistent_trajectory_overlap as fast
@@ -142,7 +159,7 @@ def qualify(r, k, rho, coupling, args, cp, timeout, directory, tiles="mma", regi
             s = self.settings
             return evaluate_quartic(r, q, rho, self.coupling, xp=self.xp,
                 half_window=s.window, n_quad=s.quadrature, atol=s.atol, rtol=s.rtol,
-                max_steps=s.max_steps, packed_z2=True, use_graph=False)
+                max_steps=s.max_steps, packed_z2=not args.reduced, reduced=args.reduced, use_graph=False)
         def close(self):
             pass
     receipt = dict(D=len(r), tiles=tiles, register_cap=register_cap, passed=False, numerical_GPU_launch_performed=True)
@@ -186,9 +203,9 @@ def main(argv=None):
     plan_path = Path((argv or sys.argv[1:])[0])
     plan = json.loads(plan_path.read_bytes())
     output = Path(plan["output"])
-    if plan["schema_version"] != 4 or Path(plan["runtime"]) != RUNTIME:
+    if plan["schema_version"] != 5 or Path(plan["runtime"]) != RUNTIME:
         raise ValueError(f"plan written by another launcher version or installation: schema "
-                         f"{plan['schema_version']}, runtime {plan['runtime']}; this worker is schema 4, runtime {RUNTIME}")
+                         f"{plan['schema_version']}, runtime {plan['runtime']}; this worker is schema 5, runtime {RUNTIME}")
     if runtime_source_sha256() != plan["runtime_source_sha256"]:
         raise ValueError("runtime changed after planning")
     launcher = launcher_source_sha256()
@@ -219,7 +236,9 @@ def main(argv=None):
     try:
         import cupy as cp
         with cp.cuda.Device(plan["device"]):
-            status["compile"] = compile_dimension(plan["D"], cp, output / "ptx", plan["tiles"])
+            symmetry = plan["symmetry"]
+            layout = "--reduced" if symmetry == "none" else "--packed-z2"
+            status["compile"] = compile_dimension(plan["D"], cp, output / "ptx", plan["tiles"], symmetry)
             tiles, cap = status["compile"]["tiles"]["resolved"], status["compile"]["register_cap"]
             (output / "compile.json").write_text(json.dumps(status["compile"], indent=2) + "\n")
             if plan["compile_only"]:
@@ -239,7 +258,7 @@ def main(argv=None):
             if any(v.shape != (plan["D"], plan["D"]) or v.dtype != np.complex128 or
                    not np.isfinite(v).all() for v in (r, k, rho)):
                 raise ValueError("initial state requires finite complex128 matrices with the requested D")
-            options = [str(reference), "--backend", "cupy", "--mode", "hybrid", "--packed-z2",
+            options = [str(reference), "--backend", "cupy", "--mode", "hybrid", layout,
                 "--quartic-backend", "persistent_trajectory", "--arnoldi", "gpu", "--projection", "hessenberg_gpu",
                 "--kinetic", "cooperative", "--controller", "robust", "--warm-start-line-search",
                 "--gradient-tolerance", str(plan["gradient_target"]), "--max-device-seconds", str(plan["max_device_seconds"]),
@@ -255,7 +274,7 @@ def main(argv=None):
                 args = original_parse(arguments)
                 args.max_seconds = plan["max_seconds"]
                 return args
-            base = parse([str(reference), "--backend", "cupy", "--mode", "hybrid", "--packed-z2",
+            base = parse([str(reference), "--backend", "cupy", "--mode", "hybrid", layout,
                 "--quartic-backend", "persistent_trajectory", "--arnoldi", "gpu", "--projection", "hessenberg_gpu"])
             for name, value in plan["controls"].items():
                 setattr(base, name, value)

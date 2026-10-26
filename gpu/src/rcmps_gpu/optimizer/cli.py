@@ -1,4 +1,5 @@
-"""Compile/run the fastest FP64 Z2 implementation at a user-supplied D.
+"""Compile/run the fastest FP64 implementation at a user-supplied D, for Z2 states (packed,
+the default) or states without symmetry (--symmetry none: the unpacked channels).
 
 Without --run-gpu this command only describes/checks sources and input bytes.
 --emit-cuda generates the dimension-specialized trajectory without CUDA.
@@ -19,7 +20,7 @@ import sys
 from .. import __version__
 from .. import provenance
 from ..io import read_portable
-from .layout import TILE_CHOICES, describe
+from .layout import SYMMETRIES, TILE_CHOICES, describe
 
 HERE = Path(__file__).resolve().parent
 PACKAGE = HERE.parent
@@ -105,10 +106,21 @@ def package_identity():
     return dict(name="rcmps-gpu", version=__version__, git_commit=commit, git_tracked_files_modified=modified)
 
 
-def input_ledger(directory, D, coupling):
+def z2_blocks(R, K):
+    """Whether R is odd and K even, exactly, under the parity with the first D/2 basis states
+    even: the structure that the packed Z2 channels require (no projection is made)."""
+    D = len(R)
+    if D % 2:
+        return False
+    d = D // 2
+    return not any(block.any() for block in (R[:d, :d], R[d:, d:], K[:d, d:], K[d:, :d]))
+
+
+def input_ledger(directory, D, coupling, symmetry=None):
     """Check an initial state directory, any dialect of rcmps_gpu.io.read_portable (format 1,
     as initial/ and optimized_state/ of a run, or a research export), and hash the files the
-    worker will read from it."""
+    worker will read from it. With symmetry z2 (a new run) the matrices must have the exact
+    block structure of the packed channels; a resume (symmetry None) keeps its checkpoint's."""
     directory = Path(directory).resolve()
     record = read_portable(directory, arrays=False)
     if record.D != D or record.coupling != coupling:
@@ -116,6 +128,10 @@ def input_ledger(directory, D, coupling):
     if record.model != "phi4":
         raise ValueError(f"the optimizer implements the phi4 model, not {record.model!r} (initial state)")
     record = read_portable(directory)   # sizes and finiteness of the matrices
+    if symmetry == "z2" and not z2_blocks(record.R, record.K):
+        stated = f" (its metadata states symmetry = {record.symmetry!r})" if record.symmetry else ""
+        raise ValueError(f"the initial state is not Z2 symmetric in the packed basis (R odd, K even, the first "
+                         f"D/2 states even){stated}: use --symmetry none")
     return dict(path=str(directory), sha256={name: digest(directory / name) for name in record.files})
 
 
@@ -127,6 +143,9 @@ def prepare(args, runtime_sha256):
             raise ValueError("resume requires a stopped checkpoint, not a live run")
         if previous["reference"]["D"] != args.D:
             raise ValueError("cannot resume an optimizer at a different D")
+        if bool(previous["controls"].get("reduced")) != (args.symmetry == "none"):
+            raise ValueError("cannot resume an optimizer with another --symmetry (the checkpoint's is "
+                             + ("none" if previous["controls"].get("reduced") else "z2") + ")")
         expected = previous["runs"][-1]["source_sha256"]
         if not expected or any(runtime_sha256.get(n) != h for n, h in expected.items()):
             raise ValueError("resume requires this exact generic runtime; sealed historical runs remain unchanged")
@@ -162,12 +181,12 @@ def prepare(args, runtime_sha256):
         coupling = read_portable(initial, arrays=False).coupling
         if not math.isfinite(coupling) or coupling < 0:
             raise ValueError("invalid initial coupling")
-    plan = dict(schema_version=4, D=args.D, coupling=coupling, seed=args.seed, tiles=args.tiles,
+    plan = dict(schema_version=5, D=args.D, symmetry=args.symmetry, coupling=coupling, seed=args.seed, tiles=args.tiles,
                 package=package_identity(),
                 runtime=str(RUNTIME), runtime_source_sha256=dict(runtime_sha256),
                 runtime_provenance=verify_runtime(),
                 launcher_source_sha256=launcher_source_sha256(),
-                layout=describe(args.D, controls["quadrature"], args.tiles), controls=controls,
+                layout=describe(args.D, controls["quadrature"], args.tiles, args.symmetry), controls=controls,
                 max_seconds=args.max_seconds, max_iterations=args.max_iterations,
                 gradient_target=args.gradient_target, max_device_seconds=args.max_device_seconds,
                 device=args.device, compile_only=args.compile_only,
@@ -175,7 +194,7 @@ def prepare(args, runtime_sha256):
                 resume_from=str(args.resume_from.resolve()) if args.resume_from else None,
                 resume_sha256={str(p.resolve()): digest(p) for p in (args.resume_from, args.resume_from.with_suffix(".npz"))}
                     if previous else {},
-                initial=input_ledger(initial, args.D, coupling) if initial else None,
+                initial=input_ledger(initial, args.D, coupling, None if previous else args.symmetry) if initial else None,
                 optimization_wall_time_limit_is_explicit=args.max_seconds is not None,
                 actual_GPU_qualified=False, CPU_objective_or_optimizer=False)
     return plan
@@ -183,9 +202,13 @@ def prepare(args, runtime_sha256):
 
 def parser():
     p = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
-    p.add_argument("--D", type=int, required=True, help="full even Z2 bond dimension")
+    p.add_argument("--D", type=int, required=True, help="bond dimension (even for --symmetry z2)")
+    p.add_argument("--symmetry", choices=SYMMETRIES, default="z2",
+                   help="z2 (the default): Z2-symmetric states, R odd and K even, in the packed parity blocks; "
+                        "none: states without symmetry, full complex R and K (the unpacked channels)")
     p.add_argument("--coupling", type=float)
-    p.add_argument("--seed", type=int, default=0, help="NumPy PCG64 Z2 initialization, when --initial is absent")
+    p.add_argument("--seed", type=int, default=0, help="NumPy PCG64 initialization (Z2 or not, by --symmetry), "
+                   "when --initial is absent")
     p.add_argument("--initial", type=Path, help="initial state, a portable state directory (rcmps_gpu.io): the "
                    "initial/ or optimized_state/ of a run, or an output of gpu/julia/export_state.jl or "
                    "prepare_initial.jl")
@@ -212,7 +235,7 @@ def main(argv=None):
     p = parser()
     args = p.parse_args(argv)
     try:
-        describe(args.D)
+        describe(args.D, symmetry=args.symmetry)
         if args.emit_cuda and args.run_gpu:
             raise ValueError("--emit-cuda is a CPU-only action")
         if args.run_gpu and not args.output:
@@ -228,10 +251,12 @@ def main(argv=None):
         # The source generator imports NumPy/SciPy, but never CuPy or CUDA.
         code = ("import sys;from pathlib import Path;from rcmps_gpu.optimizer.runtime import persistent_trajectory_backend as t;"
                 "Path(t.__file__).resolve().parent==Path(sys.argv[1]) or sys.exit('--emit-cuda: rcmps_gpu imported from '+t.__file__);"
-                "print(t.trajectory_source(int(sys.argv[2]),sys.argv[3]),end='')")
+                "print((t.unpacked_trajectory_source if sys.argv[4]=='none' else t.trajectory_source)"
+                "(int(sys.argv[2]),sys.argv[3]),end='')")
         # Without a device, auto writes the tensor-core source (the golden source of the plan).
         tiles = "scalar" if args.tiles == "scalar" else "mma"
-        command, environment = child_process("-c", code, str(RUNTIME), str(args.D // 2), tiles)
+        size = args.D if args.symmetry == "none" else args.D // 2
+        command, environment = child_process("-c", code, str(RUNTIME), str(size), tiles, args.symmetry)
         result = subprocess.run(command, env=environment, capture_output=True, text=True)
         if result.returncode:
             lines = result.stderr.strip().splitlines()

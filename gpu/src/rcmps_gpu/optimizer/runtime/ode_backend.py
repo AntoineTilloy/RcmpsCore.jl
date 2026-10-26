@@ -19,6 +19,7 @@ import time
 from dataclasses import dataclass
 
 import numpy as np
+from scipy.integrate import quad as _quad
 from scipy.integrate._ivp import dop853_coefficients as _dop
 from scipy.special import gamma, kv, roots_legendre
 
@@ -712,6 +713,88 @@ def _packed_z2_pullback_unchunked(q, r, rhs, samples, points, weights):
     interface = type("ReducedQuarticInterface", (),
         {"xp": xp, "d": d, "matrix_size": 7*d*d, "rho": rhs.rho})()
     return _reduced_quartic_pullback(q, r, interface, expanded, points, weights)
+
+
+class _UnpackedQuarticRHS(_ReducedQuarticRHS):
+    """The seven D×D channels of _ReducedQuarticRHS, with the tables of the trajectory kernel.
+
+    For states without Z2 symmetry (any D). Channels 0-2 are F1-F3, 3-6 the adjoint
+    channels; the kernel computes for channel c jac*(ql X + X qright + rl X rright) +
+    source*(coefficients[c]*(ol Y + Y oright) + fixed[c]), X = y[c], Y = y[indices[7+c]]
+    (= y[indices[14+c]]): ol, oright are rl, rright as in the parent, and channels 0 and 6
+    have coefficient zero (fixed sources only). The scalar accumulates
+    4*source*Re tr(r F3 + F3 r†), which the kernel's trace evaluates as
+    Re sum(a conj(F3)) + Re sum(b F3ᵀ) with a = b = r; F3 need not be Hermitian. The
+    host call is the parent's with the accumulator's imaginary part dropped, as in the
+    kernel. Nothing is checked or projected: a Z2 state gives the packed results.
+    """
+    unpacked = True
+
+    def __init__(self, q, r, rho, xp):
+        super().__init__(q, r, rho, xp)
+        self.full_d = self.d
+        self.a = self.b = xp.ascontiguousarray(r)
+        self.coefficients = xp.asarray([0., 2., 3., 1., 2., 3., 0.])
+        insertion = [0, 0, 1, 4, 5, 6, 6]   # channels 0 and 6: their own, times zero
+        self.gather_indices = np.asarray([list(range(7)), insertion, insertion], dtype=np.int32)
+        self.gather_adjoint = np.zeros((3, 7), dtype=np.int32)
+        self.device_indices = xp.asarray(self.gather_indices)
+        self.device_adjoint = xp.asarray(self.gather_adjoint)
+
+    def __call__(self, t, y):
+        out = super().__call__(t, y)
+        out[-1] = out[-1].real
+        return out
+
+
+def _unpacked_pullback(q, r, rhs, samples, points, weights):
+    if rhs.full_d >= 128:
+        return _unpacked_pullback_chunked(q, r, rhs, samples, points, weights)
+    return _reduced_quartic_pullback(q, r, rhs, samples, points, weights)
+
+
+def _unpacked_pullback_chunked(q, r, rhs, samples, points, weights, chunk_size=64):
+    """_reduced_quartic_pullback in fixed-memory chunks, as _packed_z2_pullback_chunked."""
+    if not isinstance(chunk_size, (int, np.integer)) or chunk_size < 1:
+        raise ValueError('pullback chunk_size must be a positive integer')
+    xp, d, n = rhs.xp, rhs.d, len(points)
+    if len(weights) != n or len(samples) != n+1:
+        raise ValueError('unpacked pullback requires all quadrature nodes and endpoint')
+    matrices = samples[:, :rhs.matrix_size].reshape(len(samples), 7, d, d)
+    covector, correction = xp.zeros_like(r), xp.zeros_like(r)
+    identity = xp.eye(d, dtype=xp.complex128)
+    interface = type('QuarticChannelInterface', (), {'xp': xp, 'offsets': [0], 'half': 5})()
+    endpoint = matrices[-1, 3]
+    for lo in range(0, n, int(chunk_size)):
+        hi = min(n, lo+int(chunk_size)); width = hi-lo
+        full = xp.zeros((width+1, 10, d, d), dtype=xp.complex128)
+        full[:width, 0] = rhs.rho; full[:width, 1:4] = matrices[lo:hi, :3]
+        full[:width, 5:9] = matrices[n-hi:n-lo, 3:]; full[:width, 9] = identity
+        full[-1, 5] = endpoint
+        (_, chunk_covector, _), = _pullback(q, r, [_QUARTIC], interface, full, points[lo:hi], weights[lo:hi])
+        adjusted = chunk_covector-correction; updated = covector+adjusted
+        correction = (updated-covector)-adjusted; covector = updated
+    environment = (endpoint+_adj(endpoint))/2
+    value = _scalar(samples[-1, -1].real)
+    return [(value, covector, environment)]
+
+
+def source_integral(half_window):
+    """The integral of the source J over [-W, W]: 2^-1/2, its integral over the line, minus
+    twice the tail beyond W (adaptive quadrature; the tail is 2.3e-15 at W = 30, so its own
+    relative error, that of kv, does not matter)."""
+    if not half_window > 0:
+        raise ValueError("positive half_window required")
+    tail = _quad(lambda x: kv(0.25, x) / x**0.25, half_window, np.inf, epsabs=0, epsrel=1e-12, limit=200)[0]
+    return 2**-0.5 - 2 * tail / (2**2.25 * math.sqrt(math.pi) * gamma(1.25))
+
+
+def phi_expectation(R, rho, half_window):
+    """The one-point function <phi> as RcmpsCore's phi_monomial(s, 1) evaluates it on the
+    window W = half_window: tr F1(a) = source_integral(W) tr(R rho + rho R†), exactly, since
+    the Lindbladian preserves the trace; tr(R rho + rho R†) = 2 Re tr(rho R)."""
+    R, rho = np.asarray(R), np.asarray(rho)
+    return 2 * source_integral(half_window) * float(np.real(np.trace(rho @ R)))
 
 
 def _evaluate(r, q, rho, specs, coefficients, *, xp, half_window, n_quad,

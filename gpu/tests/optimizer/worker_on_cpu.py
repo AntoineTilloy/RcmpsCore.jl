@@ -14,16 +14,17 @@ called in this process instead of a child interpreter, compiles, qualifies the f
 evaluation against the CuPy oracle, optimizes through trajectory_sweep_driver and validates
 through validate_trajectory_sweep. Only these leaves, which need a GPU, are replaced:
   * cupy: a NumPy-backed module (streams, events and devices do nothing; the device reports
-    the compute capability above), with the four ElementwiseKernels of ode_backend emulated
-    in NumPy;
+    the compute capability above), with the six ElementwiseKernels of ode_backend emulated
+    in NumPy (those of the packed Z2 channels, of the unpacked ones and of the batched RHS);
   * cupy.RawKernel: no compilation and no launch, but source with the FP64 tensor-core
     instruction is refused below compute capability 8.0, as ptxas refuses it; 168 registers,
     or the --maxrregcount cap; the occupancy query gives 1 block per multiprocessor, or 0 for
     a kernel above RCMPS_CPU_MAX_REGISTERS;
     persistent_trajectory_backend.trajectory_ptx_report: no NVRTC;
   * persistent_trajectory_overlap.PersistentTrajectoryDOP853, the CUDA trajectory kernel: its
-    CPU oracle persistent_trajectory_backend.integrate_trajectory_numpy (D <= 8), which
-    refuses the tensor-core tiles below 8.0 as the kernel does and records the tiles;
+    CPU oracle persistent_trajectory_backend.integrate_trajectory_numpy (D <= 8), on the
+    channels of the run (packed Z2, or unpacked with --symmetry none), which refuses the
+    tensor-core tiles below 8.0 as the kernel does and records the tiles;
   * the GPU kinetic solvers (kinetic_backend.kinetic_raw with the GPU Arnoldi and projection,
     cooperative_arnoldi.kinetic_raw_cooperative): kinetic_backend.kinetic_raw on the CPU.
 The exit status is the worker's (1, with the traceback on stderr, if it raised).
@@ -184,8 +185,27 @@ def z2_trace_accumulator(y, a, b, d, source, out=None):
     return _write((8 * source * value.real).astype(np.complex128).reshape(-1), out)
 
 
+def batched_rhs_combine(l, qr, jump, fixed, il, ir, li, ri, lc, rc, matrix_size, width, jac, source, out=None):
+    channels, width = len(l), int(width)
+    li, ri, lc, rc = (x.reshape(channels, width) for x in (li, ri, lc, rc))
+    insertion = np.zeros_like(l)
+    for channel in range(channels):
+        for e in range(width):
+            if li[channel, e] >= 0:
+                insertion[channel] += lc[channel, e] * il[li[channel, e]]
+            if ri[channel, e] >= 0:
+                insertion[channel] += rc[channel, e] * ir[ri[channel, e]]
+    return _write(jac * (l + qr + jump) + source * (insertion + fixed), out)
+
+
+def quartic_trace_accumulator(il, ir, d, source, out):
+    return _write(np.full(out.shape, 4 * source * np.trace(il[2] + ir[2]), dtype=np.complex128), out)
+
+
 ELEMENTWISE = dict(rcmps_rk_linear_combination=rk_linear_combination, rcmps_z2_block_gather=z2_block_gather,
-                   rcmps_z2_rhs_combine=z2_rhs_combine, rcmps_z2_trace_accumulator=z2_trace_accumulator)
+                   rcmps_z2_rhs_combine=z2_rhs_combine, rcmps_z2_trace_accumulator=z2_trace_accumulator,
+                   rcmps_batched_rhs_combine=batched_rhs_combine,
+                   rcmps_quartic_trace_accumulator=quartic_trace_accumulator)
 
 
 class ElementwiseKernel:
@@ -234,7 +254,7 @@ class TrajectoryOnCPU:
         self.options = generic_layout.compilation_options(rhs.d, register_cap)
         if min([168, *(int(o.split("=")[1]) for o in self.options if o.startswith("--maxrregcount="))]) > MAX_REGISTERS:
             raise RuntimeError("worker_on_cpu.py: unsafe cooperative trajectory grid (register cap)")
-        self.host = ode_backend._PackedZ2QuarticRHS(rhs.q, rhs.r, rhs.rho, np)
+        self.host = type(rhs)(rhs.q, rhs.r, rhs.rho, np)   # packed Z2 or unpacked channels
         self.points, self.controls = points, dict(atol=atol, rtol=rtol, max_steps=max_steps)
 
     def run(self):
@@ -249,8 +269,8 @@ class TrajectoryOnCPU:
 
 
 persistent_trajectory_overlap.PersistentTrajectoryDOP853 = TrajectoryOnCPU
-persistent_trajectory_backend.trajectory_ptx_report = lambda d, cp, directory=None, tiles="mma", register_cap=None: \
-    dict(cpu_stand_in=True, tiles=tiles, register_cap=register_cap)
+persistent_trajectory_backend.trajectory_ptx_report = lambda d, cp, directory=None, tiles="mma", register_cap=None, \
+    unpacked=False: dict(cpu_stand_in=True, tiles=tiles, register_cap=register_cap, unpacked=unpacked)
 
 # ---------------------------------------------------------------- the command line
 from rcmps_gpu.optimizer import cli, worker  # noqa: E402

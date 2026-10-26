@@ -556,7 +556,7 @@ cp=SimpleNamespace(RawKernel=lambda *a,**k:Kernel(),cuda=SimpleNamespace(
     driver=SimpleNamespace(occupancyMaxActiveBlocksPerMultiprocessor=lambda *v:1)))
 with patch('rcmps_gpu.optimizer.runtime.persistent_trajectory_backend.trajectory_ptx_report',return_value={'FP64':True}) as audit:
     receipt=worker.compile_dimension(160,cp,'mock_output')
-    audit.assert_called_once_with(80,cp,'mock_output','mma',None)
+    audit.assert_called_once_with(80,cp,'mock_output','mma',None,unpacked=False)
     assert receipt['full_grid_residency_verified'] and receipt['resident_capacity']==132
     assert receipt['tiles']['requested']=='auto' and receipt['tiles']['resolved']=='mma'
     assert receipt['register_cap'] is None and receipt['compiler_options']==['--std=c++17','--maxrregcount=64']

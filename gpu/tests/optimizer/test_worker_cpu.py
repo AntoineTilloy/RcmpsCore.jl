@@ -9,6 +9,12 @@ interpreter. This checks that the parts of the runtime the worker reaches fit to
 example the backend label it passes and the labels the drivers accept), not the GPU kernels.
 About 15 s per run on one thread.
 
+States without Z2 symmetry: a run at D = 5 with --symmetry none from a random state, on the
+unpacked channels (the trajectory oracle, the CuPy oracle of the qualification and the ODE of
+<phi> in the validation all on _ReducedQuarticRHS or the batched channels), whose history,
+validation and optimized_state/ record <phi>; a Z2 run refuses its state (test_generic.py checks
+the other refusals of the planner).
+
 Tiles: the first run is on a device of compute capability 8.0, where --tiles auto selects the
 tensor-core tiles; the resume is on a device of compute capability 7.0, where it selects the
 scalar tiles, which the checkpoint records for that run and the validation inherits; and
@@ -56,13 +62,15 @@ class WorkerOnCPU(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def check_run(self, run, iterations, tiles, cap=None):
+    def check_run(self, run, iterations, tiles, cap=None, D=8, symmetry="z2"):
         plan, status = load(run / "plan.json"), load(run / "status.json")
         self.assertEqual((status["state"], status["final_consistency_passed"]), ("completed", True), status)
         self.assertEqual(status["iteration"], iterations)
         self.assertEqual((status["compile"]["numerical_launch_performed"], status["compile"]["actual_GPU_qualified"]),
                          (False, False))
-        self.assertEqual((plan["schema_version"], plan["tiles"], plan["layout"]["tiles_requested"]), (4, "auto", "auto"))
+        self.assertEqual((plan["schema_version"], plan["tiles"], plan["layout"]["tiles_requested"]), (5, "auto", "auto"))
+        self.assertEqual((plan["symmetry"], status["compile"]["symmetry"], status["compile"]["PTX"]["unpacked"]),
+                         (symmetry, symmetry, symmetry == "none"))
         self.assertEqual(load(run / "compile.json"), status["compile"])
         self.assertEqual((status["compile"]["tiles"]["requested"], status["compile"]["tiles"]["resolved"],
                           status["compile"]["PTX"]["tiles"]), ("auto", tiles, tiles))
@@ -77,6 +85,9 @@ class WorkerOnCPU(unittest.TestCase):
                          [None, 128, 96, 64][:[None, 128, 96, 64].index(cap) + 1])
         checkpoint = load(run / "optimization.json")
         self.assertEqual(checkpoint["controls"]["quartic_backend"], "persistent_trajectory")
+        self.assertEqual((checkpoint["controls"]["packed_z2"], checkpoint["controls"]["reduced"]),
+                         (symmetry == "z2", symmetry == "none"))
+        self.assertTrue(all("phi" in row for row in checkpoint["history"]))
         self.assertEqual(checkpoint["controls"]["trajectory_controls"]["tiles"], tiles)
         self.assertEqual(checkpoint["runs"][-1]["controls"]["trajectory_controls"]["tiles"], tiles)
         self.assertEqual(checkpoint["runs"][-1]["controls"]["trajectory_controls"]["register_cap"], cap)
@@ -88,8 +99,12 @@ class WorkerOnCPU(unittest.TestCase):
                          (tiles, cap))
         self.assertEqual(validation["source_sha256"], plan["runtime_source_sha256"])
         state = io.read_portable(run / "optimized_state")
-        self.assertEqual((state.origin, state.D, state.model, state.validation_passed), ("portable", 8, "phi4", True))
+        self.assertEqual((state.origin, state.D, state.model, state.validation_passed), ("portable", D, "phi4", True))
         self.assertEqual(state.energy, validation["evaluations"][-1]["energy"])
+        self.assertEqual((state.symmetry, validation["symmetry"]), ("none", "none") if symmetry == "none" else ("Z2", "Z2"))
+        self.assertEqual(state.phi, validation["phi"])
+        self.assertEqual(state.phi, validation["evaluations"][-1]["phi"])
+        self.assertLess(validation["phi_ode_difference"], 1e-12)
         return plan, checkpoint
 
     def test_new_run_then_resume(self):
@@ -112,6 +127,26 @@ class WorkerOnCPU(unittest.TestCase):
         self.assertEqual([run["starting_iteration"] for run in checkpoint["runs"]], [0, 2])
         self.assertEqual([run["controls"]["trajectory_controls"]["tiles"] for run in checkpoint["runs"]],
                          ["mma", "scalar"])
+
+    def test_a_state_without_symmetry_at_odd_D(self):
+        run = self.root / "none"
+        result = optimize(run, "--D", "5", "--symmetry", "none", "--seed", "4", "--coupling", "3.0",
+                          "--max-iterations", "2")
+        self.assertEqual(result.returncode, 0, result.stdout[-3000:] + result.stderr[-5000:])
+        plan, checkpoint = self.check_run(run, 2, "mma", D=5, symmetry="none")
+        self.assertEqual((plan["layout"]["blocks"], plan["layout"]["layout"], plan["layout"]["symmetry"]),
+                         (8, "unpacked", "none"))
+        initial = io.read_portable(run / "initial")
+        self.assertEqual((initial.symmetry, initial.source), ("none", "random state, seed 4"))
+        self.assertTrue(initial.R.all() and initial.K.all())   # no zero blocks
+        self.assertEqual(checkpoint["final_phi"], checkpoint["history"][-1]["phi"])
+        self.assertNotEqual(checkpoint["final_phi"], 0.)
+        # A Z2 run refuses its optimized state when planning (here already for its odd D).
+        refused = self.root / "refused"
+        result = optimize(refused, "--D", "5", "--initial", str(run / "optimized_state"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(refused.exists())
+        self.assertIn("the packed Z2 implementation requires an even integer D >= 2", result.stderr)
 
     def test_tensor_core_tiles_are_refused_below_compute_capability_8(self):
         refused = self.root / "refused"

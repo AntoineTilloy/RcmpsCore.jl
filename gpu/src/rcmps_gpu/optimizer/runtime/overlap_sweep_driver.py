@@ -47,15 +47,15 @@ BASE_OPTIMIZE_WITH_PROGRESS = warm.BASE_OPTIMIZE_WITH_PROGRESS
 
 def validate_overlap_arguments(args):
     driver.validate_arguments(args)
-    if (args.backend != "cupy" or args.mode != "hybrid" or not args.packed_z2 or
+    if (args.backend != "cupy" or args.mode != "hybrid" or args.packed_z2 == args.reduced or
             args.quartic_backend != "persistent_trajectory"):
-        raise ValueError("overlap requires CuPy hybrid packed Z2 and persistent_trajectory")
+        raise ValueError("overlap requires CuPy hybrid persistent_trajectory with packed Z2 or reduced channels")
     if (args.arnoldi != "gpu" or args.projection != "hessenberg_gpu" or
             args.krylov_ceiling is not None or not math.isfinite(args.krylov_tolerance) or
             not 0 < args.krylov_tolerance <= 1e-12):
         raise ValueError("overlap requires GPU Arnoldi/Hessenberg, true residual <=1e-12 and no fallback")
-    if args.reduced or args.fused_rhs:
-        raise ValueError("overlap cannot change the packed cached objective layout")
+    if args.fused_rhs:
+        raise ValueError("overlap cannot change the cached objective layout")
 
 
 def source_hashes(args):
@@ -154,7 +154,7 @@ class OverlapObjective:
             inputs_ready = xp.cuda.Event()
             inputs_ready.record(xp.cuda.get_current_stream())
             packed_args = SimpleNamespace(window=args.window, quadrature=args.quadrature,
-                atol=args.atol, rtol=args.rtol, max_steps=args.max_steps)
+                atol=args.atol, rtol=args.rtol, max_steps=args.max_steps, reduced=args.reduced)
             with self.combine:
                 self.combine.wait_event(inputs_ready)
                 prepared = overlap.PreparedQuartic(xp, inputs, coupling, packed_args)

@@ -1,0 +1,220 @@
+{
+ "about": "sha256 of the CUDA source persistent_trajectory_backend.unpacked_trajectory_source(D, tiles) of the unpacked channels (rcmps-gpu-optimize --symmetry none) with the tensor-core (mma) and scalar tiles, the NVRTC options compilation_options(D) and the launch geometry unpacked_geometry(D), for the bond dimension D, as written by the commit that added the unpacked layout. The source is trajectory_source(D, tiles) rewritten at the anchors of UNPACKED_REWRITES (tests/optimizer/test_unpacked.py checks that too).",
+ "sizes": {
+  "1": {
+   "geometry": {
+    "blocks": 8,
+    "d": 1,
+    "layout": "unpacked",
+    "shared_bytes": 528,
+    "threads": 32,
+    "warps": 1
+   },
+   "options": [
+    "--std=c++17"
+   ],
+   "scalar_trajectory_sha256": "35be1dd2381ef5b9aa183bb60a80c66e543ee0daa5940206423c02369fca1b2d",
+   "trajectory_sha256": "64db73df428c88cd3553e9d7e714e2358b7b647ae301476633ff1eac863ff701"
+  },
+  "128": {
+   "geometry": {
+    "blocks": 113,
+    "d": 128,
+    "layout": "unpacked",
+    "shared_bytes": 65792,
+    "threads": 512,
+    "warps": 16
+   },
+   "options": [
+    "--std=c++17",
+    "--maxrregcount=64"
+   ],
+   "scalar_trajectory_sha256": "3566f07015aa9a610c8a9928c4d46183baf7be4e79481fc785c793b97437668d",
+   "trajectory_sha256": "663e8cb67561c33f0c26442762ddfc697a5c726ded3001753d639794889d0f88"
+  },
+  "16": {
+   "geometry": {
+    "blocks": 15,
+    "d": 16,
+    "layout": "unpacked",
+    "shared_bytes": 8224,
+    "threads": 64,
+    "warps": 2
+   },
+   "options": [
+    "--std=c++17"
+   ],
+   "scalar_trajectory_sha256": "48a641f6bf6996777e607cb28cfd17c92b46984c3d02620603dd809867ad9296",
+   "trajectory_sha256": "74fea75ae4b8a8bb223014d91673c793ca5863dc9bcfe5321ceeee956cb984e6"
+  },
+  "17": {
+   "geometry": {
+    "blocks": 22,
+    "d": 17,
+    "layout": "unpacked",
+    "shared_bytes": 8752,
+    "threads": 96,
+    "warps": 3
+   },
+   "options": [
+    "--std=c++17"
+   ],
+   "scalar_trajectory_sha256": "4bce7e16f74f3a9ef52df5c628d743307cacc9cfcdc2ee1f4ebae601ef1c979a",
+   "trajectory_sha256": "7463a5c2f585585830f4c040f8af8e9bdc7f5afdc540cbfd656ac8f89323f668"
+  },
+  "192": {
+   "geometry": {
+    "blocks": 169,
+    "d": 192,
+    "layout": "unpacked",
+    "shared_bytes": 98688,
+    "threads": 768,
+    "warps": 24
+   },
+   "options": [
+    "--std=c++17",
+    "--maxrregcount=64"
+   ],
+   "scalar_trajectory_sha256": "6030a5f6a656f48675830bad608c34a6b665570ff98e6bffb018849e6979eae7",
+   "trajectory_sha256": "ded62c373ff5c042b728aace3540cab7a6d96998bb7a3afa14832efaa4b735a3"
+  },
+  "256": {
+   "geometry": {
+    "blocks": 225,
+    "d": 256,
+    "layout": "unpacked",
+    "shared_bytes": 131584,
+    "threads": 1024,
+    "warps": 32
+   },
+   "options": [
+    "--std=c++17",
+    "--maxrregcount=64"
+   ],
+   "scalar_trajectory_sha256": "011333caea257a7dc3ff26863b7f3857bd73b799eea7b90d66980e943f93cc04",
+   "trajectory_sha256": "7dc4bd50078d4f5e63aa3319dd2eaef2dde371180e758709c79fc2863eaaee24"
+  },
+  "3": {
+   "geometry": {
+    "blocks": 8,
+    "d": 3,
+    "layout": "unpacked",
+    "shared_bytes": 1552,
+    "threads": 32,
+    "warps": 1
+   },
+   "options": [
+    "--std=c++17"
+   ],
+   "scalar_trajectory_sha256": "cd6dc93263190b2bf51f6e1cb5299bb9173d7a1a4a33197677d29e5dd86daed5",
+   "trajectory_sha256": "c50488ea9b73152aff985791d8fcd3be9337f99b7f88811269fd1777bcfb6238"
+  },
+  "32": {
+   "geometry": {
+    "blocks": 29,
+    "d": 32,
+    "layout": "unpacked",
+    "shared_bytes": 16448,
+    "threads": 128,
+    "warps": 4
+   },
+   "options": [
+    "--std=c++17"
+   ],
+   "scalar_trajectory_sha256": "5ed39d3417ded4e59057d02168bb73c6407509cdbb89ea48f68ce4b7c52c6656",
+   "trajectory_sha256": "178353265365a29fefe1bd9300889c16d9f50ba4d16b2e45d7060f4f85444399"
+  },
+  "4": {
+   "geometry": {
+    "blocks": 8,
+    "d": 4,
+    "layout": "unpacked",
+    "shared_bytes": 2064,
+    "threads": 32,
+    "warps": 1
+   },
+   "options": [
+    "--std=c++17"
+   ],
+   "scalar_trajectory_sha256": "396b96c8378aa8d31d87accce0157f0c3f6ca4ddcaa675962d13b63a35f428ba",
+   "trajectory_sha256": "01f76bab2c7d6373b6926cb51778e133b7ae23d1b53a7aa0cd07e9898f70fd66"
+  },
+  "5": {
+   "geometry": {
+    "blocks": 8,
+    "d": 5,
+    "layout": "unpacked",
+    "shared_bytes": 2576,
+    "threads": 32,
+    "warps": 1
+   },
+   "options": [
+    "--std=c++17"
+   ],
+   "scalar_trajectory_sha256": "5a6939b3613d6d175c48673fa85e79673b988bc10ccac0b751b2448464177940",
+   "trajectory_sha256": "9f5ca4db1ecd788065b90d926cb11d33375806e045b7902f1b3452b1538207f5"
+  },
+  "64": {
+   "geometry": {
+    "blocks": 57,
+    "d": 64,
+    "layout": "unpacked",
+    "shared_bytes": 32896,
+    "threads": 256,
+    "warps": 8
+   },
+   "options": [
+    "--std=c++17"
+   ],
+   "scalar_trajectory_sha256": "0624b5a5adf435d2b084f58b02d3b696c70c347bac4872abb0bedf1baaf2a437",
+   "trajectory_sha256": "62d7dbfb1ade917b1dbc579bac23d7b5dc273ed50801d3dcd203d0e26b5ca6b0"
+  },
+  "65": {
+   "geometry": {
+    "blocks": 64,
+    "d": 65,
+    "layout": "unpacked",
+    "shared_bytes": 33424,
+    "threads": 288,
+    "warps": 9
+   },
+   "options": [
+    "--std=c++17",
+    "--maxrregcount=64"
+   ],
+   "scalar_trajectory_sha256": "8109f1730e0cb5910d4528612e164bb0778dab900faf9f75d8dcbb990179cd3a",
+   "trajectory_sha256": "c9b93df6ea64e68f4259f392c8a198b554a3508e74aaeface59faa1069bac1cd"
+  },
+  "8": {
+   "geometry": {
+    "blocks": 8,
+    "d": 8,
+    "layout": "unpacked",
+    "shared_bytes": 4112,
+    "threads": 32,
+    "warps": 1
+   },
+   "options": [
+    "--std=c++17"
+   ],
+   "scalar_trajectory_sha256": "865f4f757b4e7c0bc7a2968ffb226f4f671eb6cada758638e53253b3ee5b4062",
+   "trajectory_sha256": "8e745e28ecbbd3f81396c635aa436fc1d221a69d84bfa2150253e153f5f37788"
+  },
+  "96": {
+   "geometry": {
+    "blocks": 85,
+    "d": 96,
+    "layout": "unpacked",
+    "shared_bytes": 49344,
+    "threads": 384,
+    "warps": 12
+   },
+   "options": [
+    "--std=c++17",
+    "--maxrregcount=64"
+   ],
+   "scalar_trajectory_sha256": "f16a7e610a964e65bba89879c0e3e7ac7b9e3a7735548a1eec8e23fca103f3fd",
+   "trajectory_sha256": "ecdafc47dda2bbf18beb2cbe2d87d80ac4b65a4e20f1431748586ff682f29265"
+  }
+ }
+}
