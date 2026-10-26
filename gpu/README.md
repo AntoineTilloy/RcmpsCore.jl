@@ -480,6 +480,54 @@ an evaluation noise of 1e-11 and whose gradient is exact, the Armijo controller 
 numerical stagnation with gradient norm above 1e-7 and the Wolfe one reaches 1e-10;
 the planner and the drivers refuse a change of line search on resume.
 
+Runs, φ⁴ at g = 3 without symmetry, target 1e-7. D = 16 from the start of the Julia
+optimization (`RandomState(16; seed=3)`) on the RTX 2070 (scalar tiles), at the commit
+"Optimizer: opt-in Hager-Zhang Wolfe line search" (a repeated run gives the same trials and
+states, byte for byte):
+
+| Line search | Iterations (evaluations) | Wall | Stop: gradient norm | Energy (refined validation) | ⟨φ⟩ |
+|---|---|---|---|---|---|
+| `armijo` (the run under "Optimizer: states without Z2 symmetry") | 175 (284) | 313 s | stagnation: 3.8e-6 | -0.388678942012248 | 0.6172540552 |
+| `wolfe` | 199 (206) | 249 s | target: 9.2e-8 | -0.388678942015003 | 0.6172521283 |
+| `wolfe`, `--wolfe-energy-atol 1e-12` | 211 (465) | 635 s | stagnation: 1.9e-7 | -0.388678942022738 | 0.6172521814 |
+| Julia (`optimize_state`, Hager-Zhang) | 207 | | target: 9.8e-8 | -0.388678942017663 | 0.6172521147 |
+
+With the default tolerance, 180 steps satisfied the exact Wolfe conditions and 18 the
+approximate ones; one search ended at the step bound (the first iteration, whose direction
+is the preconditioned gradient scaled to norm 0.01) and the Armijo backtracking accepted step
+1. RcmpsCore evaluates the final state (`nonz2_references.jl reevaluate`): energy
+-0.388678942014878, 1.3e-13 above the GPU's refined row, gradient norm 9.1e-8, ⟨φ⟩
+0.6172521283294428 (GPU 0.6172521283294136). Near |g| = 1e-7 the minimum is flat enough that
+the gradient does not fix the energy below about 1e-11 nor ⟨φ⟩ below 1e-7: the lowest energy
+of the run, -0.388678942019282 (iteration 189, |g| = 3.2e-7), lies 1.6e-12 below Julia's,
+and the approximate steps after it raised the energy by 4.3e-12 in all (at most 3e-12 each)
+while the gradient norm fell 3.5 times. The tolerance must exceed the resolution of the
+energy, not only of its differences along a smooth curve: near the last iterate of the run
+with 1e-12, trial energies at steps 1e-8 apart alternate between two levels 4.6e-12 apart,
+so the energy condition fails there, the search bisects to its limit and the run stagnates
+(while reaching the lowest energy).
+
+D = 64 on the H100 NVL (Grid'5000 Sophia `musa`, job 3223517, the package of the same commit,
+copied), from the `optimized_state/` of the stalled Armijo run (the D = 64 resume of the table
+under "GPU qualification", stagnation at gradient norm 3.0e-4; a resume of its checkpoint is
+refused, the runtime having changed), with `--wolfe-energy-atol 1e-9`: in the last line search
+of that run the trial energies at steps from 3e-8 to 1.5e-5 lay 0.7e-10 to 2.6e-10 above the
+energy of the state, which the default 1e-10 would not accept, and the first iteration of
+this run was accepted 1.4e-10 above it, as an approximate Wolfe step. Then:
+
+| Iterations (evaluations) | Seconds per iteration (median) | Stop: gradient norm | Energy (refined validation) | ⟨φ⟩ |
+|---|---|---|---|---|
+| 337 (340) | 8.7 | time budget (2960 s): 1.3e-6 (3.5e-6 at iteration 200) | -0.389834106960215 (stalled run -0.389834105677499) | 0.6047733613 (stalled run 0.6047598111) |
+
+180 steps satisfied the exact Wolfe conditions, 157 the approximate ones (156 of these raised
+the energy, by at most 1.8e-10, the scatter of the energy at this state), no search fell back
+to the Armijo backtracking, and the validation passed (its five rows within 4e-14 in energy
+and 2e-10 in gradient). The energy fell by 1.3e-9 in all, its lowest value at iteration 239,
+while ⟨φ⟩ moved by 1.4e-5 away from the value at which the stalled run had settled, and was
+still moving at the end (3e-7 over the last 37 iterations, 4e-6 over iterations 100 to 150):
+at this state the energy no longer separates the iterates that ⟨φ⟩ distinguishes. The run
+continues with `--resume-from` of its checkpoint.
+
 ## Excitation solver: differences from the Julia code
 
 The Hamiltonian action F(W), the bilinear cross-check, the preconditioner, the field seed
@@ -897,7 +945,9 @@ rows agree with the standard ones to 1e-13 in energy and 2e-9 in gradient, with 
 30,452 steps): along the descent directions of these stiff states the energy is resolved
 only for steps too small to make progress, the floor of the controller that the Z2 runs at
 large D met too (D = 128: 2.1e-4). The D = 64 state of this table is therefore not converged
-in the gradient; its energy and ⟨φ⟩ settle at the levels above. RcmpsCore evaluates it
+in the gradient; its energy and ⟨φ⟩ settle at the levels above for this controller (the Wolfe
+line search continues from it to gradient norm 1.3e-6, moving ⟨φ⟩ by 1.4e-5: see "Optimizer:
+line searches"). RcmpsCore evaluates it
 (`nonz2_references.jl reevaluate`, with the dense resolvent kinetic,
 `RCMPS_KINETIC_BACKEND=resolvent`, since its Krylov solves stop at a true residual of 9.5e-12
 on this state, above their tolerance 1e-12; 14 minutes on 4 threads): energy
