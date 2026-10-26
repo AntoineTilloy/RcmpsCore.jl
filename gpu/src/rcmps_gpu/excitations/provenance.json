@@ -1036,6 +1036,625 @@
      ]
     ]
    }
+  },
+  {
+   "commit_subject": "Excitations: the sector all of any state on the fused kernel",
+   "change": "states without Z2 symmetry: packed.PackedActionSystem and packed_pair.PackedDiagonalPair build their tables with BLOCKS_PER_SIDE blocks per side, 2 (the Z2 blocking, tables unchanged byte for byte) or 1 in the new subclasses packed.UnpackedActionSystem and packed_pair.UnpackedDiagonalPair (the trivial blocking: one D x D block per live matrix, every class Dg, Hermitian matrices stored whole; no symmetry checked, the gauge of the tangent still is); _Matrix takes single, the layout's partner flag needs class O, the constants are registered over the rows of each matrix. packed_pair.diagonal_observable and bilinear_fused.FusedBilinearElement/bound take the pair system. fused.PHI4_UNPACKED_KERNELS (action 15 blocks, 4 panels, 2 two-sided groups; pair 12, 5, 3) and preflight(..., unpacked) for blocks of dimension D. cli.py no longer refuses --sector all with the fused backend: resolve_defaults resolves the sector as make_coordinates does, and the sector all (any state; --sector auto without Z2 symmetry) runs the unpacked systems and their kernels; settings record sector_resolved and layout.",
+   "hunks": {
+    "bilinear_fused.py": [
+     [
+      7,
+      [
+       "integrates in one launch. Everything else (environments, kinetic resolvent sum, and",
+       "any element or term the packed system does not cover) is inherited unchanged."
+      ],
+      [
+       "integrates in one launch (or, for a state without symmetry or the sector 'all', its",
+       "unpacked form packed_pair.UnpackedDiagonalPair). Everything else (environments, kinetic",
+       "resolvent sum, and any element or term the packed system does not cover) is inherited",
+       "unchanged."
+      ]
+     ],
+     [
+      15,
+      [
+       "from .packed_pair import diagonal_observable"
+      ],
+      [
+       "from .packed_pair import PackedDiagonalPair, diagonal_observable"
+      ]
+     ],
+     [
+      20,
+      [
+       "    `packed_integrate(system, points, endpoint, integrator)`, e.g. fused.fused_integrator(cp)."
+      ],
+      [
+       "    `packed_integrate(system, points, endpoint, integrator)`, e.g. fused.fused_integrator(cp),",
+       "    on the system `pair_system` (packed_pair.PackedDiagonalPair or UnpackedDiagonalPair)."
+      ]
+     ],
+     [
+      23,
+      [
+       "    def __init__(self, ss, momentum, terms, *, packed_integrate, **options):"
+      ],
+      [
+       "    def __init__(self, ss, momentum, terms, *, packed_integrate, pair_system=PackedDiagonalPair, **options):"
+      ]
+     ],
+     [
+      25,
+      [
+       "        self.packed_integrate = packed_integrate"
+      ],
+      [
+       "        self.packed_integrate, self.pair_system = packed_integrate, pair_system"
+      ]
+     ],
+     [
+      30,
+      [
+       "            value = diagonal_observable(pair, spec, self.integrator, self.packed_integrate)"
+      ],
+      [
+       "            value = diagonal_observable(pair, spec, self.integrator, self.packed_integrate, self.pair_system)"
+      ]
+     ],
+     [
+      38,
+      [
+       "def bound(packed_integrate):",
+       "    \"\"\"A BilinearElement factory with `packed_integrate` fixed (same call signature).\"\"\""
+      ],
+      [
+       "def bound(packed_integrate, pair_system=PackedDiagonalPair):",
+       "    \"\"\"A BilinearElement factory with `packed_integrate` and `pair_system` fixed (same call",
+       "    signature).\"\"\""
+      ]
+     ],
+     [
+      42,
+      [
+       "        return FusedBilinearElement(ss, momentum, terms, packed_integrate=packed_integrate, **options)"
+      ],
+      [
+       "        return FusedBilinearElement(ss, momentum, terms, packed_integrate=packed_integrate,",
+       "                                    pair_system=pair_system, **options)"
+      ]
+     ]
+    ],
+    "cli.py": [
+     [
+      18,
+      [
+       "Backends: `fused` (GPU, one cooperative FP64 kernel per trajectory; Z2 states and one",
+       "parity sector only, so `--sector all` is refused), `host` (host-controlled integrator on",
+       "the device; slow, any state and sector) and `numpy` (CPU)."
+      ],
+      [
+       "Backends: `fused` (GPU, one cooperative FP64 kernel per trajectory; one parity sector of a",
+       "Z2 state on its packed blocks, or the sector `all` of any state, the one `--sector auto`",
+       "gives without Z2 symmetry, on full D x D blocks), `host` (host-controlled integrator on the",
+       "device; slow, any state and sector) and `numpy` (CPU)."
+      ]
+     ],
+     [
+      209,
+      [],
+      [
+       "    # The sector that make_coordinates resolves (default parity, tolerance 1e-12).",
+       "    sector = args.sector if args.sector != \"auto\" else (",
+       "        \"all\" if states.excitation_parity(state, \"auto\", tol=1e-12) is None else \"odd\")"
+      ]
+     ],
+     [
+      239,
+      [
+       "                davidson=options, retain=retain, messages=messages)"
+      ],
+      [
+       "                davidson=options, retain=retain, messages=messages, sector=sector)"
+      ]
+     ],
+     [
+      245,
+      [
+       "    if args.backend == \"fused\" and args.sector == \"all\":",
+       "        # packed.PackedActionSystem needs tangents of one Z2 class; the search would fail at its second action.",
+       "        parser.error(\"--backend fused integrates one parity sector (odd or even) of a Z2 state; \"",
+       "                     \"use --backend host or numpy for --sector all\")"
+      ],
+      []
+     ],
+     [
+      274,
+      [
+       "            from . import packed",
+       "            integrate, system = fused.fused_integrator(xp, use_mma=fused.USE_MMA[tiles]), packed.PackedActionSystem"
+      ],
+      [
+       "            from . import packed, packed_pair",
+       "            # One parity sector: the packed blocks; the sector 'all' (any state): full blocks.",
+       "            unpacked = resolved[\"sector\"] == \"all\"",
+       "            integrate = fused.fused_integrator(xp, use_mma=fused.USE_MMA[tiles])",
+       "            system = packed.UnpackedActionSystem if unpacked else packed.PackedActionSystem"
+      ]
+     ],
+     [
+      283,
+      [
+       "                kernels = fused.preflight(integrate, state.D // 2, names)"
+      ],
+      [
+       "                kernels = fused.preflight(integrate, state.D if unpacked else state.D // 2, names, unpacked=unpacked)"
+      ]
+     ],
+     [
+      290,
+      [
+       "                bilinear_element = bilinear_fused.bound(integrate)"
+      ],
+      [
+       "                bilinear_element = bilinear_fused.bound(",
+       "                    integrate, packed_pair.UnpackedDiagonalPair if unpacked else packed_pair.PackedDiagonalPair)"
+      ]
+     ],
+     [
+      322,
+      [],
+      [
+       "                    sector_resolved=resolved[\"sector\"],",
+       "                    layout=None if args.backend != \"fused\" else \"unpacked\" if resolved[\"sector\"] == \"all\" else \"packed\","
+      ]
+     ]
+    ],
+    "fused.py": [
+     [
+      61,
+      [
+       "# diagonal bilinear system of the validation (packed_pair.PackedDiagonalPair)."
+      ],
+      [
+       "# diagonal bilinear system of the validation (packed_pair.PackedDiagonalPair); and those of",
+       "# the sector 'all' (any state), on blocks of dimension D (packed.UnpackedActionSystem,",
+       "# packed_pair.UnpackedDiagonalPair)."
+      ]
+     ],
+     [
+      65,
+      [],
+      [
+       "PHI4_UNPACKED_KERNELS = {\"action\": (15, 4, 2), \"pair\": (12, 5, 3)}"
+      ]
+     ],
+     [
+      692,
+      [
+       "def preflight(integrate, d, names=(\"action\", \"pair\")):",
+       "    \"\"\"Compile the kernels of the phi^4 systems `names` (PHI4_KERNELS) for packed dimension d",
+       "    into the cache of `integrate` (a fused_integrator) and return them by name. Done before a"
+      ],
+      [
+       "def preflight(integrate, d, names=(\"action\", \"pair\"), unpacked=False):",
+       "    \"\"\"Compile the kernels of the phi^4 systems `names` (PHI4_KERNELS) for packed dimension d,",
+       "    or with unpacked those of the sector 'all' (PHI4_UNPACKED_KERNELS) for blocks of dimension",
+       "    d = D, into the cache of `integrate` (a fused_integrator) and return them by name. Done before a"
+      ]
+     ],
+     [
+      701,
+      [
+       "    kernels = {}"
+      ],
+      [
+       "    kernels, shapes = {}, PHI4_UNPACKED_KERNELS if unpacked else PHI4_KERNELS"
+      ]
+     ],
+     [
+      704,
+      [
+       "            kernels[name] = integrate.kernel(d, *PHI4_KERNELS[name])"
+      ],
+      [
+       "            kernels[name] = integrate.kernel(d, *shapes[name])"
+      ]
+     ],
+     [
+      707,
+      [
+       "            raise kind(f\"the {name} kernel of D = {2 * d} cannot run on this GPU: {error}\") from error"
+      ],
+      [
+       "            raise kind(f\"the {name} kernel of D = {d if unpacked else 2 * d} cannot run on this GPU: {error}\") from error"
+      ]
+     ]
+    ],
+    "packed.py": [
+     [
+      42,
+      [],
+      [
+       "",
+       "Without Z2 symmetry (UnpackedActionSystem, sector 'all', any state and tangent) the same",
+       "equations and tables are built with the trivial blocking: every matrix is one D x D block",
+       "(d = D) of class Dg, the Hermitian ones stored whole. Blocks and products per right-hand",
+       "side for n = 4: 15 and 105 (products of dimension D, against 190 of dimension D/2)."
+      ]
+     ],
+     [
+      90,
+      [
+       "    whose stored block rows have the packed indices `stored`.\"\"\"",
+       "    def __init__(self, name, cls, value=None, hermitian=False):",
+       "        self.name, self.cls, self.value, self.hermitian = name, cls, value, hermitian"
+      ],
+      [
+       "    whose stored block rows have the packed indices `stored`. `single`: the trivial",
+       "    blocking of states without symmetry, one block row (the whole matrix).\"\"\"",
+       "    def __init__(self, name, cls, value=None, hermitian=False, single=False):",
+       "        self.name, self.cls, self.value, self.hermitian, self.single = name, cls, value, hermitian, single"
+      ]
+     ],
+     [
+      98,
+      [
+       "        return (0,) if self.hermitian and self.cls == OFF else (0, 1)"
+      ],
+      [
+       "        return (0,) if self.single or self.hermitian and self.cls == OFF else (0, 1)"
+      ]
+     ],
+     [
+      127,
+      [],
+      [
+       "    BLOCKS_PER_SIDE: 2, the Z2 blocking; 1 in UnpackedActionSystem, which checks no zeros."
+      ]
+     ],
+     [
+      129,
+      [],
+      [
+       "    BLOCKS_PER_SIDE = 2",
+       ""
+      ]
+     ],
+     [
+      133,
+      [],
+      [
+       "        z2 = self.BLOCKS_PER_SIDE == 2"
+      ]
+     ],
+     [
+      137,
+      [
+       "        if ss.D % 2:"
+      ],
+      [
+       "        if z2 and ss.D % 2:"
+      ]
+     ],
+     [
+      139,
+      [
+       "        self.ss, self.p, self.spec, self.xp, self.d = ss, float(momentum), spec, xp, ss.D // 2"
+      ],
+      [
+       "        self.ss, self.p, self.spec, self.xp = ss, float(momentum), spec, xp",
+       "        self.d = ss.D // self.BLOCKS_PER_SIDE"
+      ]
+     ],
+     [
+      144,
+      [],
+      [
+       "        def matrix(name, cls, value=None, hermitian=False):   # class Dg, one block, without Z2",
+       "            return _Matrix(name, cls if z2 else DG, value, hermitian, single=not z2)",
+       ""
+      ]
+     ],
+     [
+      148,
+      [
+       "        ql, qld = _Matrix(\"Q_L\", DG, ss.Q[\"L\"]), _Matrix(\"Q_L'\", DG, ss.Qd[\"L\"])",
+       "        qh, qhd = _Matrix(\"Q_H\", DG, ss.Q[\"H\"]), _Matrix(\"Q_H'\", DG, ss.Qd[\"H\"])",
+       "        rl, rld = _Matrix(\"R_L\", OFF, ss.R[\"L\"]), _Matrix(\"R_L'\", OFF, ss.Rd[\"L\"])",
+       "        rhh, rhd = _Matrix(\"R_H\", OFF, ss.R[\"H\"]), _Matrix(\"R_H'\", OFF, ss.Rd[\"H\"])",
+       "        x = [_Matrix(\"x0\", DG, ss.rh)]",
+       "        if not all(has_class(m.value, m.cls) for m in (ql, qld, qh, qhd, rl, rld, rhh, rhd, x[0])):"
+      ],
+      [
+       "        ql, qld = matrix(\"Q_L\", DG, ss.Q[\"L\"]), matrix(\"Q_L'\", DG, ss.Qd[\"L\"])",
+       "        qh, qhd = matrix(\"Q_H\", DG, ss.Q[\"H\"]), matrix(\"Q_H'\", DG, ss.Qd[\"H\"])",
+       "        rl, rld = matrix(\"R_L\", OFF, ss.R[\"L\"]), matrix(\"R_L'\", OFF, ss.Rd[\"L\"])",
+       "        rhh, rhd = matrix(\"R_H\", OFF, ss.R[\"H\"]), matrix(\"R_H'\", OFF, ss.Rd[\"H\"])",
+       "        x = [matrix(\"x0\", DG, ss.rh)]",
+       "        if z2 and not all(has_class(m.value, m.cls) for m in (ql, qld, qh, qhd, rl, rld, rhh, rhd, x[0])):"
+      ]
+     ],
+     [
+      156,
+      [
+       "        classes = [cls for cls in (DG, OFF) if has_class(ref.wh, cls)]"
+      ],
+      [
+       "        classes = [cls for cls in (DG, OFF) if has_class(ref.wh, cls)] if z2 else [DG]"
+      ]
+     ],
+     [
+      159,
+      [
+       "        w = _Matrix(\"W\", classes[0], ref.wh)",
+       "        v = _Matrix(\"V\", rld.cls ^ w.cls, ref.vh)",
+       "        y = [_Matrix(\"y0\", v.cls ^ x[0].cls, ref.rw)]",
+       "        if not (has_class(v.value, v.cls) and has_class(y[0].value, y[0].cls)):"
+      ],
+      [
+       "        w = matrix(\"W\", classes[0], ref.wh)",
+       "        v = matrix(\"V\", rld.cls ^ w.cls, ref.vh)",
+       "        y = [matrix(\"y0\", v.cls ^ x[0].cls, ref.rw)]",
+       "        if z2 and not (has_class(v.value, v.cls) and has_class(y[0].value, y[0].cls)):"
+      ]
+     ],
+     [
+      167,
+      [
+       "        self.sector = SECTORS[w.cls]",
+       "        a1 = {c - 1: _Matrix(f\"a1_{c - 1}\", DG, ss.eye)}",
+       "        a0 = {c - 1: _Matrix(f\"a0_{c - 1}\", a1[c - 1].cls ^ v.cls, xp.zeros_like(ss.eye))}"
+      ],
+      [
+       "        self.sector = SECTORS[w.cls] if z2 else \"all\"",
+       "        a1 = {c - 1: matrix(f\"a1_{c - 1}\", DG, ss.eye)}",
+       "        a0 = {c - 1: matrix(f\"a0_{c - 1}\", a1[c - 1].cls ^ v.cls, xp.zeros_like(ss.eye))}"
+      ]
+     ],
+     [
+      173,
+      [
+       "            x.append(_Matrix(f\"x{k}\", rhh.cls ^ x[k - 1].cls, hermitian=True))"
+      ],
+      [
+       "            x.append(matrix(f\"x{k}\", rhh.cls ^ x[k - 1].cls, hermitian=True))"
+      ]
+     ],
+     [
+      175,
+      [
+       "            y.append(_Matrix(f\"y{k}\", rl.cls ^ y[k - 1].cls))"
+      ],
+      [
+       "            y.append(matrix(f\"y{k}\", rl.cls ^ y[k - 1].cls))"
+      ]
+     ],
+     [
+      177,
+      [
+       "            a1[k] = _Matrix(f\"a1_{k}\", a1[k + 1].cls ^ rl.cls, hermitian=True)",
+       "            a0[k] = _Matrix(f\"a0_{k}\", a0[k + 1].cls ^ rhh.cls)"
+      ],
+      [
+       "            a1[k] = matrix(f\"a1_{k}\", a1[k + 1].cls ^ rl.cls, hermitian=True)",
+       "            a0[k] = matrix(f\"a0_{k}\", a0[k + 1].cls ^ rhh.cls)"
+      ]
+     ],
+     [
+      208,
+      [
+       "                self.layout.append((kind, k, row, row ^ m.cls, len(m.rows) == 1))"
+      ],
+      [
+       "                self.layout.append((kind, k, row, row ^ m.cls, m.cls == OFF and len(m.rows) == 1))"
+      ]
+     ],
+     [
+      211,
+      [
+       "            for row in (0, 1):"
+      ],
+      [
+       "            for row in m.rows:"
+      ]
+     ],
+     [
+      401,
+      [],
+      [
+       "",
+       "",
+       "class UnpackedActionSystem(PackedActionSystem):",
+       "    \"\"\"PackedActionSystem with the trivial blocking: the action system of any state and",
+       "    tangent (sector 'all'), one D x D block per live matrix (d = D), for the same fused",
+       "    kernel and interpreter. No symmetry is required or checked; vh = -R' wh still is.\"\"\"",
+       "    BLOCKS_PER_SIDE = 1"
+      ]
+     ]
+    ],
+    "packed_pair.py": [
+     [
+      21,
+      [],
+      [
+       "UnpackedDiagonalPair is the same system with the trivial blocking of",
+       "packed.UnpackedActionSystem (one D x D block per live matrix): any state and tangent."
+      ]
+     ],
+     [
+      41,
+      [
+       "    constants, initial, rhs, tables); `value(final)` contracts the state at t = +a.\"\"\""
+      ],
+      [
+       "    constants, initial, rhs, tables); `value(final)` contracts the state at t = +a.",
+       "    BLOCKS_PER_SIDE: 2, the Z2 blocking; 1 in UnpackedDiagonalPair, which checks no zeros.\"\"\"",
+       "    BLOCKS_PER_SIDE = 2",
+       ""
+      ]
+     ],
+     [
+      48,
+      [],
+      [
+       "        z2 = self.BLOCKS_PER_SIDE == 2"
+      ]
+     ],
+     [
+      52,
+      [
+       "        if ss.D % 2:"
+      ],
+      [
+       "        if z2 and ss.D % 2:"
+      ]
+     ],
+     [
+      56,
+      [
+       "        self.pair, self.ss, self.spec, self.xp, self.d = pair, ss, spec, xp, ss.D // 2"
+      ],
+      [
+       "        self.pair, self.ss, self.spec, self.xp = pair, ss, spec, xp",
+       "        self.d = ss.D // self.BLOCKS_PER_SIDE"
+      ]
+     ],
+     [
+      61,
+      [
+       "        ql, qld = _Matrix(\"Q_L\", DG, ss.Q[\"L\"]), _Matrix(\"Q_L'\", DG, ss.Qd[\"L\"])",
+       "        qh, qhd = _Matrix(\"Q_H\", DG, ss.Q[\"H\"]), _Matrix(\"Q_H'\", DG, ss.Qd[\"H\"])",
+       "        rl, rld = _Matrix(\"R_L\", OFF, ss.R[\"L\"]), _Matrix(\"R_L'\", OFF, ss.Rd[\"L\"])",
+       "        rhh, rhd = _Matrix(\"R_H\", OFF, ss.R[\"H\"]), _Matrix(\"R_H'\", OFF, ss.Rd[\"H\"])",
+       "        x = [_Matrix(\"x0\", DG, ss.rh)]",
+       "        if not all(has_class(m.value, m.cls) for m in (ql, qld, qh, qhd, rl, rld, rhh, rhd, x[0])):"
+      ],
+      [
+       "        def matrix(name, cls, value=None, hermitian=False):   # class Dg, one block, without Z2",
+       "            return _Matrix(name, cls if z2 else DG, value, hermitian, single=not z2)",
+       "        self._matrix = matrix",
+       "",
+       "        ql, qld = matrix(\"Q_L\", DG, ss.Q[\"L\"]), matrix(\"Q_L'\", DG, ss.Qd[\"L\"])",
+       "        qh, qhd = matrix(\"Q_H\", DG, ss.Q[\"H\"]), matrix(\"Q_H'\", DG, ss.Qd[\"H\"])",
+       "        rl, rld = matrix(\"R_L\", OFF, ss.R[\"L\"]), matrix(\"R_L'\", OFF, ss.Rd[\"L\"])",
+       "        rhh, rhd = matrix(\"R_H\", OFF, ss.R[\"H\"]), matrix(\"R_H'\", OFF, ss.Rd[\"H\"])",
+       "        x = [matrix(\"x0\", DG, ss.rh)]",
+       "        if z2 and not all(has_class(m.value, m.cls) for m in (ql, qld, qh, qhd, rl, rld, rhh, rhd, x[0])):"
+      ]
+     ],
+     [
+      72,
+      [
+       "        classes = [cls for cls in (DG, OFF) if has_class(pair.wh, cls)]"
+      ],
+      [
+       "        classes = [cls for cls in (DG, OFF) if has_class(pair.wh, cls)] if z2 else [DG]"
+      ]
+     ],
+     [
+      75,
+      [
+       "        w, wd = _Matrix(\"W\", classes[0], pair.wh), _Matrix(\"W'\", classes[0], adj(pair.wh))",
+       "        v, vd = _Matrix(\"V\", OFF ^ w.cls, pair.vh), _Matrix(\"V'\", OFF ^ w.cls, adj(pair.vh))",
+       "        y = [_Matrix(\"y0\", v.cls, pair.right[1][:, 0, :])]",
+       "        z = [_Matrix(\"z0\", DG, pair.right[3][:, 0, :])]",
+       "        ns = _Matrix(\"-nS\", DG, -pair.overlap * s)",
+       "        sm = _Matrix(\"S\", DG, s)",
+       "        if not all(has_class(m.value, m.cls) for m in (v, y[0], z[0])):"
+      ],
+      [
+       "        w, wd = matrix(\"W\", classes[0], pair.wh), matrix(\"W'\", classes[0], adj(pair.wh))",
+       "        v, vd = matrix(\"V\", OFF ^ w.cls, pair.vh), matrix(\"V'\", OFF ^ w.cls, adj(pair.vh))",
+       "        y = [matrix(\"y0\", v.cls, pair.right[1][:, 0, :])]",
+       "        z = [matrix(\"z0\", DG, pair.right[3][:, 0, :])]",
+       "        ns = matrix(\"-nS\", DG, -pair.overlap * s)",
+       "        sm = matrix(\"S\", DG, s)",
+       "        if z2 and not all(has_class(m.value, m.cls) for m in (v, y[0], z[0])):"
+      ]
+     ],
+     [
+      83,
+      [
+       "        self.sector = SECTORS[w.cls]"
+      ],
+      [
+       "        self.sector = SECTORS[w.cls] if z2 else \"all\""
+      ]
+     ],
+     [
+      85,
+      [
+       "            x.append(_Matrix(f\"x{k}\", rhh.cls ^ x[k - 1].cls, hermitian=True))",
+       "            y.append(_Matrix(f\"y{k}\", rl.cls ^ y[k - 1].cls))",
+       "            z.append(_Matrix(f\"z{k}\", rl.cls ^ z[k - 1].cls, hermitian=True))"
+      ],
+      [
+       "            x.append(matrix(f\"x{k}\", rhh.cls ^ x[k - 1].cls, hermitian=True))",
+       "            y.append(matrix(f\"y{k}\", rl.cls ^ y[k - 1].cls))",
+       "            z.append(matrix(f\"z{k}\", rl.cls ^ z[k - 1].cls, hermitian=True))"
+      ]
+     ],
+     [
+      115,
+      [
+       "                self.layout.append((kind, k, row, row ^ m.cls, len(m.rows) == 1))"
+      ],
+      [
+       "                self.layout.append((kind, k, row, row ^ m.cls, m.cls == OFF and len(m.rows) == 1))"
+      ]
+     ],
+     [
+      131,
+      [
+       "        d = _Matrix(m.name + \"'\", m.cls, None if m.value is None else adj(m.value))"
+      ],
+      [
+       "        d = self._matrix(m.name + \"'\", m.cls, None if m.value is None else adj(m.value))"
+      ]
+     ],
+     [
+      258,
+      [
+       "        out = xp.zeros((2 * d, 2 * d), dtype=xp.complex128)",
+       "        for row in (0, 1):"
+      ],
+      [
+       "        out = xp.zeros((self.ss.D, self.ss.D), dtype=xp.complex128)",
+       "        for row in range(self.BLOCKS_PER_SIDE):"
+      ]
+     ],
+     [
+      272,
+      [
+       "def diagonal_observable(pair, spec, integrator, integrate):",
+       "    \"\"\"Port of excitation_observable for U = W through the packed system: the value of one",
+       "    monomial term. `integrate(system, points, endpoint, integrator)` is ode.integrate_host or",
+       "    fused.fused_integrator(cp).\"\"\""
+      ],
+      [
+       "class UnpackedDiagonalPair(PackedDiagonalPair):",
+       "    \"\"\"PackedDiagonalPair with the trivial blocking: any state and tangent, one D x D block",
+       "    per live matrix (d = D).\"\"\"",
+       "    BLOCKS_PER_SIDE = 1",
+       "",
+       "",
+       "def diagonal_observable(pair, spec, integrator, integrate, system=PackedDiagonalPair):",
+       "    \"\"\"Port of excitation_observable for U = W through the packed system (or `system`, e.g.",
+       "    UnpackedDiagonalPair): the value of one monomial term. `integrate(system, points,",
+       "    endpoint, integrator)` is ode.integrate_host or fused.fused_integrator(cp).\"\"\""
+      ]
+     ],
+     [
+      284,
+      [
+       "    system = PackedDiagonalPair(pair, spec)"
+      ],
+      [
+       "    system = system(pair, spec)"
+      ]
+     ]
+    ]
+   }
   }
  ]
 }

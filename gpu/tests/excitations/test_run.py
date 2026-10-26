@@ -1,11 +1,11 @@
 """Tests of the command line cli.py that need no GPU.
 
 The fused backend integrates packed.PackedActionSystem, which takes tangents of one Z2
-class: `--sector all` cannot work there (the second Davidson vector mixes the classes) and
-must be refused when the arguments are parsed, before the output directory exists. The
-control supports sector=:all (src/excitation_eigsolve.jl:113), and so do the host and
-numpy backends: one short CPU run on a portable export written here (random_state(4,
-seed=11, scaling=0.5, z2=True), window 14, n_quad 32, 16 theta nodes, two actions).
+class, for the parity sectors, and packed.UnpackedActionSystem for the sector all (any
+state; the one --sector auto gives without Z2 symmetry, src/excitation_eigsolve.jl:113):
+Tiles checks which kernels a solve compiles. The host and numpy backends run every
+sector: one short CPU run on a portable export written here (random_state(4, seed=11,
+scaling=0.5, z2=True), window 14, n_quad 32, 16 theta nodes, two actions).
 
 Defaults resolved by cli.py (Defaults): the research Davidson schedule (maxspace
 min(160, n), retain min(max(12, nev), maxspace - 1), thick restarts), --fresh-restarts,
@@ -65,19 +65,6 @@ def main(*arguments):
 
 
 class Arguments(unittest.TestCase):
-    def test_fused_backend_needs_a_parity_sector(self):
-        """`--sector all` with the fused backend (the default one, or named) is a usage
-        error: exit status 2, nothing created, nothing imported from the GPU stack."""
-        loaded = "cupy" in sys.modules
-        with tempfile.TemporaryDirectory() as scratch:
-            output = Path(scratch) / "out"
-            for backend in ((), ("--backend", "fused")):
-                with self.assertRaises(SystemExit) as failure:
-                    main(Path(scratch) / "state", "--output", output, "--sector", "all", *backend)
-                self.assertEqual(failure.exception.code, 2)
-                self.assertFalse(output.exists())
-        self.assertEqual("cupy" in sys.modules, loaded)
-
     def test_numpy_backend_runs_every_sector(self):
         """The CPU backend on a Z2 state with --sector all (dimension 16): two actions, then
         result.json, vectors.npz and the checkpoint of the last Davidson row."""
@@ -294,6 +281,8 @@ class Tiles(unittest.TestCase):
         cls.scratch = tempfile.TemporaryDirectory()
         cls.state = Path(cls.scratch.name) / "state"
         export(cls.state, random_state(4, seed=11, scaling=0.5, z2=True), 1.0)
+        cls.general = Path(cls.scratch.name) / "general"
+        export(cls.general, random_state(5, seed=12, scaling=0.5), 3.0)
 
     @classmethod
     def tearDownClass(cls):
@@ -309,15 +298,15 @@ class Tiles(unittest.TestCase):
             with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
                 parse(*arguments)
 
-    def run_fused(self, output, cp, *arguments):
+    def run_fused(self, output, cp, *arguments, state=None):
         """main() of the fused backend on the stand-in device, the solve returning at once:
         what it printed (on SystemExit, as the exception's attribute `printed`)."""
         def solve(state, momentum, terms, **options):
             n = eigsolve.sector_dimension(state, sector=options["sector"], metric_tol=options["metric_tol"])
             return dict(dimension=n, coefficients=np.zeros((1, n)), vectors=np.zeros((1, state.D, state.D)),
                         energies=[0.0], validated_energies=None, accepted=[False], stop_reason="stub", numops=0)
-        argv = ["rcmps-gpu-excitations", str(self.state), "--output", str(output), "--window", "14", "--n-quad", "32",
-                *arguments]
+        argv = ["rcmps-gpu-excitations", str(state or self.state), "--output", str(output), "--window", "14",
+                "--n-quad", "32", *arguments]
         printed = io.StringIO()
         with mock.patch.dict(sys.modules, {"cupy": cp}), mock.patch.object(eigsolve, "excitation_eigsolve", solve), \
                 mock.patch.object(sys, "argv", argv), contextlib.redirect_stdout(printed), \
@@ -353,6 +342,27 @@ class Tiles(unittest.TestCase):
                 self.assertTrue(all(f"#define USE_MMA {int(tiles == 'mma')}\n" in k.code for k in cp.compiled))
                 self.assertIn(f"action kernel: tiles {tiles} (requested {requested}, compute capability "
                               f"{capability[0]}.{capability[1]}), 26 thread blocks of", printed)
+
+    def test_sector_all_compiles_the_unpacked_kernels(self):
+        """The sector all, given for the Z2 state or resolved by --sector auto for a state
+        without symmetry (D = 5), runs on the kernels of packed.UnpackedActionSystem and
+        packed_pair.UnpackedDiagonalPair: blocks of dimension D, 15 and 12 of them; a parity
+        sector keeps the packed ones."""
+        cases = ((self.state, ("--sector", "all"), "all", 16, ["4_15_4_2", "4_12_5_3"], "unpacked"),
+                 (self.general, (), "all", 25, ["5_15_4_2", "5_12_5_3"], "unpacked"),
+                 (self.state, ("--sector", "even"), "even", 8, ["2_26_4_2", "2_20_5_3"], "packed"))
+        for state, arguments, sector, n, kernels, layout in cases:
+            with self.subTest(state=state.name, arguments=arguments), tempfile.TemporaryDirectory() as scratch:
+                cp, output = fake_cupy((8, 0)), Path(scratch) / "out"
+                printed = self.run_fused(output, cp, *arguments, state=state)
+                result = json.loads((output / "result.json").read_text())
+                settings = result["settings"]
+                self.assertEqual((settings["sector_resolved"], settings["sector_dimension"], settings["layout"]),
+                                 (sector, n, layout))
+                self.assertEqual(sorted(result["kernels"]), sorted(kernels))
+                d, blocks = (int(v) for v in kernels[0].split("_")[:2])
+                self.assertIn(f"action kernel: tiles mma (requested auto, compute capability 8.0), "
+                              f"{blocks * ((d + 7) // 8)} thread blocks", printed)
 
     def test_refusals_before_the_output_directory(self):
         """--tiles mma below compute capability 8.0, and a GPU on which the pair kernel of the

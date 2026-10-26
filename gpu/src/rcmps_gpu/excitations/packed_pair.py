@@ -18,6 +18,8 @@ pair). In the table contract of packed.py, with n the overlap and S the scaling:
          + source k (R z_{k-1} + Wh y_{k-1}' + z_{k-1} R' + y_{k-1} Wh')
 The value of the term is tr(z_{C-1}) + tr(hh x_{C-1}) at t = +a (excitation_contract).
 Three two-sided groups and five left constants per block are needed for z.
+UnpackedDiagonalPair is the same system with the trivial blocking of
+packed.UnpackedActionSystem (one D x D block per live matrix): any state and tangent.
 """
 from __future__ import annotations
 
@@ -36,44 +38,53 @@ TEMPS, MAX_LEFT = 3, 5
 class PackedDiagonalPair:
     """Packed value-only system of one monomial term for a bilinear.Pair with U = W.
     Same interface as packed.PackedActionSystem for the integrators (xp, d, blocks,
-    constants, initial, rhs, tables); `value(final)` contracts the state at t = +a."""
+    constants, initial, rhs, tables); `value(final)` contracts the state at t = +a.
+    BLOCKS_PER_SIDE: 2, the Z2 blocking; 1 in UnpackedDiagonalPair, which checks no zeros."""
+    BLOCKS_PER_SIDE = 2
+
     def __init__(self, pair, spec):
         ss = pair.ss
         xp = ss.xp
+        z2 = self.BLOCKS_PER_SIDE == 2
         if (spec.commutator or spec.kinetic or spec.channels < 3
                 or spec.edges != monomial_spec(spec.channels - 1).edges):
             raise ValueError("the packed pair system needs a monomial chain :phi^n: with n >= 2")
-        if ss.D % 2:
+        if z2 and ss.D % 2:
             raise ValueError("the packed pair system needs an even bond dimension")
         if float(xp.abs(pair.uh - pair.wh).max()) != 0.0:
             raise ValueError("the packed pair system is the diagonal element: U must equal W")
-        self.pair, self.ss, self.spec, self.xp, self.d = pair, ss, spec, xp, ss.D // 2
+        self.pair, self.ss, self.spec, self.xp = pair, ss, spec, xp
+        self.d = ss.D // self.BLOCKS_PER_SIDE
         c, p = spec.channels, pair.p
         s = xp.diag(ss.s).astype(xp.complex128)
 
-        ql, qld = _Matrix("Q_L", DG, ss.Q["L"]), _Matrix("Q_L'", DG, ss.Qd["L"])
-        qh, qhd = _Matrix("Q_H", DG, ss.Q["H"]), _Matrix("Q_H'", DG, ss.Qd["H"])
-        rl, rld = _Matrix("R_L", OFF, ss.R["L"]), _Matrix("R_L'", OFF, ss.Rd["L"])
-        rhh, rhd = _Matrix("R_H", OFF, ss.R["H"]), _Matrix("R_H'", OFF, ss.Rd["H"])
-        x = [_Matrix("x0", DG, ss.rh)]
-        if not all(has_class(m.value, m.cls) for m in (ql, qld, qh, qhd, rl, rld, rhh, rhd, x[0])):
+        def matrix(name, cls, value=None, hermitian=False):   # class Dg, one block, without Z2
+            return _Matrix(name, cls if z2 else DG, value, hermitian, single=not z2)
+        self._matrix = matrix
+
+        ql, qld = matrix("Q_L", DG, ss.Q["L"]), matrix("Q_L'", DG, ss.Qd["L"])
+        qh, qhd = matrix("Q_H", DG, ss.Q["H"]), matrix("Q_H'", DG, ss.Qd["H"])
+        rl, rld = matrix("R_L", OFF, ss.R["L"]), matrix("R_L'", OFF, ss.Rd["L"])
+        rhh, rhd = matrix("R_H", OFF, ss.R["H"]), matrix("R_H'", OFF, ss.Rd["H"])
+        x = [matrix("x0", DG, ss.rh)]
+        if z2 and not all(has_class(m.value, m.cls) for m in (ql, qld, qh, qhd, rl, rld, rhh, rhd, x[0])):
             raise ValueError("the packed pair system needs exact balanced Z2 block zeros in Q, R and rh")
-        classes = [cls for cls in (DG, OFF) if has_class(pair.wh, cls)]
+        classes = [cls for cls in (DG, OFF) if has_class(pair.wh, cls)] if z2 else [DG]
         if not classes:
             raise ValueError("the tangent has no definite Z2 class")
-        w, wd = _Matrix("W", classes[0], pair.wh), _Matrix("W'", classes[0], adj(pair.wh))
-        v, vd = _Matrix("V", OFF ^ w.cls, pair.vh), _Matrix("V'", OFF ^ w.cls, adj(pair.vh))
-        y = [_Matrix("y0", v.cls, pair.right[1][:, 0, :])]
-        z = [_Matrix("z0", DG, pair.right[3][:, 0, :])]
-        ns = _Matrix("-nS", DG, -pair.overlap * s)
-        sm = _Matrix("S", DG, s)
-        if not all(has_class(m.value, m.cls) for m in (v, y[0], z[0])):
+        w, wd = matrix("W", classes[0], pair.wh), matrix("W'", classes[0], adj(pair.wh))
+        v, vd = matrix("V", OFF ^ w.cls, pair.vh), matrix("V'", OFF ^ w.cls, adj(pair.vh))
+        y = [matrix("y0", v.cls, pair.right[1][:, 0, :])]
+        z = [matrix("z0", DG, pair.right[3][:, 0, :])]
+        ns = matrix("-nS", DG, -pair.overlap * s)
+        sm = matrix("S", DG, s)
+        if z2 and not all(has_class(m.value, m.cls) for m in (v, y[0], z[0])):
             raise ValueError("the pair environments do not have the Z2 class implied by the tangent")
-        self.sector = SECTORS[w.cls]
+        self.sector = SECTORS[w.cls] if z2 else "all"
         for k in range(1, c):
-            x.append(_Matrix(f"x{k}", rhh.cls ^ x[k - 1].cls, hermitian=True))
-            y.append(_Matrix(f"y{k}", rl.cls ^ y[k - 1].cls))
-            z.append(_Matrix(f"z{k}", rl.cls ^ z[k - 1].cls, hermitian=True))
+            x.append(matrix(f"x{k}", rhh.cls ^ x[k - 1].cls, hermitian=True))
+            y.append(matrix(f"y{k}", rl.cls ^ y[k - 1].cls))
+            z.append(matrix(f"z{k}", rl.cls ^ z[k - 1].cls, hermitian=True))
         self._adjoint_of = {}
         yd = [self._dagger(m) for m in y]
         equations = []
@@ -101,7 +112,7 @@ class PackedDiagonalPair:
         for kind, k, m, *_ in equations:
             for row in m.rows:
                 m.stored[row] = len(self.layout)
-                self.layout.append((kind, k, row, row ^ m.cls, len(m.rows) == 1))
+                self.layout.append((kind, k, row, row ^ m.cls, m.cls == OFF and len(m.rows) == 1))
         self._pool, self._slot = [], {}
         self.blocks = [self._block(m, row, jac, temps, source[m], coefficient[m], mu)
                        for _, _, m, jac, temps, mu in equations for row in m.rows]
@@ -117,7 +128,7 @@ class PackedDiagonalPair:
     # ---- class algebra (as packed.PackedActionSystem, plus daggered non-Hermitian operands) ----
     def _dagger(self, m):
         """The conjugate transpose of a matrix, as an operand source."""
-        d = _Matrix(m.name + "'", m.cls, None if m.value is None else adj(m.value))
+        d = self._matrix(m.name + "'", m.cls, None if m.value is None else adj(m.value))
         self._adjoint_of[d] = m
         return d
 
@@ -244,8 +255,8 @@ class PackedDiagonalPair:
     def _full(self, m, packed):
         """Dense D x D matrix of a live Hermitian matrix from its stored blocks."""
         xp, d = self.xp, self.d
-        out = xp.zeros((2 * d, 2 * d), dtype=xp.complex128)
-        for row in (0, 1):
+        out = xp.zeros((self.ss.D, self.ss.D), dtype=xp.complex128)
+        for row in range(self.BLOCKS_PER_SIDE):
             col = row ^ m.cls
             block = packed[m.stored[row]] if row in m.stored else adj(packed[m.stored[row ^ 1]])
             out[row * d:(row + 1) * d, col * d:(col + 1) * d] = block
@@ -258,13 +269,19 @@ class PackedDiagonalPair:
         return complex(xp.trace(z) + xp.sum(self.pair.left.T * x))
 
 
-def diagonal_observable(pair, spec, integrator, integrate):
-    """Port of excitation_observable for U = W through the packed system: the value of one
-    monomial term. `integrate(system, points, endpoint, integrator)` is ode.integrate_host or
-    fused.fused_integrator(cp)."""
+class UnpackedDiagonalPair(PackedDiagonalPair):
+    """PackedDiagonalPair with the trivial blocking: any state and tangent, one D x D block
+    per live matrix (d = D)."""
+    BLOCKS_PER_SIDE = 1
+
+
+def diagonal_observable(pair, spec, integrator, integrate, system=PackedDiagonalPair):
+    """Port of excitation_observable for U = W through the packed system (or `system`, e.g.
+    UnpackedDiagonalPair): the value of one monomial term. `integrate(system, points,
+    endpoint, integrator)` is ode.integrate_host or fused.fused_integrator(cp)."""
     if not (integrator.max_point > 0 and integrator.atol > 0 and integrator.rtol > 0 and integrator.maxiters > 0):
         raise ValueError("invalid integration controls")
-    system = PackedDiagonalPair(pair, spec)
+    system = system(pair, spec)
     final = integrate(system, (), math.sqrt(integrator.max_point), integrator)[-1]
     if system.xp is np and hasattr(final, "get"):     # host pair integrated on a device
         final = final.get()

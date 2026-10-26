@@ -39,6 +39,11 @@ source = 2|t| J(t^2). Every term has exactly one state operand; an index -1 in
 source comes from a constant channel and is a fixed block (k = 1 forward, k = C-2
 adjoint). Blocks and products per right-hand side for n = 2, 3, 4: 12, 18, 26 and
 78, 128, 190, in both sectors; the layout depends on the degree and the sector only.
+
+Without Z2 symmetry (UnpackedActionSystem, sector 'all', any state and tangent) the same
+equations and tables are built with the trivial blocking: every matrix is one D x D block
+(d = D) of class Dg, the Hermitian ones stored whole. Blocks and products per right-hand
+side for n = 4: 15 and 105 (products of dimension D, against 190 of dimension D/2).
 """
 from __future__ import annotations
 
@@ -82,14 +87,15 @@ class Block:
 
 class _Matrix:
     """A class-definite D x D matrix: a constant (dense `value`) or a live unknown,
-    whose stored block rows have the packed indices `stored`."""
-    def __init__(self, name, cls, value=None, hermitian=False):
-        self.name, self.cls, self.value, self.hermitian = name, cls, value, hermitian
+    whose stored block rows have the packed indices `stored`. `single`: the trivial
+    blocking of states without symmetry, one block row (the whole matrix)."""
+    def __init__(self, name, cls, value=None, hermitian=False, single=False):
+        self.name, self.cls, self.value, self.hermitian, self.single = name, cls, value, hermitian, single
         self.stored = {}
 
     @property
     def rows(self):
-        return (0,) if self.hermitian and self.cls == OFF else (0, 1)
+        return (0,) if self.single or self.hermitian and self.cls == OFF else (0, 1)
 
 
 def has_class(m, cls):
@@ -118,50 +124,58 @@ class PackedActionSystem:
     of ActionSystem are the constant channels. `sector` is 'odd' or 'even'.
     Raises ValueError unless Q, R, rh and the tangent have exact block zeros (nothing is
     projected), vh = -R' wh, and `spec` is a non-commutator monomial chain with n >= 2.
+    BLOCKS_PER_SIDE: 2, the Z2 blocking; 1 in UnpackedActionSystem, which checks no zeros.
     """
+    BLOCKS_PER_SIDE = 2
+
     def __init__(self, ss, momentum, spec, tangent=None):
         xp = ss.xp
+        z2 = self.BLOCKS_PER_SIDE == 2
         if (spec.commutator or spec.kinetic or spec.channels < 3
                 or spec.edges != monomial_spec(spec.channels - 1).edges):
             raise ValueError("the packed action system needs a monomial chain :phi^n: with n >= 2")
-        if ss.D % 2:
+        if z2 and ss.D % 2:
             raise ValueError("the packed action system needs an even bond dimension")
-        self.ss, self.p, self.spec, self.xp, self.d = ss, float(momentum), spec, xp, ss.D // 2
+        self.ss, self.p, self.spec, self.xp = ss, float(momentum), spec, xp
+        self.d = ss.D // self.BLOCKS_PER_SIDE
         self.reference = ref = ActionSystem(ss, momentum, spec, tangent)
         c, p = spec.channels, self.p
 
+        def matrix(name, cls, value=None, hermitian=False):   # class Dg, one block, without Z2
+            return _Matrix(name, cls if z2 else DG, value, hermitian, single=not z2)
+
         # Constants. The classes of V, rw and of every live matrix follow from the equations.
-        ql, qld = _Matrix("Q_L", DG, ss.Q["L"]), _Matrix("Q_L'", DG, ss.Qd["L"])
-        qh, qhd = _Matrix("Q_H", DG, ss.Q["H"]), _Matrix("Q_H'", DG, ss.Qd["H"])
-        rl, rld = _Matrix("R_L", OFF, ss.R["L"]), _Matrix("R_L'", OFF, ss.Rd["L"])
-        rhh, rhd = _Matrix("R_H", OFF, ss.R["H"]), _Matrix("R_H'", OFF, ss.Rd["H"])
-        x = [_Matrix("x0", DG, ss.rh)]
-        if not all(has_class(m.value, m.cls) for m in (ql, qld, qh, qhd, rl, rld, rhh, rhd, x[0])):
+        ql, qld = matrix("Q_L", DG, ss.Q["L"]), matrix("Q_L'", DG, ss.Qd["L"])
+        qh, qhd = matrix("Q_H", DG, ss.Q["H"]), matrix("Q_H'", DG, ss.Qd["H"])
+        rl, rld = matrix("R_L", OFF, ss.R["L"]), matrix("R_L'", OFF, ss.Rd["L"])
+        rhh, rhd = matrix("R_H", OFF, ss.R["H"]), matrix("R_H'", OFF, ss.Rd["H"])
+        x = [matrix("x0", DG, ss.rh)]
+        if z2 and not all(has_class(m.value, m.cls) for m in (ql, qld, qh, qhd, rl, rld, rhh, rhd, x[0])):
             raise ValueError("the packed action system needs exact balanced Z2 block zeros in Q, R "
                              "and rh; no projection is performed")
-        classes = [cls for cls in (DG, OFF) if has_class(ref.wh, cls)]
+        classes = [cls for cls in (DG, OFF) if has_class(ref.wh, cls)] if z2 else [DG]
         if not classes:
             raise ValueError("the tangent has no definite Z2 class")
-        w = _Matrix("W", classes[0], ref.wh)
-        v = _Matrix("V", rld.cls ^ w.cls, ref.vh)
-        y = [_Matrix("y0", v.cls ^ x[0].cls, ref.rw)]
-        if not (has_class(v.value, v.cls) and has_class(y[0].value, y[0].cls)):
+        w = matrix("W", classes[0], ref.wh)
+        v = matrix("V", rld.cls ^ w.cls, ref.vh)
+        y = [matrix("y0", v.cls ^ x[0].cls, ref.rw)]
+        if z2 and not (has_class(v.value, v.cls) and has_class(y[0].value, y[0].cls)):
             raise ValueError("vh and rw do not have the Z2 class implied by wh")
         gauge = ss.Rd["L"] @ ref.wh
         if float(xp.linalg.norm(ref.vh + gauge)) > 1e-12 * float(xp.linalg.norm(ref.vh) + xp.linalg.norm(gauge)):
             raise ValueError("the packed action system needs a gauge-fixed tangent, vh = -R' wh")
-        self.sector = SECTORS[w.cls]
-        a1 = {c - 1: _Matrix(f"a1_{c - 1}", DG, ss.eye)}
-        a0 = {c - 1: _Matrix(f"a0_{c - 1}", a1[c - 1].cls ^ v.cls, xp.zeros_like(ss.eye))}
+        self.sector = SECTORS[w.cls] if z2 else "all"
+        a1 = {c - 1: matrix(f"a1_{c - 1}", DG, ss.eye)}
+        a0 = {c - 1: matrix(f"a0_{c - 1}", a1[c - 1].cls ^ v.cls, xp.zeros_like(ss.eye))}
 
         # Live matrices and their equations: (matrix, jac pairs, two-sided groups, mu).
         for k in range(1, c):
-            x.append(_Matrix(f"x{k}", rhh.cls ^ x[k - 1].cls, hermitian=True))
+            x.append(matrix(f"x{k}", rhh.cls ^ x[k - 1].cls, hermitian=True))
         for k in range(1, c - 1):
-            y.append(_Matrix(f"y{k}", rl.cls ^ y[k - 1].cls))
+            y.append(matrix(f"y{k}", rl.cls ^ y[k - 1].cls))
         for k in range(c - 2, -1, -1):
-            a1[k] = _Matrix(f"a1_{k}", a1[k + 1].cls ^ rl.cls, hermitian=True)
-            a0[k] = _Matrix(f"a0_{k}", a0[k + 1].cls ^ rhh.cls)
+            a1[k] = matrix(f"a1_{k}", a1[k + 1].cls ^ rl.cls, hermitian=True)
+            a0[k] = matrix(f"a0_{k}", a0[k + 1].cls ^ rhh.cls)
         equations = [(0, k, x[k], [(qh, x[k]), (x[k], qhd)], [([(rhh, x[k])], rhd)], 0)
                      for k in range(1, c)]
         equations += [(1, k, y[k], [(ql, y[k]), (y[k], qhd), (v, x[k])],
@@ -191,10 +205,10 @@ class PackedActionSystem:
         for kind, k, m, *_ in equations:
             for row in m.rows:
                 m.stored[row] = len(self.layout)
-                self.layout.append((kind, k, row, row ^ m.cls, len(m.rows) == 1))
+                self.layout.append((kind, k, row, row ^ m.cls, m.cls == OFF and len(m.rows) == 1))
         self._pool, self._slot = [], {}
         for m in (ql, qld, qh, qhd, rl, rld, rhh, rhd, w, v):    # constant order: state, tangent, fixed
-            for row in (0, 1):
+            for row in m.rows:
                 self._operand(m, row)
         self.blocks = [self._block(m, row, jac, temps, source[m], coefficient[m], mu)
                        for _, _, m, jac, temps, mu in equations for row in m.rows]
@@ -384,3 +398,10 @@ class PackedActionSystem:
             bulk, a0, pair = self.reference.pullback(self.unpack(part), points[nodes], weights[nodes])
             out = out + bulk
         return out, a0, pair
+
+
+class UnpackedActionSystem(PackedActionSystem):
+    """PackedActionSystem with the trivial blocking: the action system of any state and
+    tangent (sector 'all'), one D x D block per live matrix (d = D), for the same fused
+    kernel and interpreter. No symmetry is required or checked; vh = -R' wh still is."""
+    BLOCKS_PER_SIDE = 1

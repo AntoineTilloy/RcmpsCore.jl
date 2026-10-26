@@ -58,8 +58,11 @@ TILE_CHOICES = ("auto",) + TILES
 USE_MMA = {"auto": None, "mma": True, "scalar": False}    # use_mma of FusedTrajectory for each --tiles
 # (packed blocks, cached left panels, two-sided groups) of the kernels of a phi^4 solve, for
 # both sectors and any momentum: the action system (packed.PackedActionSystem) and the
-# diagonal bilinear system of the validation (packed_pair.PackedDiagonalPair).
+# diagonal bilinear system of the validation (packed_pair.PackedDiagonalPair); and those of
+# the sector 'all' (any state), on blocks of dimension D (packed.UnpackedActionSystem,
+# packed_pair.UnpackedDiagonalPair).
 PHI4_KERNELS = {"action": (26, 4, 2), "pair": (20, 5, 3)}
+PHI4_UNPACKED_KERNELS = {"action": (15, 4, 2), "pair": (12, 5, 3)}
 
 
 def select_tiles(requested, major, minor):
@@ -686,19 +689,20 @@ def fused_integrator(cp, **options):
     return integrate
 
 
-def preflight(integrate, d, names=("action", "pair")):
-    """Compile the kernels of the phi^4 systems `names` (PHI4_KERNELS) for packed dimension d
-    into the cache of `integrate` (a fused_integrator) and return them by name. Done before a
+def preflight(integrate, d, names=("action", "pair"), unpacked=False):
+    """Compile the kernels of the phi^4 systems `names` (PHI4_KERNELS) for packed dimension d,
+    or with unpacked those of the sector 'all' (PHI4_UNPACKED_KERNELS) for blocks of dimension
+    d = D, into the cache of `integrate` (a fused_integrator) and return them by name. Done before a
     solve, it refuses at once a GPU that cannot run one of them (tensor-core tiles requested
     below compute capability 8.0, shared memory, thread-block limit, a cooperative grid that
     is not resident at any register cap): the pair kernel of the validation needs more
     shared memory per block than the action kernel and is otherwise compiled only after the
     Davidson search. Raises ValueError or RuntimeError naming the kernel."""
-    kernels = {}
+    kernels, shapes = {}, PHI4_UNPACKED_KERNELS if unpacked else PHI4_KERNELS
     for name in names:
         try:
-            kernels[name] = integrate.kernel(d, *PHI4_KERNELS[name])
+            kernels[name] = integrate.kernel(d, *shapes[name])
         except (ValueError, RuntimeError) as error:
             kind = ValueError if isinstance(error, ValueError) else RuntimeError
-            raise kind(f"the {name} kernel of D = {2 * d} cannot run on this GPU: {error}") from error
+            raise kind(f"the {name} kernel of D = {d if unpacked else 2 * d} cannot run on this GPU: {error}") from error
     return kernels
