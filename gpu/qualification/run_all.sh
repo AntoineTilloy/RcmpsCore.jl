@@ -49,12 +49,17 @@
 #                         defaults) with --tiles auto (8.0 or later, with the state); fails unless
 #                         result.json says the level is accepted
 #   excitation_d64_scalar the same with --tiles scalar
+#   optimizer_none_trajectories  gpu_optimizer_check.py --symmetry none --stages trajectory, D = 3 5 8
+#                         16 32 64: the kernel of states without symmetry (unpacked channels), each
+#                         path, against the host oracle at D <= 8, repeated launches bitwise
+#   optimizer_none_compile  the same, --stages compile, D = 8 to 256
+#   optimizer_none_runs   the same, --stages run, D = 5 8 16 32 64, 3 accepted iterations
 #
 # OUTPUT_DIR/status.tsv: one line per step (step, exit status, seconds, log); the exit status
 # of this script is 1 if any step failed. Steps continue after a failed one.
 set -u
 if [ $# -ne 1 ]; then
-    sed -n '2,54p' "$0" >&2
+    sed -n '2,59p' "$0" >&2
     exit 2
 fi
 OUT=$1
@@ -184,6 +189,12 @@ if [ -n "${RCMPS_STATE_D64:-}" ] && [ "$CC" -ge 80 ]; then
     run_step 13 excitation_d64 solve "$OUT/excitation_d64" "$RCMPS_STATE_D64" --tiles auto
     run_step 14 excitation_d64_scalar solve "$OUT/excitation_d64_scalar" "$RCMPS_STATE_D64" --tiles scalar
 fi
+run_step 15 optimizer_none_trajectories $OPT --output "$OUT/optimizer_none_trajectories" --symmetry none \
+    --stages trajectory --D 3 5 8 16 32 64 --tiles $TILES
+run_step 16 optimizer_none_compile $OPT --output "$OUT/optimizer_none_compile" --symmetry none --stages compile \
+    --D 8 16 32 64 96 112 128 144 160 192 256 --tiles $TILES $REFUSED
+run_step 17 optimizer_none_runs $OPT --output "$OUT/optimizer_none_runs" --symmetry none --stages run \
+    --D 5 8 16 32 64 --tiles $TILES --iterations 3
 echo "status: $OUT/status.tsv"
 column -t -s $'\t' "$OUT/status.tsv" 2>/dev/null || cat "$OUT/status.tsv"
 exit $FAILED

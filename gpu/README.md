@@ -624,7 +624,9 @@ residency, PTX audit); `gpu_fused_check.py`, `gpu_pair_check.py --reference` and
 `gpu_action_check.py --reference` (the fused kernel, the bilinear term and the complete
 action against the host integrator and the CPU equations, on random states and the D = 16
 fixture); `check_references.py` (the reference levels of `excitation_references.toml`
-through the command line, against Julia); and, with `RCMPS_STATE_D64`, a D = 64 solve. It
+through the command line, against Julia); with `RCMPS_STATE_D64`, a D = 64 solve; and
+`gpu_optimizer_check.py --symmetry none` (the kernel of states without symmetry: trajectories
+against the host oracle, compilation and residency per D, short runs at D = 5 to 64). It
 does not run `gpu_settings_check.py` (the kinetic-node study) or the solver, kinetic and
 host-integrator stages of `gpu_bringup.py`. Every script exits with status 1 when a check
 fails: an error, a failed compilation or PTX audit, a repeated launch whose result is not
