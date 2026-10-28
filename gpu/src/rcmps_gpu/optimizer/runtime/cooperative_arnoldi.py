@@ -296,8 +296,8 @@ def kinetic_raw_cooperative(q, r, rho, nodes=128, *, xp=np, tolerance=1e-12,
     """Same raw kinetic return contract; every inherited true residual retained."""
     projection = projection_backend or ("hessenberg_gpu" if xp.__name__ == "cupy" else "schur_cpu")
     backend = "gpu" if xp.__name__ == "cupy" else "cpu"
-    if not math.isfinite(tolerance) or not 0 < tolerance <= 1e-12:
-        raise ValueError("candidate requires strict kinetic tolerance <=1e-12")
+    if not math.isfinite(tolerance) or not 0 < tolerance <= 1e-10:
+        raise ValueError("candidate requires a kinetic tolerance <=1e-10")
     started = perf_counter()
     if context is None:
         context = CooperativeKineticContext(q, r, rho, xp=xp, tolerance=tolerance,

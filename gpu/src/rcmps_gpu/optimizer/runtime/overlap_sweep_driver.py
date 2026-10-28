@@ -52,8 +52,8 @@ def validate_overlap_arguments(args):
         raise ValueError("overlap requires CuPy hybrid persistent_trajectory with packed Z2 or reduced channels")
     if (args.arnoldi != "gpu" or args.projection != "hessenberg_gpu" or
             args.krylov_ceiling is not None or not math.isfinite(args.krylov_tolerance) or
-            not 0 < args.krylov_tolerance <= 1e-12):
-        raise ValueError("overlap requires GPU Arnoldi/Hessenberg, true residual <=1e-12 and no fallback")
+            not 0 < args.krylov_tolerance <= 1e-10):
+        raise ValueError("overlap requires GPU Arnoldi/Hessenberg, true residual <=1e-10 and no fallback")
     if args.fused_rhs:
         raise ValueError("overlap cannot change the cached objective layout")
 

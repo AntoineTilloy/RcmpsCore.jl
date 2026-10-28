@@ -40,6 +40,11 @@ DEFAULTS = dict(window=30., quadrature=512, nodes=512, atol=1e-13, rtol=1e-12,
                 maxdim=1024, metric_reg=1e-3, krylov_tolerance=1e-12,
                 stationary_tolerance=1e-13, max_steps=1_000_000,
                 line_search_energy_atol=1e-14)
+# The largest --krylov-tolerance: the true relative residual the kinetic Krylov solves must reach.
+# From D ~ 56-88 (phi4, g = 1-4) the attainable one reaches the default 1e-12 (1.006e-12 at D = 72,
+# g = 1), solves then run to maxdim and fail; the runtime (overlap_sweep_driver, cooperative_arnoldi)
+# accepts the same range.
+KRYLOV_TOLERANCE_MAX = 1e-10
 # The controller's line searches (runtime/robust_optimizer.py LINE_SEARCHES): the bounded Armijo
 # backtracking, or RcmpsCore's Hager-Zhang search with energy tolerance WOLFE_ENERGY_ATOL.
 LINE_SEARCHES = ("armijo", "wolfe")
@@ -178,8 +183,10 @@ def prepare(args, runtime_sha256):
             raise ValueError("control must be positive and finite: " + name)
     if not 0 < controls["window"] <= 40 or controls["quadrature"] < 8:
         raise ValueError("the source expansion requires window <= 40 and quadrature >= 8")
-    if controls["rtol"] < 100 * sys.float_info.epsilon or controls["krylov_tolerance"] > 1e-12:
-        raise ValueError("unsupported ODE precision or relaxed kinetic tolerance")
+    if controls["rtol"] < 100 * sys.float_info.epsilon:
+        raise ValueError("unsupported ODE precision")
+    if controls["krylov_tolerance"] > KRYLOV_TOLERANCE_MAX:
+        raise ValueError(f"the kinetic Krylov tolerance must be at most {KRYLOV_TOLERANCE_MAX:g}")
     if (args.max_seconds is not None and (not math.isfinite(args.max_seconds) or args.max_seconds <= 0)
             or args.max_iterations < 1 or args.device < 0 or args.seed < 0
             or not math.isfinite(args.gradient_target) or args.gradient_target <= 0
@@ -253,7 +260,10 @@ def parser():
                         "scalar (FP64 FMAs with warp shuffles, any GPU with cooperative launch), or auto (the "
                         "default: mma from compute capability 8.0 on, scalar below)")
     for name in DEFAULTS:
-        p.add_argument("--" + name.replace("_", "-"), type=int if isinstance(DEFAULTS[name], int) else float)
+        p.add_argument("--" + name.replace("_", "-"), type=int if isinstance(DEFAULTS[name], int) else float,
+                       help=(f"true relative residual the kinetic Krylov solves must reach (default 1e-12, at most "
+                             f"{KRYLOV_TOLERANCE_MAX:g}); a resume keeps its checkpoint's"
+                             if name == "krylov_tolerance" else None))
     return p
 
 

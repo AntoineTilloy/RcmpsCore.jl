@@ -234,7 +234,13 @@ history; the objective controls are inherited and cannot change, and the origina
 stay as they are. `--line-search wolfe` (opt-in; `armijo` is the default) selects the
 Hager-Zhang search of the Julia package instead of the bounded Armijo backtracking (see
 "Optimizer: line searches"); a resume keeps the line search of its checkpoint and refuses
-the other.
+the other. `--krylov-tolerance` (default 1e-12, at most 1e-10) is the true relative residual
+the shifted Arnoldi solves of the kinetic term must reach; a solve that misses it at
+`--maxdim` vectors (1024) fails the evaluation. The attainable residual grows with D, and for
+φ⁴ it reaches 1e-12 from D ≈ 56 at g = 4, 72 at g = 1 and 88 at g = 2 (1.006e-12 at D = 72,
+g = 1, after 1024 vectors): there the default makes the solves run to 1024 vectors and the
+independent checks of the worker fail, so such runs take a slightly larger tolerance. It is an
+objective control: a resume keeps its checkpoint's.
 
 Excitations (`rcmps-gpu-excitations`, or `python -m rcmps_gpu.excitations`):
 

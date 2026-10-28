@@ -385,6 +385,36 @@ print(json.dumps(dict(passed=True,tests=log.getvalue().count(' ... ok'))))
             with self.assertRaises(ValueError):
                 run.prepare(args, hashes)
 
+    def test_kinetic_krylov_tolerance_is_tunable_up_to_its_cap(self):
+        hashes = run.runtime_source_sha256()
+        self.assertEqual(run.prepare(run.parser().parse_args(["--D", "16"]), hashes)["controls"]["krylov_tolerance"], 1e-12)
+        args = run.parser().parse_args(["--D", "16", "--krylov-tolerance", "4e-12"])
+        self.assertEqual(run.prepare(args, hashes)["controls"]["krylov_tolerance"], 4e-12)
+        for value in ("2e-10", "0", "nan"):
+            with self.assertRaises(ValueError):
+                run.prepare(run.parser().parse_args(["--D", "16", "--krylov-tolerance", value]), hashes)
+        result = child('''
+import numpy as np
+from rcmps_gpu.optimizer.runtime import overlap_sweep_driver as overlap, trajectory_sweep_driver as t
+from rcmps_gpu.optimizer.runtime.cooperative_arnoldi import kinetic_raw_cooperative
+def overlap_accepts(tolerance):
+    args=t.ORIGINAL_PARSE(['reference','--backend','cupy','--mode','hybrid','--packed-z2',
+        '--quartic-backend','persistent_trajectory','--arnoldi','gpu','--projection','hessenberg_gpu',
+        '--krylov-tolerance',tolerance])
+    try:overlap.validate_overlap_arguments(args)
+    except ValueError:return False
+    return True
+def cooperative_accepts(tolerance):
+    a=np.eye(2,dtype=np.complex128)
+    try:kinetic_raw_cooperative(a,a,a/2,4,tolerance=tolerance,context=object())
+    except ValueError as error:return 'kinetic tolerance' not in str(error)
+    return True
+print(json.dumps(dict(overlap=[overlap_accepts(v) for v in ('1e-12','4e-12','1e-10','2e-10')],
+    cooperative=[cooperative_accepts(v) for v in (1e-12,4e-12,1e-10,2e-10)],cupy='cupy' in sys.modules)))
+''')
+        self.assertEqual(result, dict(overlap=[True, True, True, False], cooperative=[True, True, True, False],
+                                      cupy=False))
+
     def test_launcher_refuses_output_overwrite_and_initial_D_mismatch(self):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp)
