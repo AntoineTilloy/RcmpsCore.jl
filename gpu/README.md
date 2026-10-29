@@ -246,7 +246,8 @@ independent CuPy one that the initial qualification of the starting state accept
 (1e-9) and the raw covector and environment (1e-9) bounds stay fixed. At D ≥ 88, g = 1 that
 difference reaches 7.5e-9 to 1.04e-8 for energies 3e-14 apart and |g| ~ 7e-5, so the default
 refuses some of those states. It is no objective control: each invocation qualifies its own
-starting state, and a resume may change it.
+starting state, and a resume keeps its checkpoint's (the `plan.json` beside it) unless given
+another.
 
 Excitations (`rcmps-gpu-excitations`, or `python -m rcmps_gpu.excitations`):
 

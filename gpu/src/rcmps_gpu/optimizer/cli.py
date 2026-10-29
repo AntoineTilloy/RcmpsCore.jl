@@ -49,8 +49,9 @@ KRYLOV_TOLERANCE_MAX = 1e-10
 # independent CuPy one that the worker's initial qualification accepts (energy 1e-9, raw covector and
 # environment 1e-9 stay fixed). At D >= 88, g = 1 it reaches 7.5e-9 to 1.04e-8 (energies 3e-14 apart,
 # |g| ~ 7e-5), so some states fail the default. It checks the starting state of each invocation and is
-# no objective control: a resume may change it. At most the 3e-7 the final validation allows between
-# the cached gradient and a re-evaluation (validate_sweep).
+# no objective control: a resume keeps its checkpoint's (the plan.json beside it) unless given another.
+# At most the 3e-7 the final validation allows between the cached gradient and a re-evaluation
+# (validate_sweep).
 QUALIFICATION_GRADIENT_TOLERANCE = 1e-8
 QUALIFICATION_GRADIENT_TOLERANCE_MAX = 3e-7
 # The controller's line searches (runtime/robust_optimizer.py LINE_SEARCHES): the bounded Armijo
@@ -196,6 +197,10 @@ def prepare(args, runtime_sha256):
     if controls["krylov_tolerance"] > KRYLOV_TOLERANCE_MAX:
         raise ValueError(f"the kinetic Krylov tolerance must be at most {KRYLOV_TOLERANCE_MAX:g}")
     qualification = args.qualification_gradient_tolerance
+    if qualification is None:
+        prior_plan = args.resume_from.parent / "plan.json" if previous else None
+        qualification = ((json.loads(prior_plan.read_bytes()) if prior_plan and prior_plan.exists() else {})
+                         .get("qualification_gradient_tolerance", QUALIFICATION_GRADIENT_TOLERANCE))
     if not math.isfinite(qualification) or not 0 < qualification <= QUALIFICATION_GRADIENT_TOLERANCE_MAX:
         raise ValueError(f"the qualification gradient tolerance must be positive and at most "
                          f"{QUALIFICATION_GRADIENT_TOLERANCE_MAX:g}")
@@ -267,10 +272,10 @@ def parser():
                    help=f"with --line-search wolfe: the energy increase an approximate Wolfe step may show "
                         f"(default {WOLFE_ENERGY_ATOL:g}, RcmpsCore's energy_atol; a resume keeps its checkpoint's)")
     p.add_argument("--max-device-seconds", type=float, default=300., help="one trajectory's device watchdog, not run wall time")
-    p.add_argument("--qualification-gradient-tolerance", type=float, default=QUALIFICATION_GRADIENT_TOLERANCE,
+    p.add_argument("--qualification-gradient-tolerance", type=float,
                    help=f"metric-norm difference between the fast and the independent gradient that the initial "
                         f"qualification of the starting state accepts (default {QUALIFICATION_GRADIENT_TOLERANCE:g}, at "
-                        f"most {QUALIFICATION_GRADIENT_TOLERANCE_MAX:g}); a resume may change it")
+                        f"most {QUALIFICATION_GRADIENT_TOLERANCE_MAX:g}); a resume keeps its checkpoint's unless given another")
     p.add_argument("--tiles", choices=TILE_CHOICES, default="auto",
                    help="tile product of the trajectory kernel: mma (FP64 tensor cores, compute capability >= 8.0), "
                         "scalar (FP64 FMAs with warp shuffles, any GPU with cooperative launch), or auto (the "

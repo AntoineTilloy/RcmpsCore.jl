@@ -296,6 +296,16 @@ class Resume(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, r"another --line-search \(the checkpoint's is wolfe\)"):
             self.plan("--resume-from", str(old), "--line-search", "armijo")
 
+    def test_a_resume_keeps_the_qualification_tolerance_of_its_checkpoint(self):
+        # The g = 1, D = 88 and 96 reruns at 3e-8 fell back to the 1e-8 default on resume (2026-10-29).
+        old, _ = fake_checkpoint(self.root, dict(line_search="wolfe", wolfe_energy_atol=1e-9))
+        self.assertEqual(self.plan("--resume-from", str(old))["qualification_gradient_tolerance"], 1e-8)
+        (old.parent / "plan.json").write_text(json.dumps(dict(qualification_gradient_tolerance=3e-8)))
+        self.assertEqual(self.plan("--resume-from", str(old))["qualification_gradient_tolerance"], 3e-8)
+        plan = self.plan("--resume-from", str(old), "--qualification-gradient-tolerance", "5e-8")
+        self.assertEqual(plan["qualification_gradient_tolerance"], 5e-8)
+        self.assertEqual(self.plan()["qualification_gradient_tolerance"], 1e-8)
+
     def test_a_checkpoint_without_the_choice_ran_the_Armijo_search(self):
         old, ref = fake_checkpoint(self.root, dict(secant_gradient_floor=1e-10, max_recoveries=2))
         plan = self.plan("--resume-from", str(old), "--line-search", "armijo")
