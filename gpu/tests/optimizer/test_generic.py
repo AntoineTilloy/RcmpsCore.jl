@@ -415,6 +415,45 @@ print(json.dumps(dict(overlap=[overlap_accepts(v) for v in ('1e-12','4e-12','1e-
         self.assertEqual(result, dict(overlap=[True, True, True, False], cooperative=[True, True, True, False],
                                       cupy=False))
 
+    def test_qualification_gradient_tolerance_is_tunable_up_to_its_cap(self):
+        hashes = run.runtime_source_sha256()
+        plan = run.prepare(run.parser().parse_args(["--D", "16"]), hashes)
+        self.assertEqual(plan["qualification_gradient_tolerance"], 1e-8)
+        args = run.parser().parse_args(["--D", "16", "--qualification-gradient-tolerance", "3e-8"])
+        self.assertEqual(run.prepare(args, hashes)["qualification_gradient_tolerance"], 3e-8)
+        for value in ("4e-7", "0", "nan"):
+            with self.assertRaises(ValueError):
+                run.prepare(run.parser().parse_args(["--D", "16", "--qualification-gradient-tolerance", value]), hashes)
+        # the fast gradient 2e-8 * identity from the oracle's: fails the default, passes 1e-7
+        result = child('''
+import tempfile,numpy as np
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+from rcmps_gpu.optimizer import worker
+from rcmps_gpu.optimizer.runtime import overlap_sweep_driver as driver,persistent_trajectory_overlap as fast
+class Coordinator:
+    def __enter__(self):return self
+    def __exit__(self,*args):pass
+z=np.zeros((4,4),np.complex128);rho=np.eye(4,dtype=np.complex128)/4
+def evaluate(*args,mode,**options):
+    return dict(value=-.1,gradient=z+2e-8*np.eye(4) if mode=='trajectory' else z,covector=z,environment=z,
+        stats=dict(kinetic=dict(maximum_relative_residual=1e-13,fallback_solves=0)))
+args=SimpleNamespace(metric_reg=.001,krylov_tolerance=1e-12)
+outcome=[]
+with patch.object(driver,'OverlapObjective',Coordinator),patch.object(fast,'evaluate_complete',evaluate):
+    for options in ({},dict(gradient_tolerance=1e-7)):
+        with tempfile.TemporaryDirectory() as tmp:
+            try:worker.qualify(z,z,rho,2.7,args,None,300.,Path(tmp),**options)
+            except RuntimeError as error:assert 'qualification failed' in str(error)
+            report=json.loads((Path(tmp)/'initial_qualification.json').read_bytes())
+            outcome.append([report['passed'],report['gradient_tolerance'],report['metric_gradient_difference']])
+print(json.dumps(dict(outcome=outcome,cupy='cupy' in sys.modules)))
+''')
+        (failed, default, difference), (passed, loose, _) = result["outcome"]
+        self.assertEqual((failed, default, passed, loose, result["cupy"]), (False, 1e-8, True, 1e-7, False))
+        self.assertTrue(1e-8 < difference < 1e-7, difference)
+
     def test_launcher_refuses_output_overwrite_and_initial_D_mismatch(self):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp)

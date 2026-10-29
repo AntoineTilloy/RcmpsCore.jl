@@ -240,7 +240,13 @@ the shifted Arnoldi solves of the kinetic term must reach; a solve that misses i
 φ⁴ it reaches 1e-12 from D ≈ 56 at g = 4, 72 at g = 1 and 88 at g = 2 (1.006e-12 at D = 72,
 g = 1, after 1024 vectors): there the default makes the solves run to 1024 vectors and the
 independent checks of the worker fail, so such runs take a slightly larger tolerance. It is an
-objective control: a resume keeps its checkpoint's.
+objective control: a resume keeps its checkpoint's. `--qualification-gradient-tolerance`
+(default 1e-8, at most 3e-7) is the metric-norm difference between the fast gradient and the
+independent CuPy one that the initial qualification of the starting state accepts; the energy
+(1e-9) and the raw covector and environment (1e-9) bounds stay fixed. At D ≥ 88, g = 1 that
+difference reaches 7.5e-9 to 1.04e-8 for energies 3e-14 apart and |g| ~ 7e-5, so the default
+refuses some of those states. It is no objective control: each invocation qualifies its own
+starting state, and a resume may change it.
 
 Excitations (`rcmps-gpu-excitations`, or `python -m rcmps_gpu.excitations`):
 

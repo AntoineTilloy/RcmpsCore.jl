@@ -9,7 +9,8 @@ import sys
 
 from .. import __version__
 from ..io import Integration, StateRecord, read_portable, write_portable
-from .cli import RUNTIME, digest, launcher_source_sha256, runtime_source_sha256, verify_runtime
+from .cli import (QUALIFICATION_GRADIENT_TOLERANCE, RUNTIME, digest, launcher_source_sha256, runtime_source_sha256,
+                  verify_runtime)
 
 PRODUCER = f"rcmps_gpu {__version__}, optimizer worker"
 
@@ -139,11 +140,12 @@ def initial_reference(plan, directory):
     return stats
 
 
-def qualify(r, k, rho, coupling, args, cp, timeout, directory, tiles="mma", register_cap=None):
+def qualify(r, k, rho, coupling, args, cp, timeout, directory, tiles="mma", register_cap=None,
+            gradient_tolerance=QUALIFICATION_GRADIENT_TOLERANCE):
     """Compare complete fast E/g, with the trajectory kernel's tile product `tiles` and
     register cap, with independent CuPy propagation and kinetic: the host-driven integrator
     of the packed Z2 channels, or of the unpacked ones (_ReducedQuarticRHS) when
-    args.reduced."""
+    args.reduced. The gradients must agree to gradient_tolerance in the metric norm."""
     import numpy as np
     from .runtime import overlap_sweep_driver as driver
     from .runtime import persistent_trajectory_overlap as fast
@@ -162,7 +164,8 @@ def qualify(r, k, rho, coupling, args, cp, timeout, directory, tiles="mma", regi
                 max_steps=s.max_steps, packed_z2=not args.reduced, reduced=args.reduced, use_graph=False)
         def close(self):
             pass
-    receipt = dict(D=len(r), tiles=tiles, register_cap=register_cap, passed=False, numerical_GPU_launch_performed=True)
+    receipt = dict(D=len(r), tiles=tiles, register_cap=register_cap, gradient_tolerance=gradient_tolerance,
+                   passed=False, numerical_GPU_launch_performed=True)
     arrays = {}
     try:
         with driver.OverlapObjective() as coordinator:
@@ -183,7 +186,7 @@ def qualify(r, k, rho, coupling, args, cp, timeout, directory, tiles="mma", regi
             metric_gradient_difference=math.sqrt(max(0., metric(rho, difference, difference, args.metric_reg))),
             raw_comparison=fast.compare(oracle, actual, rho, args.metric_reg),
             fast_stats=actual["stats"], oracle_stats=oracle["stats"])
-        receipt["passed"] = bool(fast.passed(receipt["raw_comparison"]) and
+        receipt["passed"] = bool(fast.passed(receipt["raw_comparison"], gradient_tolerance=gradient_tolerance) and
             all(result["stats"]["kinetic"]["maximum_relative_residual"] <= args.krylov_tolerance and
                 result["stats"]["kinetic"]["fallback_solves"] == 0 for result in (actual, oracle)))
     except BaseException as error:
@@ -284,7 +287,8 @@ def main(argv=None):
                 setattr(base, name, value)
             status["state"] = "initial_qualification"
             save()
-            qualify(r, k, rho, metadata["coupling"], base, cp, plan["max_device_seconds"], output, tiles, cap)
+            qualify(r, k, rho, metadata["coupling"], base, cp, plan["max_device_seconds"], output, tiles, cap,
+                    plan["qualification_gradient_tolerance"])
             status["state"] = "optimizing"
             save()
             with binding(trajectory, "ORIGINAL_PARSE", parse):

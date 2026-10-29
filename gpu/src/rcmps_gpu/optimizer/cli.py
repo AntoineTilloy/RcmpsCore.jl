@@ -45,6 +45,14 @@ DEFAULTS = dict(window=30., quadrature=512, nodes=512, atol=1e-13, rtol=1e-12,
 # g = 1), solves then run to maxdim and fail; the runtime (overlap_sweep_driver, cooperative_arnoldi)
 # accepts the same range.
 KRYLOV_TOLERANCE_MAX = 1e-10
+# --qualification-gradient-tolerance: the metric-norm difference between the fast gradient and the
+# independent CuPy one that the worker's initial qualification accepts (energy 1e-9, raw covector and
+# environment 1e-9 stay fixed). At D >= 88, g = 1 it reaches 7.5e-9 to 1.04e-8 (energies 3e-14 apart,
+# |g| ~ 7e-5), so some states fail the default. It checks the starting state of each invocation and is
+# no objective control: a resume may change it. At most the 3e-7 the final validation allows between
+# the cached gradient and a re-evaluation (validate_sweep).
+QUALIFICATION_GRADIENT_TOLERANCE = 1e-8
+QUALIFICATION_GRADIENT_TOLERANCE_MAX = 3e-7
 # The controller's line searches (runtime/robust_optimizer.py LINE_SEARCHES): the bounded Armijo
 # backtracking, or RcmpsCore's Hager-Zhang search with energy tolerance WOLFE_ENERGY_ATOL.
 LINE_SEARCHES = ("armijo", "wolfe")
@@ -187,6 +195,10 @@ def prepare(args, runtime_sha256):
         raise ValueError("unsupported ODE precision")
     if controls["krylov_tolerance"] > KRYLOV_TOLERANCE_MAX:
         raise ValueError(f"the kinetic Krylov tolerance must be at most {KRYLOV_TOLERANCE_MAX:g}")
+    qualification = args.qualification_gradient_tolerance
+    if not math.isfinite(qualification) or not 0 < qualification <= QUALIFICATION_GRADIENT_TOLERANCE_MAX:
+        raise ValueError(f"the qualification gradient tolerance must be positive and at most "
+                         f"{QUALIFICATION_GRADIENT_TOLERANCE_MAX:g}")
     if (args.max_seconds is not None and (not math.isfinite(args.max_seconds) or args.max_seconds <= 0)
             or args.max_iterations < 1 or args.device < 0 or args.seed < 0
             or not math.isfinite(args.gradient_target) or args.gradient_target <= 0
@@ -214,7 +226,7 @@ def prepare(args, runtime_sha256):
                 layout=describe(args.D, controls["quadrature"], args.tiles, args.symmetry), controls=controls,
                 max_seconds=args.max_seconds, max_iterations=args.max_iterations,
                 gradient_target=args.gradient_target, max_device_seconds=args.max_device_seconds,
-                device=args.device, compile_only=args.compile_only,
+                qualification_gradient_tolerance=qualification, device=args.device, compile_only=args.compile_only,
                 output=str(args.output.resolve()) if args.output else None,
                 resume_from=str(args.resume_from.resolve()) if args.resume_from else None,
                 resume_sha256={str(p.resolve()): digest(p) for p in (args.resume_from, args.resume_from.with_suffix(".npz"))}
@@ -255,6 +267,10 @@ def parser():
                    help=f"with --line-search wolfe: the energy increase an approximate Wolfe step may show "
                         f"(default {WOLFE_ENERGY_ATOL:g}, RcmpsCore's energy_atol; a resume keeps its checkpoint's)")
     p.add_argument("--max-device-seconds", type=float, default=300., help="one trajectory's device watchdog, not run wall time")
+    p.add_argument("--qualification-gradient-tolerance", type=float, default=QUALIFICATION_GRADIENT_TOLERANCE,
+                   help=f"metric-norm difference between the fast and the independent gradient that the initial "
+                        f"qualification of the starting state accepts (default {QUALIFICATION_GRADIENT_TOLERANCE:g}, at "
+                        f"most {QUALIFICATION_GRADIENT_TOLERANCE_MAX:g}); a resume may change it")
     p.add_argument("--tiles", choices=TILE_CHOICES, default="auto",
                    help="tile product of the trajectory kernel: mma (FP64 tensor cores, compute capability >= 8.0), "
                         "scalar (FP64 FMAs with warp shuffles, any GPU with cooperative launch), or auto (the "
