@@ -1147,7 +1147,7 @@ of the trajectory kernel, the CPU kinetic solvers), on a stand-in device of comp
 capability 8.0 and, for the resume, 7.0 (scalar tiles, and a register cap from the ladder),
 a run at D = 5 without symmetry, and one with the Wolfe line search. `tests/optimizer/test_unpacked.py`
 checks the kernel of states without symmetry (see "Optimizer: states without Z2 symmetry"),
-`tests/excitations/test_unpacked.py` the excitation systems of the sector all (see
+`tests/excitations/test_sector_all.py` the excitation systems of the sector all (see
 "Excitations of states without symmetry"), and `tests/optimizer/test_line_search.py` the
 Hager-Zhang search against the trial steps of OptimKit, its acceptance rule, the controller
 on a synthetic objective and the resume rules (see "Optimizer: line searches").
