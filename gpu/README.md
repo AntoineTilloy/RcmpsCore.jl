@@ -3,12 +3,12 @@
 CUDA implementations of two algorithms of RcmpsCore, in Python with CuPy, for the φ⁴
 model on relativistic continuous matrix product states: the ground-state optimizer for
 Z2-symmetric states (even bond dimension D) and for states without symmetry (any D), the
-excitation solver for Z2-symmetric states. Everything is float64/complex128.
+excitation solver for the parity sectors of Z2-symmetric states and for the whole tangent
+space (sector all) of any state. Everything is float64/complex128.
 
 The Julia package RcmpsCore in the repository root is the reference implementation (CPU,
 every model) and is not modified by this one. This package accelerates its ground-state
-optimizer and its tangent-space excitation solver for φ⁴ on Z2-symmetric states, and is
-tested against it through shared fixtures and reference levels (`test/fixtures`). When the
+optimizer and its tangent-space excitation solver for φ⁴, and is tested against it through shared fixtures and reference levels (`test/fixtures`). When the
 two disagree beyond the tolerances documented here, the Julia result is the right one, with
 one documented exception: the excitation solver evaluates the Julia formulas on a
 stationary density re-solved in scaled variables, whose small eigenvalues are accurate to
@@ -24,7 +24,8 @@ full relative precision where those of the stored ρ that the Julia code uses ar
   holding the whole grid resident (see "Optimizer: states without Z2 symmetry").
 - `rcmps_gpu.excitations`: tangent-space excitation solver (matrix-free Hamiltonian
   action, Davidson, validation by the bilinear route), both parity sectors, any momentum.
-  The action trajectory of a Z2 sector runs in one fused cooperative kernel.
+  The action trajectory of a Z2 sector runs in one fused cooperative kernel, and so does
+  that of the sector all, of any state (see "Excitations of states without symmetry").
 - `rcmps_gpu.io`: the state files of both: checkpoints of the Julia package and portable
   state directories.
 
@@ -46,7 +47,9 @@ D = 8 to 128 on both GPUs, with both tile paths on the A100, but no optimization
 convergence. The optimizer on states without symmetry (`--symmetry none`) passed its checks
 on an H100 NVL with both tile paths (2026-10-26: trajectories, residency, runs at D = 8 to
 64, the energy, gradient and ⟨φ⟩ of RcmpsCore at D = 4 to 32 to 2e-13, 3e-11 and 1e-14, and
-optimizations at D = 16, 32 and 64), and its kernel ran on an RTX 2070. Both kernels choose
+optimizations at D = 16, 32 and 64), and its kernel ran on an RTX 2070; so did the excitation
+solver in the sector all (levels of RcmpsCore at D = 8 and 16 to 3e-12, solves at D = 32 and 64
+on the H100). Both kernels choose
 their tile product by device, for NVIDIA GPUs with or without FP64 tensor cores (see
 "GPUs"); no other GPU has run this package.
 
@@ -124,11 +127,11 @@ time), and 1.3 to 1.5 times for the reference levels at D = 16 and 32.
 
 | GPU | Compute capability | Tiles (`auto`) | Status |
 |---|---|---|---|
-| H100 | 9.0 | mma | the research runtime this one derives from ran the optimizer (D = 32 to 256); this package ran the optimizer on states without symmetry on an H100 NVL (2026-10-26, both tile paths; grid resident up to D = 144, refused at 152), not the Z2 optimizer or the excitation solver |
+| H100 | 9.0 | mma | the research runtime this one derives from ran the optimizer (D = 32 to 256); this package ran, on an H100 NVL (2026-10-26, both tile paths), the optimizer on states without symmetry (grid resident up to D = 144, refused at 152) and the excitation solver in the sector all (D = 8 to 64), not the Z2 optimizer or the Z2 sectors of the excitation solver |
 | A100 | 8.0 | mma | qualified with both tile paths (2026-10-15), which gave identical results: optimizer runs at D = 8 to 128 (3 and 30 iterations), grids compiled and resident up to D = 256; excitation kernels resident up to D = 128, reference levels at D = 16 and 32, a solve at D = 64; earlier, the excitation solver up to D = 128 (tensor cores, imported and earlier sources) and the research optimizer runtimes (D = 32 to 128) |
 | A30, A10, RTX 30, L4, L40, RTX 40 | 8.0, 8.6, 8.9 | mma | compiled only (the tests compile for compute_80 and 86; compute_89 was checked once); FP64 at 1/64 of FP32 except the A30 |
 | V100 | 7.0 | scalar | qualified with the scalar tiles (2026-10-15): optimizer runs at D = 8 to 128 (3 and 30 iterations), grid resident up to D = 160 and refused at 192 and 256; excitation action kernel resident up to D = 96 and refused at 128, pair kernel resident at D = 64 and refused at 96 (its limit estimated at 94 in the table below), reference levels at D = 16 and 32; `--tiles mma` refused |
-| RTX 2070 | 7.5 | scalar | the optimizer on states without symmetry: its trajectories, the comparison with RcmpsCore and optimizations at D = 8 and 16 (2026-10-26) |
+| RTX 2070 | 7.5 | scalar | states without symmetry (2026-10-26): the optimizer's trajectories, the comparison with RcmpsCore and optimizations at D = 8 and 16; the excitation kernel in the sector all and levels at D = 8 and 16 |
 | T4, other RTX 20 | 7.5 | scalar | compiled only; FP64 at 1/32 of FP32 |
 | P100 | 6.0 | scalar | compiled only |
 
@@ -159,6 +162,7 @@ grids (w = ceil(d/8), d = D/2; without symmetry d = D):
 | optimizer trajectory, `--symmetry none` | 32 w | 7 w + 1 | 512 d + 16 w (dynamic from D = 96) |
 | excitation, action system | 32 w | 26 w | 768 d + 16 w |
 | excitation, pair system (validation) | 32 w | 20 w | 1024 d + 16 w |
+| excitation, sector all: action, pair | 32 w | 15 w, 12 w | 768 d + 16 w, 1024 d + 16 w (d = D) |
 
 Largest even D whose grid is resident (any D without symmetry), estimated with the CUDA
 occupancy calculator from the register counts of NVRTC 12.8 for each target (the occupancy
@@ -179,6 +183,13 @@ use the caps of `fused.REGISTER_CAPS`, and a run with validation needs both of i
 | L4 | 58 | 176 | 97 | 84 | 80 | 80 |
 | RTX 4090 | 128 | 194 | 144 | 130 | 96 | 96 |
 | H100 SXM, H100 NVL | 132 | 256 | 144 | 160 | 208 | 160 |
+
+For the sector all (blocks of dimension d = D, fewer of them), the same model, which
+reproduces the excitation columns above, estimates the largest D (any D) of the action
+kernel, the pair kernel and so of a run with validation: P100 42, 32, 32; V100 63, 48, 48;
+T4 40, 31, 31; A30 71, 72, 71; A100 107, 80, 80; RTX 3090 65, 48, 48; L4 56, 48, 48;
+RTX 4090 65, 80, 65; H100 128, 112, 112 (none of them measured beyond the runs under
+"Excitations of states without symmetry").
 
 The occupancy queries of the qualification batch agree with the V100 and A100 rows at the
 sizes it checked: on the V100 the optimizer's grid is resident at D = 160 and refused at
@@ -275,10 +286,11 @@ describes every option. The defaults:
   `DavidsonOptions` default (`--stall-residual-limit` max(1e-5, 10 tol),
   `--stall-energy-atol` 1e-9).
 
-`--backend fused` (the default) integrates one parity sector of a Z2 state per launch with
-the tile products of `--tiles` (auto by default: see the fused kernel below), so
-`--sector all` needs `--backend host` (host-controlled integrator on the device, slow) or
-`--backend numpy` (the same code on the CPU). `--basis-bytes` and `--chunk` bound the GPU
+`--backend fused` (the default) integrates one parity sector of a Z2 state per launch, on
+its packed blocks, or the sector all of any state (the one `--sector auto` gives for a
+state without Z2 symmetry), on full D x D blocks, with the tile products of `--tiles` (auto
+by default: see the fused kernel below); `--backend host` (host-controlled integrator on the
+device, slow) and `--backend numpy` (the same code on the CPU) are the references. `--basis-bytes` and `--chunk` bound the GPU
 memory of the batched solves (1.0e10 and 32 were used at D = 128 on 40 GB). The output
 directory receives `result.json` (energies, the four validation energies, history,
 timings, solver and kernel statistics, source hashes, and `settings`: the options with the
@@ -599,10 +611,10 @@ Modules of `rcmps_gpu.excitations`:
 | `scaled` | scaled variables, typed Lindblad maps, batched preconditioned GMRES |
 | `kinetic` | kinetic and quadratic terms by the theta resolvent quadrature |
 | `potential`, `ode` | ODE terms: equations, pullback, host-controlled DOP853 (reference path) |
-| `packed` | Z2-packed, reduced action ODE as term tables (26 blocks for φ⁴) |
+| `packed` | Z2-packed, reduced action ODE as term tables (26 blocks for φ⁴), and its unpacked form for the sector all of any state (15 blocks of dimension D) |
 | `fused` | fused cooperative FP64 kernel that integrates a packed system in one launch |
 | `hamiltonian` | the complete action F(W) |
-| `bilinear`, `packed_pair`, `bilinear_fused` | bilinear energies: reference route, packed diagonal system, fused route |
+| `bilinear`, `packed_pair`, `bilinear_fused` | bilinear energies: reference route, packed diagonal system (and its unpacked form), fused route |
 | `eigsolve` | operator in white coordinates, preconditioner, seed, Davidson driver, validation, defaults (kinetic nodes, Davidson schedules) |
 | `cli` | command line |
 
@@ -673,6 +685,52 @@ D = 128, at 4 s more per action there (8.6 s instead of 4.4 s for the resolvent 
 refined check of the validation). The window settings of the ODE part are adequate at
 every D. Nothing was measured beyond D = 128; the command line notes it there, and warns
 when `--kinetic-nodes` is below the default.
+
+## Excitations of states without symmetry
+
+The sector all, the whole tangent space, is what `--sector auto` gives for a state without
+Z2 symmetry (and `--sector all` for any state), and the fused backend integrates it as it
+does a parity sector: the equations, term tables and kernel are those of the packed systems
+with the trivial blocking, every matrix one block of dimension D
+(`packed.UnpackedActionSystem`, 15 blocks and 105 products of dimension D per right-hand side
+for φ⁴, against 26 and 190 of dimension D/2 for a sector; the bilinear pair of the
+validation, `packed_pair.UnpackedDiagonalPair`, 12 blocks), and the Z2 tables are unchanged
+byte for byte. Coordinates, preconditioner, kinetic part, Davidson schedule and validation
+are those of a parity sector, for a sector of dimension D² (less the dropped metric
+directions). `result.json` records the resolved sector and the layout
+(`settings.sector_resolved`, `settings.layout`: packed or unpacked).
+
+Checks. `gpu_fused_check.py --general` (random states without symmetry): on an RTX 2070
+(scalar tiles), at D = 3, 5, 8, 12 and 16, the kernel takes the steps of the host-controlled
+integrator, its samples within 3.3e-13 and the resulting action within 2.8e-13, and a
+repeated launch gives the same bytes. Levels against RcmpsCore (`nonz2_levels.jl`, the
+settings gpu_comparison of `test/fixtures/excitation_references.toml`, the defaults of the
+command line), on the Julia-optimized φ⁴ minima at g = 3 of "Optimizer: states without Z2
+symmetry" (D = 8: sector dimension 64; D = 16: 256), the command line with the fused backend:
+
+| State, momentum, level | Julia validated energy | GPU - Julia (RTX 2070) | Actions: GPU, Julia | Seconds: RTX 2070, Julia (2 threads) |
+|---|---|---|---|---|
+| D = 8, p = 0, 1 | 1.226212254658342 | -6.1e-13 | 27, 27 | 42, 41 |
+| D = 8, p = 0, 2 | 3.471004406069189 | -1.2e-12 | | |
+| D = 8, p = 0.5, 1 | 1.323553440881420 | -1.2e-12 | 17, 17 | 20, 18 |
+| D = 16, p = 0, 1 | 0.676064475064788 | +3.2e-12 | 23, 23 | 117, 150 |
+
+Every level is accepted by both, with four-energy spreads of 3e-12 to 5e-12 (GPU) and 3e-13
+to 6e-12 (Julia). On an H100 NVL (tensor cores; Grid'5000 Sophia `musa`, 2026-10-26) the same
+solves gave -5.3e-13, -1.2e-12, -1.2e-12 and +3.0e-12 from Julia, accepted, in 22, 10 and 29
+s; there `gpu_fused_check.py --general` at D = 3 to 64 with both tile paths took the steps of
+the host integrator up to D = 16 (samples within 3.7e-13), and the two paths gave the same
+bytes and steps at every D, with 8.8 to 56 µs per right-hand side on the tensor cores from
+D = 3 to 64 (11.5 to 131 µs with the scalar tiles). The sector all of the GPU-optimized states
+of that section at p = 0, on the H100: D = 32 (dimension 1024), 37 actions and 163 s
+(preconditioner 9 s, search 124 s, validation 24 s), the level 0.4379208769371 accepted with a
+four-energy spread of 3.8e-11; D = 64 (dimension 4096, condition number of ρ 2.6e12; the state of
+the optimizer table, not converged in the gradient), operator 23 s, preconditioner 125 s and
+21.5 s per action: a first job stopped at its time limit after 62 actions (residual 1.0e-5),
+and its restart from `checkpoint.npz` (`--start`) converged in 22 more (residual 9.1e-8;
+777 s: search 476 s, validation 153 s), the level 0.3259687286084 accepted with a four-energy
+spread of 3.0e-10. Every kernel of these solves was resident at once (the pair kernel: 96 of
+132 blocks at D = 64).
 
 ## State files
 
@@ -1089,9 +1147,10 @@ of the trajectory kernel, the CPU kinetic solvers), on a stand-in device of comp
 capability 8.0 and, for the resume, 7.0 (scalar tiles, and a register cap from the ladder),
 a run at D = 5 without symmetry, and one with the Wolfe line search. `tests/optimizer/test_unpacked.py`
 checks the kernel of states without symmetry (see "Optimizer: states without Z2 symmetry"),
-`tests/optimizer/test_line_search.py` the Hager-Zhang search against the trial steps of
-OptimKit, its acceptance rule, the controller on a synthetic objective and the resume rules
-(see "Optimizer: line searches").
+`tests/excitations/test_unpacked.py` the excitation systems of the sector all (see
+"Excitations of states without symmetry"), and `tests/optimizer/test_line_search.py` the
+Hager-Zhang search against the trial steps of OptimKit, its acceptance rule, the controller
+on a synthetic objective and the resume rules (see "Optimizer: line searches").
 `tests/optimizer/test_tiles.py` checks the scalar tile product bitwise against the chain of
 FMAs it implements, the selection rule, the PTX audit, and with NVRTC (no GPU) both tile
 paths of the kernel for compute capability 6.0 to 9.0, to PTX and, with ptxas, to a cubin,
@@ -1108,7 +1167,7 @@ device cannot hold does not. The same command, from `gpu/`:
 OPENBLAS_NUM_THREADS=1 python -m pytest tests/optimizer tests/test_io.py tests/test_qualification.py \
   tests/excitations/test_references.py tests/excitations/test_{coordinates,davidson,scaled}.py \
   tests/excitations/test_{kinetic,fused,symmetry,run,potential,packed,packed_pair}.py \
-  tests/excitations/test_{device_strict,hamiltonian}.py
+  tests/excitations/test_{device_strict,hamiltonian,unpacked}.py
 ```
 
 The manual job `python-full` runs the whole default suite: it adds the eigsolve,

@@ -15,9 +15,10 @@ vectors.npz, or from the white coefficients of a checkpoint.npz. The coefficient
 to the eigenvectors of rho as computed in that run, so a checkpoint is to be reused in
 the same software environment and with the same metric cutoff.
 
-Backends: `fused` (GPU, one cooperative FP64 kernel per trajectory; Z2 states and one
-parity sector only, so `--sector all` is refused), `host` (host-controlled integrator on
-the device; slow, any state and sector) and `numpy` (CPU).
+Backends: `fused` (GPU, one cooperative FP64 kernel per trajectory; one parity sector of a
+Z2 state on its packed blocks, or the sector `all` of any state, the one `--sector auto`
+gives without Z2 symmetry, on full D x D blocks), `host` (host-controlled integrator on the
+device; slow, any state and sector) and `numpy` (CPU).
 
 Tiles of the fused kernel. `--tiles auto` (the default) computes the matrix products on the
 FP64 tensor cores from compute capability 8.0 on and with scalar tiles of the same layout
@@ -205,6 +206,9 @@ def resolve_defaults(args, state):
     if args.refined_kinetic_nodes is not None:
         eigsolve.check_kinetic_nodes(args.refined_kinetic_nodes)
     n = eigsolve.sector_dimension(state, sector=args.sector, metric_tol=args.metric_tol)
+    # The sector that make_coordinates resolves (default parity, tolerance 1e-12).
+    sector = args.sector if args.sector != "auto" else (
+        "all" if states.excitation_parity(state, "auto", tol=1e-12) is None else "odd")
     if not 1 <= args.nev <= n:
         raise ValueError(f"--nev {args.nev} must lie between 1 and the sector dimension {n}")
     controls = dict(tol=args.tol, maxops=args.maxops, stall_residual_limit=args.stall_residual_limit,
@@ -232,16 +236,12 @@ def resolve_defaults(args, state):
     messages.append(f"davidson schedule {schedule}: maxspace={options.maxspace} retain={retain} "
                     f"refresh={options.refresh} tol={options.tol:g} maxops={options.maxops} (sector dimension {n})")
     return dict(kinetic_nodes=nodes, default_kinetic_nodes=default_nodes, dimension=n, schedule=schedule,
-                davidson=options, retain=retain, messages=messages)
+                davidson=options, retain=retain, messages=messages, sector=sector)
 
 
 def main(argv=None):
     parser = make_parser()
     args = parser.parse_args(argv)
-    if args.backend == "fused" and args.sector == "all":
-        # packed.PackedActionSystem needs tangents of one Z2 class; the search would fail at its second action.
-        parser.error("--backend fused integrates one parity sector (odd or even) of a Z2 state; "
-                     "use --backend host or numpy for --sector all")
 
     started = time.time()
     path = Path(args.state)
@@ -271,20 +271,24 @@ def main(argv=None):
                       kernel_run_time_limit=bool(props.get("kernelExecTimeoutEnabled", False)))
         basis_bytes = args.basis_bytes
         if args.backend == "fused":
-            from . import packed
-            integrate, system = fused.fused_integrator(xp, use_mma=fused.USE_MMA[tiles]), packed.PackedActionSystem
+            from . import packed, packed_pair
+            # One parity sector: the packed blocks; the sector 'all' (any state): full blocks.
+            unpacked = resolved["sector"] == "all"
+            integrate = fused.fused_integrator(xp, use_mma=fused.USE_MMA[tiles])
+            system = packed.UnpackedActionSystem if unpacked else packed.PackedActionSystem
             # Every kernel of the solve now, before the output directory exists: a GPU that
             # cannot hold one is refused before the search, not after it.
             names = ("action",) if args.no_validate or args.host_bilinear else ("action", "pair")
             try:
-                kernels = fused.preflight(integrate, state.D // 2, names)
+                kernels = fused.preflight(integrate, state.D if unpacked else state.D // 2, names, unpacked=unpacked)
             except (ValueError, RuntimeError) as error:
                 parser.error(f"{error}" + ("; --host-bilinear validates without it, on the host-controlled integrator"
                                            if str(error).startswith("the pair kernel") else ""))
             if not args.host_bilinear:
                 # The bilinear validation energies also go through the fused kernel.
                 from . import bilinear_fused
-                bilinear_element = bilinear_fused.bound(integrate)
+                bilinear_element = bilinear_fused.bound(
+                    integrate, packed_pair.UnpackedDiagonalPair if unpacked else packed_pair.PackedDiagonalPair)
         else:
             integrate, system = ode.integrate_host, None
 
@@ -315,6 +319,8 @@ def main(argv=None):
                     tiles_requested=tiles if args.backend == "fused" else None,
                     numpy=np.__version__, davidson_schedule=resolved["schedule"],
                     sector_dimension=resolved["dimension"], default_kinetic_nodes=resolved["default_kinetic_nodes"],
+                    sector_resolved=resolved["sector"],
+                    layout=None if args.backend != "fused" else "unpacked" if resolved["sector"] == "all" else "packed",
                     source_sha256={**{name: hashlib.sha256((HERE / name).read_bytes()).hexdigest() for name in SOURCES},
                                    **{name: hashlib.sha256((HERE.parent / name).read_bytes()).hexdigest()
                                       for name in SHARED_SOURCES}},

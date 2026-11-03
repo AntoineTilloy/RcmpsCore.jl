@@ -1,8 +1,9 @@
 """Qualification of the fused trajectory kernel on a GPU.
 
-For each case the Z2-packed action system of one tangent is integrated with the
-host-controlled NumPy integrator (ode.integrate_host, exact source) and with the fused
-kernel for each tile path (--tiles; default every path of the device: native FP64
+For each case the Z2-packed action system of one tangent (for a state without symmetry,
+--general, the unpacked system of the sector all, packed.UnpackedActionSystem) is integrated
+with the host-controlled NumPy integrator (ode.integrate_host, exact source) and with the
+fused kernel for each tile path (--tiles; default every path of the device: native FP64
 tensor-core products and scalar tiles from compute capability 8.0 on, scalar tiles below),
 twice. A path passes ("ok") when its two launches give the same bytes and, against the host
 integrator (D <= --reference-limit), the samples at the quadrature nodes and the resulting
@@ -13,8 +14,8 @@ not failed. The two paths are compared with each other (largest difference, same
 same steps) as a measurement. Every result is one JSON line on stdout; the exit status is 1
 if a path failed.
 
-    python gpu_fused_check.py [--state STATE] [--random D [D ...]] [--window 16] [--n-quad 64]
-        [--tiles mma scalar] [--tolerance 1e-9]
+    python gpu_fused_check.py [--state STATE] [--random D [D ...]] [--general D [D ...]] [--window 16]
+        [--n-quad 64] [--tiles mma scalar] [--tolerance 1e-9]
 """
 from __future__ import annotations
 
@@ -46,7 +47,9 @@ def tangent(ss, sector, momentum, seed):
     def block():
         return rng.standard_normal((h, h)) + 1j * rng.standard_normal((h, h))
 
-    if sector == "odd":
+    if sector == "all":
+        m = rng.standard_normal((d, d)) + 1j * rng.standard_normal((d, d))
+    elif sector == "odd":
         m[:h, :h], m[h:, h:] = block(), block()
     else:
         m[:h, h:], m[h:, :h] = block(), block()
@@ -58,7 +61,8 @@ def tangent(ss, sector, momentum, seed):
 def check(cp, state, label, args, sector, momentum, scaling, paths):
     ss = scaled.ScaledState(state, scaling)
     spec = models.monomial_spec(4)
-    system = packed.PackedActionSystem(ss, momentum, spec, tangent(ss, sector, momentum, 5))
+    layout = packed.UnpackedActionSystem if sector == "all" else packed.PackedActionSystem
+    system = layout(ss, momentum, spec, tangent(ss, sector, momentum, 5))
     points, weights = models.quadrature(state.integrator)
     endpoint = math.sqrt(state.integrator.max_point)
     row = dict(stage="fused", state=label, D=state.D, sector=sector, momentum=momentum, scaling=scaling,
@@ -117,6 +121,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--state", nargs="*", default=[])
     parser.add_argument("--random", type=int, nargs="*", default=[4, 6, 8, 12])
+    parser.add_argument("--general", type=int, nargs="*", default=[],
+                        help="bond dimensions of random states without symmetry, checked in the sector all")
     parser.add_argument("--window", type=float, default=16.0)
     parser.add_argument("--n-quad", type=int, default=64)
     parser.add_argument("--atol", type=float, default=1e-13)
@@ -137,10 +143,12 @@ def main():
         path = Path(path)
         loaded = states.load_portable(path) if path.is_dir() else states.load_jld2(path)
         cases.append((coordinates.make_coordinates(loaded, sector="odd").state, path.name))
+    cases += [(states.random_state(d, scaling=0.5, seed=17 + d), f"general{d}") for d in args.general]
     for state, label in cases:
         state.integrator = integrator
-        configurations = ([("odd", 0.0, "density")] if args.quick else
-                          [("odd", 0.0, "none"), ("odd", 0.0, "density"), ("even", 0.4, "density")])
+        sectors = ("all", "all") if label.startswith("general") else ("odd", "even")
+        configurations = ([(sectors[0], 0.0, "density")] if args.quick else
+                          [(sectors[0], 0.0, "none"), (sectors[0], 0.0, "density"), (sectors[1], 0.4, "density")])
         for sector, momentum, scaling in configurations:
             check(cp, state, label, args, sector, momentum, scaling, paths)
     finish()
