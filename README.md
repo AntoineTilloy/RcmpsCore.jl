@@ -8,7 +8,7 @@ Relativistic continuous matrix product states (RCMPS) for quantum field theories
 A translation-invariant RCMPS of bond dimension D is
 
 ```math
-|Q,R\rangle = \operatorname{tr}\Big[\mathcal P\exp\Big(\int_{-\infty}^{+\infty}\! dx\;
+|Q,R\rangle = \mathrm{tr}\Big[\mathcal P\exp\Big(\int_{-\infty}^{+\infty}\! dx\;
 Q\otimes\mathbb 1 + R\otimes a^\dagger(x)\Big)\Big]\,|0\rangle_a ,
 ```
 
@@ -28,7 +28,7 @@ The package optimizes ground states, and computes excitations at fixed momentum 
 the tangent-space (quasiparticle) ansatz, which replaces one $`(Q,R)`$ by $`(V,W)`$:
 
 ```math
-|\Phi_p(W)\rangle=\int dx\,e^{ipx}\,\operatorname{tr}\Big[\mathcal P e^{\int_{-\infty}^{x}(\dots)}
+|\Phi_p(W)\rangle=\int dx\,e^{ipx}\,\mathrm{tr}\Big[\mathcal P e^{\int_{-\infty}^{x}(\dots)}
 \big(V\otimes\mathbb 1+W\otimes a^\dagger(x)\big)\,\mathcal P e^{\int_{x}^{+\infty}(\dots)}\Big]|0\rangle_a,
 \qquad V=-R^\dagger W .
 ```
