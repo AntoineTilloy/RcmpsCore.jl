@@ -59,10 +59,15 @@ The Julia package is not registered (Julia 1.10 or later):
 
 ```julia
 using Pkg
-Pkg.add(url="https://gitlab.inria.fr/atilloy/RcmpsCore.jl.git")
+Pkg.add(url="https://github.com/AntoineTilloy/RcmpsCore.jl.git")
 ```
 
-The GPU package: `pip install "./gpu[cuda12]"` from a clone of this repository.
+The GPU package, from a clone of this repository:
+
+```sh
+git clone https://github.com/AntoineTilloy/RcmpsCore.jl.git
+pip install "./RcmpsCore.jl/gpu[cuda12]"
+```
 
 ## Quick start
 
@@ -111,7 +116,8 @@ julia --project=. examples/phi4.jl
 julia --project=. examples/excitations.jl
 ```
 
-GitLab CI runs these tests and the CPU tests of `gpu/`. Benchmark scripts are in
+CI runs these tests and the CPU tests of `gpu/` on the GitLab mirror,
+[gitlab.inria.fr/atilloy/RcmpsCore.jl](https://gitlab.inria.fr/atilloy/RcmpsCore.jl). Benchmark scripts are in
 `benchmark/` (own environment), with results in [docs/benchmarks.md](docs/benchmarks.md).
 
 ## References
