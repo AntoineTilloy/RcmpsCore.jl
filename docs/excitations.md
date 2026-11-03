@@ -147,8 +147,10 @@ dispersion and can also load an optimized saved state. Tests compare against
 analytic coherent states and an independent finite-box contraction without
 Poisson environments, as well as both kinetic backends and auxiliary gauge
 invariance. `benchmark/excitation_mass_d16.jl` reproduces the recorded mass of
-the D=16, g=2 state in `test/fixtures/` with the default solver (see the
-[README](../README.md#tests-and-benchmarks)).
+the D=16, g=2 state in `test/fixtures/` with the default solver
+(`julia --project=. --threads=2 benchmark/excitation_mass_d16.jl`, about 8 minutes with
+two threads); it fails if the mass differs from the recorded 0.3523798021192911 by more
+than 1e-9.
 
 The research runs are in the companion repository rcmps-phi4-z2. Its Atlas mass
 scan (`research/mass_scan/README.md` there) applies the preconditioned
